@@ -6,13 +6,20 @@
 
 - 侧栏底部新增 **“Code Server”按钮**;点击打开**全屏浮层**,内嵌 code-server 的 VS Code 界面(iframe);
 - 浮层顶栏:状态点(绿=运行/黄=启动中/红=错误)、端口、cwd,以及 **[重新加载] [在新标签打开] [启动] [停止] [关闭(Esc)]**;
-- code-server 服务目录默认取当前会话 cwd;文件直接落在 DSH workspace 磁盘上,agent 与编辑器看到同一份文件;
+- code-server 服务目录**跟随活动工作区/会话**:浮层打开期间切换 DSH 会话/工作区,code-server 自动重启到新目录
+  (解析优先级:当前会话 cwd → 会话所属 workspace.path → recentWorkspace.path → 首个 workspace.path);
+  顶栏显示“跟随: <cwd>”与“编辑器 cwd: <cwd>”,二者不同时显示“目标: <cwd>(切换即重启)”。
+  实现要点:iframe src 必须带 `?folder=<cwd>`——code-server 前端会记住“最近工作区”并自行恢复,
+  仅用裸根 URL 只会显示上一次打开的目录、不会跟随切换(本机实测确认)。
+  **Windows 路径格式(实测)**:folder 参数必须以 `/` 开头且全部正斜杠,形如 `/C:/Users/User/Desktop/biss`;
+  裸 Windows 路径(`C:\...`)会被前端当 URI scheme 而剥掉盘符(页面显示 `\Users\User\...` 且文件树为空),
+  `file:///C:/...` 形式则报 “Workspace does not exist”。
 - process 生命周期由 host 插件管理:启动写 `$DSH_HOME/code-server/pid.json`,停止树级终止(taskkill /T 或进程组 SIGKILL),
   崩溃/退出实时更新状态;DSH host 重启后自动 adopt 仍在运行的实例(校验 pid + /healthz),不重复启动、不误杀别的进程;
 - `runtime/` 与 `node_modules` 已被 `.gitignore` 排除,推送/克隆仓库后按下方“runtime 恢复命令”重新构建即可。
 
 > 本机(BM: Windows 11 ARM64)实测:`code-server@4.134.0`(with Code 1.135.0)
-> 已安装进插件 runtime 并完成自动发现 → 启动 → healthz 200 → 停止 → 回收全链路验证。
+> 已安装进插件 runtime 并完成自动发现 → 启动 → healthz 200 → 运行中切换 cwd 重启 → 停止 → 回收全链路验证。
 
 ## 安装 code-server 到插件 runtime(一次性,Windows 原生)
 
