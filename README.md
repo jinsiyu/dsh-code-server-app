@@ -23,30 +23,7 @@
 > 本机(BM: Windows 11 ARM64)实测:`code-server@4.134.0`(with Code 1.135.0)
 > 已安装进插件 runtime 并完成自动发现 → 启动 → healthz 200 → 运行中切换 cwd 重启 → 停止 → 回收全链路验证。
 
-## 安装 code-server 到插件 runtime(一次性,Windows 原生)
-
-```powershell
-# 1) 安装最新版 node-gyp(13.x,旧版 9.x 不识别 VS 2026)
-npm install -g node-gyp@latest
-
-# 2) 在插件工作区安装 code-server 最新版(
-cd C:\Users\User\Desktop\dsh-code-server-app
-npm install --prefix runtime node-gyp@latest --ignore-scripts
-$env:FORCE_NODE_VERSION="24"; $env:PYTHON="$env:LOCALAPPDATA\Programs\Python\Python313-arm64\python.exe"
-$env:npm_config_node_gyp=...node-gyp\bin\node-gyp.js   # 指向上面安装的 node-gyp
-npm install --prefix runtime code-server@latest
-npm install-scripts approve code-server argon2 unrs-resolver   # npm 11 拦 postinstall 时
-npm rebuild --prefix runtime
-```
-
-> Windows 原生构建要点(本机实测,ARM64):
-> - **VS 需要 Spectre 缓解库组件**(MSB8040):Visual Studio Installer → 单个组件 →
->   “适用于 ARM64 的 MSVC v18x Spectre-mitigated 库”(x86/x64 同理)。
-> - code-server 最新版要求 Node v24(postinstall 校验;本机 v24.13.1 通过)。
-> - 若不需要在插件内自足(例如已有全局 code-server),可跳过此步;
->   插件会回退到 PATH/配置的 `bin`(见“配置”表)。
-
-## 安装插件
+## 安装插件(code-server 自动跟随)
 
 ```powershell
 # 开发期:源码目录路径安装(改动即时生效)
@@ -57,7 +34,34 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 # dsh plugin --profile web add .\dsh-code-server-0.1.0.tgz
 ```
 
-重启 `dsh web`(静态插件的 client bundle 在服务启动时编入 `window.__DSH_BOOT__`)。
+**code-server 已声明为插件依赖**(`package.json` dependencies = `code-server ^4.134.0`),
+`npm install` / `dsh plugin add` 时自动随装。插件的 `postinstall` 脚本
+(`scripts/setup-code-server.mjs`,纯 Node、Windows 兼容)负责补齐 VS Code 内部依赖与
+native 构建——官方 `sh ./postinstall.sh` 在 Windows 上无 `sh` 会失败,已由本脚本替代。
+
+> 安装/依赖变化后请**重启 `dsh web`**(静态插件行与 host 探测路径在启动时加载)。
+
+> 首次安装如遇 npm 11 的 install-scripts 拦截,按提示批准后重建:
+> ```powershell
+> npm install
+> npm install-scripts approve argon2 unrs-resolver   # native 模块构建脚本(npm 11 白名单)
+> npm rebuild
+> node scripts/setup-code-server.mjs                 # 补装 VS Code 内部依赖
+> ```
+
+### Windows 原生构建要点(本机实测,ARM64)
+
+- **VS 需 Spectre 缓解库组件**(MSB8040):Visual Studio Installer → 单个组件 →
+  "适用于 ARM64 的 MSVC v18x Spectre-mitigated 库"(x86/x64 同理)。
+- **node-gyp 13.x**(旧版 9.x 不识别 VS 2026):`npm install -g node-gyp@latest`。
+- code-server 最新版要求 **Node v24**(postinstall 校验;本机 v24.13.1 通过)。
+- 若不需要插件自足(例如已有全局 code-server),可跳过安装:
+  插件会回退到 PATH/配置的 `bin`(见"配置"表)。
+
+### 兼容旧的 runtime 目录安装
+
+`runtime/node_modules/code-server`(早期 README 的手动安装方式)仍被支持——
+host 探测顺序:`node_modules`(推荐,随插件安装)> `runtime`(旧方式)> PATH/配置 `bin`。
 
 ## 设置卡片(设置 → 插件 → Code Server)
 

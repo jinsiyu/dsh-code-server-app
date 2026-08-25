@@ -25,8 +25,24 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "scripts/setup-code-server.mjs",
     "cordis.patch.yml",
     "README.md"
   ],
-  "license": "MIT"
+  "scripts": {
+    "postinstall": "node scripts/setup-code-server.mjs",
+    "setup:code-server": "node scripts/setup-code-server.mjs"
+  },
+  "dependencies": {
+    "code-server": "^4.134.0"
+  },
+  "devDependencies": {
+    "node-gyp": "^13.0.1"
+  },
+  "license": "MIT",
+  "allowScripts": {
+    "code-server": false,
+    "argon2@0.44.0": true,
+    "unrs-resolver@1.11.1": true
+  }
 }
