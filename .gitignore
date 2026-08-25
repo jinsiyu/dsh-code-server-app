@@ -1,0 +1,22 @@
+# 依赖与构建产物
+node_modules/
+*.tgz
+
+# code-server 运行时(随插件工作区携带;换机/重装时按 README 恢复命令重新 npm install)
+runtime/
+
+# 日志与缓存
+*.log
+npm-debug.log*
+.npm-cache/
+
+# 编辑器与系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时评审/验证脚本(如 verify-host.mjs 等一次性脚本)
+verify-*.mjs
+
+# DSH 会话数据(插件运行期产物,不纳入仓库)
+.mnemon/

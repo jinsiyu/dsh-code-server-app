@@ -1,0 +1,31 @@
+{
+  "name": "dsh-code-server",
+  "version": "0.1.0",
+  "description": "Integrate code-server (VS Code in the browser) into DSH Web: sidebar action + fullscreen overlay, host-side process lifecycle over a /code-server JSON API.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT"
+}

@@ -1,0 +1,24 @@
+# dsh-code-server bundle 配置层(随包分发,由 dsh.profile.bundles 应用)
+# 插件行按包名引用,Node 从 profile 的 node_modules 解析安装后的代码。
+- insert:
+    - id: code-server
+      name: dsh-code-server
+      config:
+        # code-server 可执行文件:PATH 中的裸名或绝对路径。找不到时报错并在 UI
+        # 给出安装指引,不会静默失败。
+        # bin: code-server
+        # 绑定地址:仅允许回环与显式授权地址;非回环时强制 password 认证。
+        host: 127.0.0.1
+        # 端口;被占用时启动失败并给出诊断(不自动换端口)。
+        port: 8090
+        # 认证模式:none | password。
+        # - none:仅限 loopback(默认)。
+        # - password:host 非回环时自动启用;也可显式配置 token。
+        auth: none
+        # password 模式的一次性 token;留空则启动时生成并写入 UI 状态/日志。
+        passwordToken: ''
+        # code-server 数据目录(隔离用户数据,不污染真实 VS Code 设置)。
+        userDataDir: ''
+        extensionsDir: ''
+        # 启动就绪探测超时(ms)。
+        readyTimeoutMs: 60000
