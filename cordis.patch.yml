@@ -4,8 +4,12 @@
     - id: code-server
       name: dsh-code-server
       config:
-        # code-server 可执行文件:PATH 中的裸名或绝对路径。找不到时报错并在 UI
-        # 给出安装指引,不会静默失败。
+        # code-server 启动方式,优先级:
+        #   1. 本配置的 bin(显式指定,如绝对路径/可执行名/entry.js)
+        #   2. 插件自带 runtime(runtime/node_modules/code-server/out/node/entry.js,
+        #      由 README 的"runtime 恢复命令"安装);默认即此,无需配置
+        #   3. PATH 中的 code-server
+        # 找不到时报错并在 UI 给出安装指引,不会静默失败。
         # bin: code-server
         # 绑定地址:仅允许回环与显式授权地址;非回环时强制 password 认证。
         host: 127.0.0.1

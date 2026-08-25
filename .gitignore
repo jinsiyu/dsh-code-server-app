@@ -5,6 +5,9 @@ node_modules/
 # code-server 运行时(随插件工作区携带;换机/重装时按 README 恢复命令重新 npm install)
 runtime/
 
+# code-server 运行期数据(扩展/用户数据/pid 等,由插件生成)
+code-server/
+
 # 日志与缓存
 *.log
 npm-debug.log*
