@@ -26,3 +26,6 @@
         extensionsDir: ''
         # 启动就绪探测超时(ms)。
         readyTimeoutMs: 60000
+        # 注:窗口行为(是否保留输入框上方空间)由"设置 → 插件 → Code Server"
+        # 卡片控制,持久化于官方 settings 域(命名空间 code-server,键 reserveComposer,
+        # 默认 true);此处不需配置,卡片修改即时生效。

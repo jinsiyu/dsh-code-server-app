@@ -4,8 +4,10 @@
 **作为插件自带运行时安装进 DSH**:code-server 装在插件工作区的 `runtime/` 目录,插件启动时自动发现并使用它,
 无需全局 npm 安装、无需配置 `bin`。
 
-- 侧栏底部新增 **“Code Server”按钮**;点击打开**全屏浮层**,内嵌 code-server 的 VS Code 界面(iframe);
-- 浮层顶栏:状态点(绿=运行/黄=启动中/红=错误)、端口、cwd,以及 **[重新加载] [在新标签打开] [启动] [停止] [关闭(Esc)]**;
+- 侧栏底部新增 **“Code Server”按钮**;点击打开**内部浮动窗口**(参照 dsh-univer-office 的 WorktreeWindow 模式):
+  固定定位浮窗 + 空转根容器,窗口接管指针事件,**可拖动标题栏、8 向缩放、双击/按钮最大化、折叠(只剩标题栏)、关闭(Esc)**,
+  初始位置在输入框上方靠右,最大化与缩放都止于输入栏上方,不遮挡 composer;
+- 窗口内:标题栏(状态徽章:运行中/启动中/错误/未运行)+ 工具栏(重新加载/新标签打开/启动/停止)+ iframe;
 - code-server 服务目录**跟随活动工作区/会话**:浮层打开期间切换 DSH 会话/工作区,code-server 自动重启到新目录
   (解析优先级:当前会话 cwd → 会话所属 workspace.path → recentWorkspace.path → 首个 workspace.path);
   顶栏显示“跟随: <cwd>”与“编辑器 cwd: <cwd>”,二者不同时显示“目标: <cwd>(切换即重启)”。
@@ -56,6 +58,19 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 ```
 
 重启 `dsh web`(静态插件的 client bundle 在服务启动时编入 `window.__DSH_BOOT__`)。
+
+## 设置卡片(设置 → 插件 → Code Server)
+
+参照 dsh-auto-open-web 的自绘卡片模式,注册在 `settings.plugin.item` 插槽,
+数据经官方 settings 域(`settingsScope`,命名空间 `code-server`)持久化到官方 settings 文档:
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `reserveComposer` | `true` | 窗口是否**保留输入框上方空间**:开启时窗口初始/拖动/缩放/最大化都止于输入栏上方(不遮挡 composer);关闭后允许盖住输入框(最大化到视口底) |
+
+> 卡片改动经 `scope.watch` 实时生效(host 端 status API 同步返回 `reserveComposer`,
+> 客户端窗口立即重新 fit);无需重启 dsh。首次使用前需 **重启 dsh web** 让 host
+> 注册该设置命名空间(静态插件行加载)。
 
 ## 配置(cordis.patch.yml 的 `config`,均有默认值)
 
