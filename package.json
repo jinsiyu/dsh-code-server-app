@@ -1,7 +1,7 @@
 {
   "name": "dsh-code-server-app",
-  "version": "0.1.2",
-  "description": "Integrate code-server (VS Code in the browser) into DSH Web: sidebar action + fullscreen overlay, host-side process lifecycle over a /code-server JSON API.",
+  "version": "0.1.10",
+  "description": "Integrate code-server (VS Code in the browser) into DSH Web: floating ball entry + fullscreen overlay, host-side process lifecycle over a /code-server JSON API.",
   "homepage": "https://github.com/jinsiyu/dsh-code-server-app",
   "repository": {
     "type": "git",

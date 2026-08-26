@@ -6,13 +6,16 @@
 **作为插件依赖随装**(package.json dependencies),插件启动时自动发现并使用它,
 无需全局 npm 安装、无需配置 `bin`。
 
-- 侧栏底部新增 **“Code Server”按钮**;点击打开**内部浮动窗口**(参照 dsh-univer-office 的 WorktreeWindow 模式):
-  固定定位浮窗 + 空转根容器,窗口接管指针事件,**可拖动标题栏、8 向缩放、双击/按钮最大化、折叠(只剩标题栏)、关闭(Esc)**,
+- **右下角悬浮球**(code-server 官方图标,输入框上方):点击**展开浮窗并亮起**(蓝色光环),再点击**收起并复原**;
+  **可按住拖动到任意位置**(松手后记忆,刷新不丢;拖完不会误触发点击);
+  无侧栏按钮、无窗口控制按钮组(球是唯一入口/开关);球上带运行状态点(绿=运行 / 黄=启动中 / 红=错误);
+- 窗口为**内部浮动窗口**(参照 dsh-univer-office 的 WorktreeWindow 模式):固定定位浮窗 + 空转根容器,窗口接管指针事件,
+  **无标题栏无按钮**——顶部细条拖动(悬停有淡色提示)、双击最大化、8 向缩放、Esc 关闭(与球收起等效),
   初始位置在输入框上方靠右,最大化与缩放都止于输入栏上方,不遮挡 composer;
-- 窗口内:标题栏(状态徽章:运行中/启动中/错误/未运行)+ 工具栏(重新加载/新标签打开/启动/停止)+ iframe;
+- 窗口内直接是 code-server 页面(iframe);未运行/启动失败时显示状态说明与错误信息;
 - code-server 服务目录**跟随活动工作区/会话**:浮层打开期间切换 DSH 会话/工作区,code-server 自动重启到新目录
   (解析优先级:当前会话 cwd → 会话所属 workspace.path → recentWorkspace.path → 首个 workspace.path);
-  顶栏显示“跟随: <cwd>”与“编辑器 cwd: <cwd>”,二者不同时显示“目标: <cwd>(切换即重启)”。
+  打开目录显示在 code-server 页面内(`?folder=<cwd>`,跟随切换时页面自动重新加载);
   实现要点:iframe src 必须带 `?folder=<cwd>`——code-server 前端会记住“最近工作区”并自行恢复,
   仅用裸根 URL 只会显示上一次打开的目录、不会跟随切换(本机实测确认)。
   **Windows 路径格式(实测)**:folder 参数必须以 `/` 开头且全部正斜杠,形如 `/C:/Users/User/Desktop/biss`;
@@ -44,7 +47,7 @@ pnpm approve-builds dsh-code-server-app   # 交互选 yes;失败时手动编辑 
 
 ```powershell
 # 3) 安装(发布形态 tarball;无需 --ignore-scripts / --allow-build)
-dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.2.tgz
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.6.tgz
 ```
 
 ### 安装机制
