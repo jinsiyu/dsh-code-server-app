@@ -9,7 +9,7 @@
 //   3. 创建 bin 入口(Windows 用 .cmd 拷贝代替 symlink)。
 // 幂等:已实例化时跳过;失败不中断插件安装(启动时 host 还会探测并给指引)。
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync, copyFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, copyFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -28,10 +28,23 @@ function ensureNpmDeps(dir) {
   run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], dir);
 }
 
+function findCodeServer() {
+  // 布局候选:
+  //   1. pkgRoot/node_modules/code-server(npm/flat 安装)
+  //   2. pkgRoot/../code-server(pnpm hoisted:依赖装到宿主顶层 node_modules)
+  for (const cand of [
+    join(pkgRoot, 'node_modules', 'code-server'),
+    join(pkgRoot, '..', 'code-server'),
+  ]) {
+    if (existsSync(cand)) return cand;
+  }
+  return null;
+}
+
 function main() {
-  const cs = join(pkgRoot, 'node_modules', 'code-server');
-  if (!existsSync(cs)) {
-    console.warn('[setup-code-server] code-server 未安装到 node_modules(依赖未装或已跳过)');
+  const cs = findCodeServer();
+  if (cs === null) {
+    console.warn('[setup-code-server] code-server 未找到(未安装或布局不同);请检查依赖安装');
     return;
   }
   const entry = join(cs, 'out', 'node', 'entry.js');

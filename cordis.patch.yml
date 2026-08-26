@@ -6,8 +6,8 @@
       config:
         # code-server 启动方式,优先级:
         #   1. 本配置的 bin(显式指定,如绝对路径/可执行名/entry.js)
-        #   2. 插件自带 runtime(runtime/node_modules/code-server/out/node/entry.js,
-        #      由 README 的"runtime 恢复命令"安装);默认即此,无需配置
+        #   2. 插件依赖安装(node_modules/code-server/out/node/entry.js,
+        #      package.json dependencies;npm install 随插件安装)
         #   3. PATH 中的 code-server
         # 找不到时报错并在 UI 给出安装指引,不会静默失败。
         # bin: code-server
@@ -20,7 +20,7 @@
         # - password:host 非回环时自动启用;也可显式配置 token。
         auth: none
         # password 模式的一次性 token;留空则启动时生成并写入 UI 状态/日志。
-     scm-history-item:c%3A%5CUsers%5CUser%5CDesktop%5Cdsh-code-server-app?%7B%22repositoryId%22%3A%22scm0%22%2C%22historyItemId%22%3A%22e05c2a1f667ab84c23c383b9762c247cf053deec%22%2C%22historyItemParentId%22%3A%2277a10c8f666599c2ac5d4e06b9684b398418a1f6%22%2C%22historyItemDisplayId%22%3A%22e05c2a1%22%7D   passwordToken: ''
+        passwordToken: ''
         # code-server 数据目录(隔离用户数据,不污染真实 VS Code 设置)。
         userDataDir: ''
         extensionsDir: ''

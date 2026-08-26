@@ -1,7 +1,7 @@
 # dsh-code-server — 在 DSH 中集成 code-server(VS Code 网页版)
 
 静态 profile 插件(npm 包形态,host + client bundle),把最新版 [code-server](https://github.com/coder/code-server)
-**作为插件自带运行时安装进 DSH**:code-server 装在插件工作区的 `runtime/` 目录,插件启动时自动发现并使用它,
+**作为插件依赖随装**(package.json dependencies),插件启动时自动发现并使用它,
 无需全局 npm 安装、无需配置 `bin`。
 
 - 侧栏底部新增 **“Code Server”按钮**;点击打开**内部浮动窗口**(参照 dsh-univer-office 的 WorktreeWindow 模式):
@@ -18,10 +18,11 @@
   `file:///C:/...` 形式则报 “Workspace does not exist”。
 - process 生命周期由 host 插件管理:启动写 `$DSH_HOME/code-server/pid.json`,停止树级终止(taskkill /T 或进程组 SIGKILL),
   崩溃/退出实时更新状态;DSH host 重启后自动 adopt 仍在运行的实例(校验 pid + /healthz),不重复启动、不误杀别的进程;
-- `runtime/` 与 `node_modules` 已被 `.gitignore` 排除,推送/克隆仓库后按下方“runtime 恢复命令”重新构建即可。
+- `node_modules`(依赖,含 code-server)已被 `.gitignore` 排除,推送/克隆仓库后按下方
+  "安装插件(code-server 自动跟随)"执行 `npm install` 即可。
 
 > 本机(BM: Windows 11 ARM64)实测:`code-server@4.134.0`(with Code 1.135.0)
-> 已安装进插件 runtime 并完成自动发现 → 启动 → healthz 200 → 运行中切换 cwd 重启 → 停止 → 回收全链路验证。
+> 随插件依赖安装并完成自动发现 → 启动 → healthz 200 → 运行中切换 cwd 重启 → 停止 → 回收全链路验证。
 
 ## 安装插件(code-server 自动跟随)
 
@@ -48,6 +49,11 @@ native 构建——官方 `sh ./postinstall.sh` 在 Windows 上无 `sh` 会失�
 > npm rebuild
 > node scripts/setup-code-server.mjs                 # 补装 VS Code 内部依赖
 > ```
+>
+> 升级 code-server 版本时,同步检查 `package.json` 的 `allowScripts` 表
+> (code-server 保持 `false`——官方 sh postinstall 在 Windows 会失败,由本插件
+> `scripts/setup-code-server.mjs` 替代;argon2/unrs-resolver 保持 `true`);
+> 若 native 依赖版本变更导致条目失配,按 `npm install-scripts ls` 的结果更新。
 
 ### Windows 原生构建要点(本机实测,ARM64)
 
@@ -60,8 +66,8 @@ native 构建——官方 `sh ./postinstall.sh` 在 Windows 上无 `sh` 会失�
 
 ### 兼容旧的 runtime 目录安装
 
-`runtime/node_modules/code-server`(早期 README 的手动安装方式)仍被支持——
-host 探测顺序:`node_modules`(推荐,随插件安装)> `runtime`(旧方式)> PATH/配置 `bin`。
+`runtime/node_modules/code-server`(早期 README 的手动安装方式)已移除支持——
+host 探测顺序:`node_modules`(随插件安装)> PATH/配置 `bin`。
 
 ## 设置卡片(设置 → 插件 → Code Server)
 
@@ -80,7 +86,7 @@ host 探测顺序:`node_modules`(推荐,随插件安装)> `runtime`(旧方式)> 
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `bin` | `code-server`(占位) | 启动优先级:本配置显式 `bin` > 插件自带 runtime(`runtime/node_modules/code-server/out/node/entry.js`,自动以 node 运行)> PATH 中的 `code-server`。都不存在时启动报错并给出安装指引 |
+| `bin` | `code-server`(占位) | 启动优先级:本配置显式 `bin` > 插件依赖安装(`node_modules/code-server/out/node/entry.js`,自动以 node 运行)> PATH 中的 `code-server`。都不存在时启动报错并给出安装指引 |
 | `host` | `127.0.0.1` | 绑定地址;`auth: none` 仅允许回环(localhost/127.0.0.1/::1) |
 | `port` | `8090` | 端口;被占用时启动失败并给出诊断(不自动换端口) |
 | `auth` | `none` | `none` \| `password`;非回环 host 自动要求 password |
@@ -95,7 +101,7 @@ host 探测顺序:`node_modules`(推荐,随插件安装)> `runtime`(旧方式)> 
 - id: code-server
   config:
     port: 8091
-    # 显式指定(覆盖自带 runtime 探测):全局安装的 shim,或任意 entry.js
+    # 显式指定(覆盖依赖安装探测):全局安装的 shim,或任意 entry.js
     bin: C:\Users\User\AppData\Roaming\npm\code-server.cmd
 ```
 

@@ -1,9 +1,9 @@
 # 依赖与构建产物
 node_modules/
 *.tgz
-
-# code-server 运行时(随插件工作区携带;换机/重装时按 README 恢复命令重新 npm install)
-runtime/
+.pnpm-store/
+.pnpm-store-local/
+pnpm-lock.yaml
 
 # code-server 运行期数据(扩展/用户数据/pid 等,由插件生成)
 code-server/
