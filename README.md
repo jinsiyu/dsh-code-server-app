@@ -1,4 +1,6 @@
-# dsh-code-server — 在 DSH 中集成 code-server(VS Code 网页版)
+# dsh-code-server-app — 在 DSH 中集成 code-server(VS Code 网页版)
+
+> 源码仓库地址见 `package.json` 的 `repository` / `homepage` 字段。
 
 静态 profile 插件(npm 包形态,host + client bundle),把最新版 [code-server](https://github.com/coder/code-server)
 **作为插件依赖随装**(package.json dependencies),插件启动时自动发现并使用它,
@@ -33,16 +35,16 @@ pnpm pack
 
 # 2) 一次性前置:批准插件 postinstall 许可(pnpm 只认宿主根配置,无包内声明路径)
 cd C:\Users\User\.dsh\profiles\web
-pnpm approve-builds dsh-code-server @jackwener/opencli   # 交互选 yes;失败时手动编辑 pnpm-workspace.yaml
+pnpm approve-builds dsh-code-server-app   # 交互选 yes;失败时手动编辑 pnpm-workspace.yaml
 ```
 
 > 若 `approve-builds` 不接受 file: spec(提示 unknown),把 `pnpm-workspace.yaml` 的
-> `allowBuilds` 中 `dsh-code-server@file:...tgz` 与 `@jackwener/opencli` 两行改为 `true`
+> `allowBuilds` 中 `dsh-code-server-app@file:...tgz`改为 `true`
 > (等价于交互批准,仅此一次;之后安装无需再次处理)。
 
 ```powershell
 # 3) 安装(发布形态 tarball;无需 --ignore-scripts / --allow-build)
-dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-0.1.0.tgz
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.2.tgz
 ```
 
 ### 安装机制
@@ -59,7 +61,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
   幂等自愈(pnpm 重装插件 → postinstall 重跑 → 检测已实例化则跳过)。
 
 > **卸载**:code-server 目录独立于插件包——先手动删除
-> `Remove-Item -Recurse -Force <profile>\.code-server-app`,再 `dsh plugin --profile web remove dsh-code-server`。
+> `Remove-Item -Recurse -Force <profile>\.code-server-app`,再 `dsh plugin --profile web remove dsh-code-server-app`。
 > 设置卡片"环境检测"区也显示此提示。
 
 > 安装/依赖变化后请**重启 `dsh web`**(静态插件行与 host 探测路径在启动时加载)。
@@ -134,9 +136,10 @@ host 探测顺序:`<profile>\.code-server-app`(专用目录)> 插件包内 `node
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/code-server/status` | `{ ok, running, status, host, port, pid, cwd, url, version, error, logTail, adopted }` |
+| GET | `/code-server/status` | `{ ok, running, status, host, port, pid, cwd, url, version, error, logTail, adopted }`(另含 `env` 环境检测与 `setup` 安装任务进度) |
 | POST | `/code-server/start` | body `{ cwd? }`(省略 cwd 不切换工作目录);幂等 |
 | POST | `/code-server/stop` | 停止并回收进程树 |
+| POST | `/code-server/setup` | 后台执行环境安装(npm 自装 code-server + native + VS Code 内部依赖);进度经 `status.setup` 轮询 |
 
 ## 已知限制
 

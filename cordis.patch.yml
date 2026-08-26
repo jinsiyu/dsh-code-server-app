@@ -2,7 +2,7 @@
 # 插件行按包名引用,Node 从 profile 的 node_modules 解析安装后的代码。
 - insert:
     - id: code-server
-      name: dsh-code-server
+      name: dsh-code-server-app
       config:
         # code-server 启动方式,优先级:
         #   1. 本配置的 bin(显式指定,如绝对路径/可执行名/entry.js)
