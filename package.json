@@ -33,12 +33,6 @@
     "postinstall": "node scripts/setup-code-server.mjs",
     "setup:code-server": "node scripts/setup-code-server.mjs"
   },
-  "dependencies": {
-    "code-server": "^4.134.0"
-  },
-  "devDependencies": {
-    "node-gyp": "^13.0.1"
-  },
   "license": "MIT",
   "allowScripts": {
     "code-server": false,

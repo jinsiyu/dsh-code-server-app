@@ -19,41 +19,53 @@
 - process 生命周期由 host 插件管理:启动写 `$DSH_HOME/code-server/pid.json`,停止树级终止(taskkill /T 或进程组 SIGKILL),
   崩溃/退出实时更新状态;DSH host 重启后自动 adopt 仍在运行的实例(校验 pid + /healthz),不重复启动、不误杀别的进程;
 - `node_modules`(依赖,含 code-server)已被 `.gitignore` 排除,推送/克隆仓库后按下方
-  "安装插件(code-server 自动跟随)"执行 `npm install` 即可。
+  "安装插件(code-server 包内自装)"执行 `pnpm pack` + `dsh plugin --profile web add` 即可。
 
 > 本机(BM: Windows 11 ARM64)实测:`code-server@4.134.0`(with Code 1.135.0)
 > 随插件依赖安装并完成自动发现 → 启动 → healthz 200 → 运行中切换 cwd 重启 → 停止 → 回收全链路验证。
 
-## 安装插件(code-server 自动跟随)
+## 安装插件(code-server 包内自装,零 flag 零报错)
 
 ```powershell
-# 开发期:源码目录路径安装(改动即时生效)
-dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
+# 1) 打包(在插件工作区)
+cd C:\Users\User\Desktop\dsh-code-server-app
+pnpm pack
 
-# 或发布形态:tarball
-# cd C:\Users\User\Desktop\dsh-code-server-app && pnpm pack
-# dsh plugin --profile web add .\dsh-code-server-0.1.0.tgz
+# 2) 一次性前置:批准插件 postinstall 许可(pnpm 只认宿主根配置,无包内声明路径)
+cd C:\Users\User\.dsh\profiles\web
+pnpm approve-builds dsh-code-server @jackwener/opencli   # 交互选 yes;失败时手动编辑 pnpm-workspace.yaml
 ```
 
-**code-server 已声明为插件依赖**(`package.json` dependencies = `code-server ^4.134.0`),
-`npm install` / `dsh plugin add` 时自动随装。插件的 `postinstall` 脚本
-(`scripts/setup-code-server.mjs`,纯 Node、Windows 兼容)负责补齐 VS Code 内部依赖与
-native 构建——官方 `sh ./postinstall.sh` 在 Windows 上无 `sh` 会失败,已由本脚本替代。
+> 若 `approve-builds` 不接受 file: spec(提示 unknown),把 `pnpm-workspace.yaml` 的
+> `allowBuilds` 中 `dsh-code-server@file:...tgz` 与 `@jackwener/opencli` 两行改为 `true`
+> (等价于交互批准,仅此一次;之后安装无需再次处理)。
+
+```powershell
+# 3) 安装(发布形态 tarball;无需 --ignore-scripts / --allow-build)
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-0.1.0.tgz
+```
+
+### 安装机制
+
+- **code-server 不在 `dependencies`**(pnpm 不触碰它、无脚本许可问题);
+- 插件的 `postinstall`(`scripts/setup-code-server.mjs`)在**插件包内**用 **npm** 自装
+  `code-server@4.134.0 --prefix <插件包>`:
+  - npm 读取包内 `allowScripts`:`code-server: false`(跳过官方 `sh ./postinstall.sh`,
+    Windows 无 sh 会失败)、`argon2/unrs-resolver: true`(native 构建);
+  - 装完补装 VS Code 内部依赖(144 包)+ `bin\code-server.cmd`;
+- **全部落在插件包内**(`profile\node_modules\dsh-code-server\node_modules\code-server\`),
+  不写全局、不动 profile 顶层;幂等自愈(pnpm 重装插件 → postinstall 重跑 → 自动重装)。
 
 > 安装/依赖变化后请**重启 `dsh web`**(静态插件行与 host 探测路径在启动时加载)。
 
-> 首次安装如遇 npm 11 的 install-scripts 拦截,按提示批准后重建:
-> ```powershell
-> npm install
-> npm install-scripts approve argon2 unrs-resolver   # native 模块构建脚本(npm 11 白名单)
-> npm rebuild
-> node scripts/setup-code-server.mjs                 # 补装 VS Code 内部依赖
-> ```
->
-> 升级 code-server 版本时,同步检查 `package.json` 的 `allowScripts` 表
-> (code-server 保持 `false`——官方 sh postinstall 在 Windows 会失败,由本插件
-> `scripts/setup-code-server.mjs` 替代;argon2/unrs-resolver 保持 `true`);
-> 若 native 依赖版本变更导致条目失配,按 `npm install-scripts ls` 的结果更新。
+### 开发期:源码目录安装(改动即时生效)
+
+```powershell
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
+```
+
+> 源码路径以 `link:` 安装,pnpm 会把 code-server 装到**插件工作区 node_modules**;
+> 与方案 D 的布局不同(host 已支持两种)。首次也需按上面的步骤 2 批准 postinstall 许可。
 
 ### Windows 原生构建要点(本机实测,ARM64)
 
@@ -64,10 +76,17 @@ native 构建——官方 `sh ./postinstall.sh` 在 Windows 上无 `sh` 会失�
 - 若不需要插件自足(例如已有全局 code-server),可跳过安装:
   插件会回退到 PATH/配置的 `bin`(见"配置"表)。
 
+### 升级 code-server 版本
+
+1. 改 `scripts/setup-code-server.mjs` 的 `CODE_SERVER_VERSION`;
+2. 同步 `package.json` 的 `allowScripts` 表(若 native 依赖版本变更导致条目失配,
+   按 `npm install-scripts ls` 的结果更新;code-server 保持 `false`);
+3. 重新 `pnpm pack` + `dsh plugin --profile web add <tgz>`(包内旧版本由 postinstall 覆盖)。
+
 ### 兼容旧的 runtime 目录安装
 
 `runtime/node_modules/code-server`(早期 README 的手动安装方式)已移除支持——
-host 探测顺序:`node_modules`(随插件安装)> PATH/配置 `bin`。
+host 探测顺序:`插件包内 node_modules`> `profile 顶层(hoisted)`> PATH/配置 `bin`。
 
 ## 设置卡片(设置 → 插件 → Code Server)
 
@@ -86,7 +105,7 @@ host 探测顺序:`node_modules`(随插件安装)> PATH/配置 `bin`。
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `bin` | `code-server`(占位) | 启动优先级:本配置显式 `bin` > 插件依赖安装(`node_modules/code-server/out/node/entry.js`,自动以 node 运行)> PATH 中的 `code-server`。都不存在时启动报错并给出安装指引 |
+| `bin` | `code-server`(占位) | 启动优先级:本配置显式 `bin` > 插件包内自装(`<插件包>/node_modules/code-server/out/node/entry.js`,自动以 node 运行)> profile 顶层(hoisted)> PATH 中的 `code-server`。都不存在时启动报错并给出安装指引 |
 | `host` | `127.0.0.1` | 绑定地址;`auth: none` 仅允许回环(localhost/127.0.0.1/::1) |
 | `port` | `8090` | 端口;被占用时启动失败并给出诊断(不自动换端口) |
 | `auth` | `none` | `none` \| `password`;非回环 host 自动要求 password |
