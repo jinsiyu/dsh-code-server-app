@@ -536,12 +536,13 @@ let React = require('react')
           if (next.pointerId !== pointerId) return
           cleanup()
           setInteraction(null)
-          if (!session.wasMaximized) {
-            // 拖到顶部松开 = 最大化(原地轻点不触发)
+          // 拖到顶部松开 = 最大化(原地轻点不触发)。
+          // 最大化会话中已恢复过(restored)的按普通拖拽对待:
+          // 允许"拉下再拉回顶部"松手执行最大化;未恢复的保持最大化不动。
+          if (!session.wasMaximized || session.restored === true) {
             if (session.snapped === true && session.moved === true) setMaximized(true)
             if (session.snapped === true) setSnapMax(false)
           }
-          // 最大化后未恢复 → 保持最大化;已恢复 → 停在拖放位置
         }
         cancelPointerSessionRef.current = cleanup
         view.addEventListener('pointermove', move)
