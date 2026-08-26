@@ -1,6 +1,9 @@
 // dsh-code-server — client bundle(悬浮球 + 内部浮动窗口 iframe)
-// 格式:window.__ModuleLoader__.load({ id, factory });factory(require) 的
-// require 解析浏览器端冻结模块表(react 等官方共享模块)。
+// 构建:node scripts/build-client.mjs → lib/client.js。
+// 产物形态:window.__ModuleLoader__.load({ id, factory })——esbuild 以 CJS 打包,
+// 整个 bundle 内嵌进 factory 函数体,静态 require('react'/'react-dom'/'react/jsx-runtime')
+// 直接落在 factory 的 require 参数上(DSH 冻结模块表;种子含 react/jsx-runtime)。
+// 唯一源码:src/factory.js;改动后执行 `pnpm run build:client` 重新生成 lib/client.js。
 //
 // 数据通道:同源 fetch DSH webServer 上的 /code-server JSON API
 //   GET  /code-server/status → { ok, running, status, port, host, pid, cwd, url, version, error, logTail, adopted }
@@ -10,19 +13,16 @@
 // UI 结构(参照 dsh-univer-office 的 WorktreeWindow):
 //   - shell.overlay(id code-server):悬浮球(code-server 图标,点击展开/收起浮窗,
 //     打开时发光)+ 内部浮动窗口——无标题栏、无控制按钮,顶部细条拖动、
-//     双击最大化、8 向缩放,关闭/展开/发光状态由悬浮球承担
+//     双击最大化、8 向缩放;最大化/恢复/吸附动画由 motion 弹簧驱动
 //
 // 窗口几何与手势完全复刻 univer-office 模式:
 //   - 根容器 position:fixed inset:0 pointer-events:none(点击穿透到底层)
 //   - 窗口 pointer-events:auto,顶部细条 pointerdown 拖动(setPointerCapture),
 //     双击最大化,8 个 resize handle 缩放,min 尺寸约束,viewport 边缘 clamp。
-window.__ModuleLoader__.load({
-  id: 'dsh-code-server-app',
-  factory: (require) => {
-    var module = { exports: {} }
-    var exports = module.exports
-    Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
-    let React = require('react')
+import { motion } from 'motion/react';
+
+// 工厂体:module/exports/require 由构建产物外层的 factory 参数提供(见 footer/banner)
+let React = require('react')
     // ReactDOM 为必需:窗口经 createPortal 挂到 document.body(跨越 shell.overlay 的
     // stacking context)。react-dom 在冻结模块表内(官方 feedback bundle 同款),
     // 缺失时在此显式失败(而非静默降级导致窗口被输入框遮挡)。
@@ -230,6 +230,9 @@ window.__ModuleLoader__.load({
       '.dshcs-win[data-interaction]::after{content:"";position:absolute;inset:0;z-index:18;background:transparent}' +
       '.dshcs-win-max{border-radius:14px;z-index:2147483001;box-shadow:0 1px 2px rgba(13,22,38,.06),0 8px 24px rgba(13,22,38,.12)}' +
       '.dshcs-win-max:hover{box-shadow:0 1px 2px rgba(13,22,38,.06),0 10px 28px rgba(13,22,38,.14)}' +
+      '.dshcs-win-snap{border-color:color-mix(in srgb,var(--dshcs-accent) 70%,var(--dsw-alias-border-l2,#dfe3eb));box-shadow:0 0 0 3px color-mix(in srgb,var(--dshcs-accent) 26%,transparent),0 22px 58px rgba(13,22,38,.24),0 0 0 1px rgba(255,255,255,.5) inset}' +
+      '.dshcs-snapghost{position:fixed;left:0;top:0;z-index:2147483000;pointer-events:none;display:grid;place-items:center;border:1.5px solid color-mix(in srgb,var(--dshcs-accent,#5b6cff) 85%,transparent);background:color-mix(in srgb,var(--dshcs-accent,#5b6cff) 11%,transparent);border-radius:12px;box-shadow:0 0 0 3px color-mix(in srgb,var(--dshcs-accent,#5b6cff) 20%,transparent),0 10px 34px rgba(13,22,38,.14)}' +
+      '.dshcs-snapghint{position:absolute;top:12px;left:50%;transform:translateX(-50%);padding:5px 14px;border-radius:999px;background:color-mix(in srgb,var(--dshcs-accent,#5b6cff) 92%,#172033);color:#fff;font-size:12px;font-weight:650;letter-spacing:.02em;white-space:nowrap;box-shadow:0 6px 18px rgba(13,22,38,.3)}' +
       '.dshcs-drag{position:absolute;top:0;left:0;right:0;height:14px;z-index:26;cursor:grab;touch-action:none;user-select:none}' +
       '.dshcs-win[data-interaction=move] .dshcs-drag{cursor:grabbing}.dshcs-win-max .dshcs-drag{cursor:default}' +
       '.dshcs-drag:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary,#172033) 5%,transparent)}' +
@@ -444,36 +447,101 @@ window.__ModuleLoader__.load({
         return function () { cancelPointerSessionRef.current() }
       }, [])
 
+      // 顶部吸附手势:普通拖动时窗口顶边被夹在距顶 VIEWPORT_GUTTER(12px,设计留白),
+      // 拖到该极限位置即出现"幽灵预览 + 松开以最大化"示意 → 松开最大化;
+      // 最大化后按住顶部细条向下拖立即恢复(抓取点锚定,全程跟手)。
+      var SNAP_Y = 12
+      var RESTORE_THRESHOLD = 4
+      var [snapMax, setSnapMax] = React.useState(false)
+      var dragSessionRef = React.useRef(null)
       var beginPointerSession = function (event, kind) {
-        if (event.button !== 0 || maximized) return
+        if (event.button !== 0) return
         event.preventDefault()
         event.stopPropagation()
         cancelPointerSessionRef.current()
         var view = event.currentTarget.ownerDocument.defaultView
         if (view === null) return
         var pointerId = event.pointerId
-        var origin = { x: event.clientX, y: event.clientY }
-        var start = rectRef.current
         var element = event.currentTarget
+        var wasMaximized = maximized
+        // 起点:最大化时以最大化矩形为基准(用于"向下拖恢复"),否则用当前 rect
+        var startRect = wasMaximized ? maximizedRect(viewportSize(), reserve) : rectRef.current
+        var ratio = startRect.width > 0 ? (event.clientX - startRect.x) / startRect.width : 0
+        var grabY = Math.min(14, Math.max(0, event.clientY - startRect.y)) // 抓取点在窗口内的 y(顶条区)
+        var session = {
+          pointerId: pointerId,
+          origin: { x: event.clientX, y: event.clientY },
+          start: startRect,
+          ratio: ratio,
+          grabY: grabY,
+          wasMaximized: wasMaximized,
+          restored: false,
+          snapped: false,
+          moved: false,
+        }
+        dragSessionRef.current = session
         setInteraction(kind)
         try { element.setPointerCapture(pointerId) } catch (e) { /* capture 失败仍可跟随 */ }
         var move = function (next) {
           if (next.pointerId !== pointerId) return
-          var dx = next.clientX - origin.x
-          var dy = next.clientY - origin.y
-          setRect(kind === 'move' ? moveRect(start, dx, dy, viewportSize(), reserve) : resizeRect(start, kind, dx, dy, viewportSize(), reserve))
+          if (kind !== 'move') { // 缩放手柄:纯 resize
+            setRect(resizeRect(session.start, kind, next.clientX - session.origin.x, next.clientY - session.origin.y, viewportSize(), reserve))
+            return
+          }
+          var dx = next.clientX - session.origin.x
+          var dy = next.clientY - session.origin.y
+          if (Math.abs(dx) + Math.abs(dy) > 3) session.moved = true
+          if (session.wasMaximized) {
+            if (!session.restored) {
+              // 最大化中:向下拖立即恢复(抓取点锚定指针 → 窗口顶条始终贴着手),
+              // 恢复后从当前指针位置继续拖。
+              if (dy < RESTORE_THRESHOLD) return // 未达阈值:保持最大化
+              var base = rectRef.current // 最大化前保存的 rect(恢复尺寸)
+              var r = {
+                x: next.clientX - base.width * Math.min(0.9, Math.max(0.1, session.ratio)),
+                y: next.clientY - session.grabY,
+                width: base.width,
+                height: base.height,
+              }
+              r = fitRect(r, viewportSize(), reserve)
+              session.restored = true
+              session.start = r
+              session.origin = { x: next.clientX, y: next.clientY }
+              setMaximized(false)
+              setRect(r)
+              return
+            }
+            // 已恢复:落入下方普通拖动路径,逐帧跟手
+          }
+          // 吸附判定用未夹紧的期望 y:窗口顶边被 fitRect 夹在 VIEWPORT_GUTTER(12) 处,
+          // 拖到该设计距离即亮起吸附高亮(否则永远够不到 8px 阈值)。
+          var desiredY = session.start.y + dy
+          var nextRect = moveRect(session.start, dx, dy, viewportSize(), reserve)
+          setRect(nextRect)
+          var snapping = desiredY <= SNAP_Y
+          if (snapping !== session.snapped) {
+            session.snapped = snapping
+            setSnapMax(snapping)
+          }
         }
         var cleanup = function () {
           view.removeEventListener('pointermove', move)
           view.removeEventListener('pointerup', finish)
           view.removeEventListener('pointercancel', finish)
           cancelPointerSessionRef.current = function () {}
+          dragSessionRef.current = null
           try { element.releasePointerCapture(pointerId) } catch (e) { /* ignore */ }
         }
         var finish = function (next) {
           if (next.pointerId !== pointerId) return
           cleanup()
           setInteraction(null)
+          if (!session.wasMaximized) {
+            // 拖到顶部松开 = 最大化(原地轻点不触发)
+            if (session.snapped === true && session.moved === true) setMaximized(true)
+            if (session.snapped === true) setSnapMax(false)
+          }
+          // 最大化后未恢复 → 保持最大化;已恢复 → 停在拖放位置
         }
         cancelPointerSessionRef.current = cleanup
         view.addEventListener('pointermove', move)
@@ -605,15 +673,27 @@ window.__ModuleLoader__.load({
           ))
       }
 
-      var className = ['dshcs-win', maximized ? 'dshcs-win-max' : ''].filter(Boolean).join(' ')
+      var className = ['dshcs-win', maximized ? 'dshcs-win-max' : '', snapMax ? 'dshcs-win-snap' : ''].filter(Boolean).join(' ')
       // 最大化由 rect 驱动(maximizedRect 占满"输入栏上方"区域),不用 CSS inset;
       // 还原时回到拖动前的位置。
       var shownRect = maximized ? maximizedRect(viewportSize(), reserve) : rect
-      var style = { left: shownRect.x, top: shownRect.y, width: shownRect.width, height: shownRect.height }
+      // motion 驱动几何:拖动/缩放中即时跟随(duration 0),松手后的吸附/最大化/恢复用弹簧。
+      var winPhysics = {
+        x: shownRect.x,
+        y: shownRect.y,
+        width: shownRect.width,
+        height: shownRect.height,
+      }
+      var winTransition = interaction !== null
+        ? { duration: 0 }
+        : { type: 'spring', stiffness: 430, damping: 42, mass: 0.9 }
 
-      var windowTree = React.createElement('section', {
+      var windowTree = React.createElement(motion.section, {
           className: className,
-          style: style,
+          style: { left: 0, top: 0 },
+          animate: winPhysics,
+          initial: false,
+          transition: winTransition,
           'data-interaction': interaction !== null ? interaction : undefined,
           role: 'dialog',
           'aria-label': 'Code Server',
@@ -641,7 +721,26 @@ window.__ModuleLoader__.load({
       )
       // portal 到 document.body:脱离 shell.overlay(z-index 20)的 stacking context,
       // 让窗口真正覆盖到 DSH 输入框区(输入框不再透出)。
-      return ReactDOM.createPortal(windowTree, document.body)
+      // 吸附示意:达到顶部阈值时显示"幽灵预览"(目标最大化区)+ 松开提示。
+      var maxRect = maximizedRect(viewportSize(), reserve)
+      var snapGhost = React.createElement(motion.div, {
+        className: 'dshcs-snapghost',
+        initial: false,
+        animate: {
+          opacity: snapMax === true ? 1 : 0,
+          x: maxRect.x,
+          y: maxRect.y,
+          width: maxRect.width,
+          height: maxRect.height,
+        },
+        transition: snapMax === true ? { type: 'spring', stiffness: 500, damping: 44, mass: 0.9 } : { duration: 0.14 },
+      },
+        React.createElement('span', { className: 'dshcs-snapghint' }, '松开以最大化')
+      )
+      return ReactDOM.createPortal(
+        React.createElement(React.Fragment, null, windowTree, snapGhost),
+        document.body
+      )
     }
 
     // ---------- 设置卡片(参照 auto-open-web 的自绘卡片模式) ----------
@@ -976,9 +1075,6 @@ window.__ModuleLoader__.load({
       console.log('[code-server] client bundle registered (floating ball + window + settings card)')
     }
 
-    exports.apply = apply
-    exports.inject = ['slots', 'settingsScope']
-    exports.name = 'code-server'
-    return module.exports
-  }
-})
+    const inject = ['slots', 'settingsScope']
+    const name = 'code-server'
+    export { apply, inject, name }

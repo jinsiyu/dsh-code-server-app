@@ -1,7 +1,7 @@
 {
   "name": "dsh-code-server-app",
-  "version": "0.1.10",
-  "description": "Integrate code-server (VS Code in the browser) into DSH Web: floating ball entry + fullscreen overlay, host-side process lifecycle over a /code-server JSON API.",
+  "version": "0.1.15",
+  "description": "Integrate code-server (VS Code in the browser) into DSH Web: floating ball entry + fullscreen overlay, host-side process lifecycle over a /code-server JSON API (motion-based spring window animations).",
   "homepage": "https://github.com/jinsiyu/dsh-code-server-app",
   "repository": {
     "type": "git",
@@ -36,7 +36,12 @@
   ],
   "scripts": {
     "postinstall": "node scripts/setup-code-server.mjs",
-    "setup:code-server": "node scripts/setup-code-server.mjs"
+    "setup:code-server": "node scripts/setup-code-server.mjs",
+    "build:client": "node scripts/build-client.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "motion": "^12.0.0"
   },
   "license": "MIT",
   "allowScripts": {

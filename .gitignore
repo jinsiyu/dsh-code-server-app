@@ -4,6 +4,12 @@ node_modules/
 .pnpm-store/
 .pnpm-store-local/
 pnpm-lock.yaml
+# pnpm 在本包目录自动生成的构建许可占位文件(esbuild 等)
+pnpm-workspace.yaml
+
+# client bundle 构建产物:由 src/factory.js 经 `pnpm run build:client` 生成,
+# 仓库只跟踪源码与构建脚本(scripts/build-client.mjs)。
+lib/client.js
 
 # code-server 运行期数据(扩展/用户数据/pid 等,由插件生成)
 code-server/
@@ -11,6 +17,8 @@ code-server/
 # 日志与缓存
 *.log
 npm-debug.log*
+pnpm-debug.log*
+.pnpm-cache/
 .npm-cache/
 
 # 编辑器与系统

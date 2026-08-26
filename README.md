@@ -10,7 +10,8 @@
   **可按住拖动到任意位置**(松手后记忆,刷新不丢;拖完不会误触发点击);
   无侧栏按钮、无窗口控制按钮组(球是唯一入口/开关);球上带运行状态点(绿=运行 / 黄=启动中 / 红=错误);
 - 窗口为**内部浮动窗口**(参照 dsh-univer-office 的 WorktreeWindow 模式):固定定位浮窗 + 空转根容器,窗口接管指针事件,
-  **无标题栏无按钮**——顶部细条拖动(悬停有淡色提示)、双击最大化、8 向缩放、Esc 关闭(与球收起等效),
+  **无标题栏无按钮**——顶部细条拖动(悬停有淡色提示;**拖到窗口顶部松开 = 最大化**,
+  **最大化后按住顶部细条向下拖 = 恢复**并继续跟手拖动)、双击最大化、8 向缩放、Esc 关闭(与球收起等效),
   初始位置在输入框上方靠右,最大化与缩放都止于输入栏上方,不遮挡 composer;
 - 窗口内直接是 code-server 页面(iframe);未运行/启动失败时显示状态说明与错误信息;
 - code-server 服务目录**跟随活动工作区/会话**:浮层打开期间切换 DSH 会话/工作区,code-server 自动重启到新目录
@@ -34,6 +35,9 @@
 ```powershell
 # 1) 打包(在插件工作区)
 cd C:\Users\User\Desktop\dsh-code-server-app
+# 全新克隆:先装开发依赖并生成 client bundle(lib/client.js 不入库,由 src/factory.js 构建)
+pnpm install            # esbuild + motion(仅打包用)
+pnpm run build:client   # src/factory.js → lib/client.js
 pnpm pack
 
 # 2) 一次性前置:批准插件 postinstall 许可(pnpm 只认宿主根配置,无包内声明路径)
@@ -47,7 +51,7 @@ pnpm approve-builds dsh-code-server-app   # 交互选 yes;失败时手动编辑 
 
 ```powershell
 # 3) 安装(发布形态 tarball;无需 --ignore-scripts / --allow-build)
-dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.6.tgz
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.15.tgz
 ```
 
 ### 安装机制
@@ -77,6 +81,10 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 
 > 源码路径以 `link:` 安装,pnpm 会把 code-server 装到**插件工作区 node_modules**;
 > 与方案 D 的布局不同(host 已支持两种)。首次也需按上面的步骤 2 批准 postinstall 许可。
+>
+> **改动 client bundle**:编辑 `src/factory.js` 后执行 `pnpm run build:client`
+> 重新生成 `lib/client.js`(仓库不跟踪该产物;浏览器刷新即生效,host 无需重启)。
+> 窗口动画由内嵌 `motion` 驱动,手感参数在 `src/factory.js` 的 `winPhysics`(一处)。
 
 ### Windows 原生构建要点(本机实测,ARM64)
 
