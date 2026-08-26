@@ -11,12 +11,12 @@
 // 幂等:code-server 已实例化(entry + VS Code 内部依赖 + argon2 native 均在)则跳过;
 // pnpm 重装插件后会重跑 postinstall → 自动重新自装(自愈)。
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, copyFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, copyFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url)); // .../dsh-code-server/scripts
-const pkgRoot = join(here, '..');
+const pkgRoot = join(here, '..'); // <profile>\node_modules\dsh-code-server
 
 const CODE_SERVER_VERSION = '4.134.0';
 
@@ -36,14 +36,32 @@ function ensureNpmDeps(dir) {
   npm(['install', '--omit=dev', '--no-audit', '--no-fund'], dir);
 }
 
+/** 专用安装根:<profile>\.code-server-app(如 C:\Users\User\.dsh\profiles\web\.code-server-app),
+ *  与 profile 依赖树隔离(避免 npm 在 profile 根解析其他插件依赖触发 ERESOLVE)。
+ *  最终 code-server 位于:<profile>\.code-server-app\node_modules\code-server */
+const APP_DIR_NAME = '.code-server-app';
+
+function profileRootOf() {
+  // pkgRoot = <profile>\node_modules\dsh-code-server;向上两级 = <profile> 根;
+  // 上层存在 node_modules + package.json 视为 profile 布局
+  const profileRoot = join(pkgRoot, '..', '..');
+  const isProfileLayout = existsSync(join(profileRoot, 'node_modules')) && existsSync(join(profileRoot, 'package.json'));
+  return isProfileLayout ? profileRoot : null;
+}
+
 function findCodeServer() {
-  // 布局候选:
-  //   1. 包内 npm 自装:pkgRoot/node_modules/code-server(方案 D 主路径)
-  //   2. pnpm hoisted:pkgRoot/../code-server(历史布局兼容)
-  for (const cand of [
-    join(pkgRoot, 'node_modules', 'code-server'),
-    join(pkgRoot, '..', 'code-server'),
-  ]) {
+  // 布局候选(与安装目标同顺序):
+  //   1. profile 专用目录:profileRoot\code-server-app\node_modules\code-server
+  //   2. 与主包平级:profileRoot\node_modules\code-server(pnpm hoisted,历史布局)
+  //   3. 包内:pkgRoot/node_modules/code-server(回退/独立目录)
+  const profileRoot = profileRootOf();
+  const cands = [];
+  if (profileRoot !== null) {
+    cands.push(join(profileRoot, APP_DIR_NAME, 'node_modules', 'code-server'));
+    cands.push(join(profileRoot, 'node_modules', 'code-server'));
+  }
+  cands.push(join(pkgRoot, 'node_modules', 'code-server'));
+  for (const cand of cands) {
     if (existsSync(cand)) return cand;
   }
   return null;
@@ -56,13 +74,39 @@ function isComplete(cs) {
       existsSync(join(cs, 'node_modules', 'argon2', 'prebuilds')));
 }
 
+/** 安装目标:
+ *   1. profile 布局 → <profile>\code-server-app(npm --prefix 装到
+ *      <profile>\code-server-app\node_modules\code-server,独立项目,无 ERESOLVE);
+ *   2. 否则回退包内(工作区/独立目录场景)。 */
+function installPrefix() {
+  const profileRoot = profileRootOf();
+  return profileRoot !== null ? join(profileRoot, APP_DIR_NAME) : pkgRoot;
+}
+
 function installCodeServer() {
-  console.log(`[setup-code-server] 包内 npm 自装 code-server@${CODE_SERVER_VERSION}(--prefix 钉在插件包内)…`);
-  // allowScripts 在 package.json 已声明:code-server:false(跳过 sh)、argon2/unrs:true(构建)
+  const prefix = installPrefix();
+  console.log(`[setup-code-server] npm 自装 code-server@${CODE_SERVER_VERSION}(target: ${prefix} → node_modules/code-server)${
+    prefix === pkgRoot ? '(包内回退)' : '(profile 专用目录)'}…`);
+  // npm 读取 prefix 项目自己的 package.json 的 allowScripts;在安装根写一个最小配置,
+  // 让 code-server:false(跳过官方 sh postinstall)、argon2/unrs:true(native 构建)生效。
+  const appPkg = join(prefix, 'package.json');
+  if (!existsSync(appPkg)) {
+    try {
+      mkdirSync(prefix, { recursive: true });
+      writeFileSync(appPkg, JSON.stringify({
+        name: 'dsh-code-server-app',
+        private: true,
+        version: '0.0.0',
+        allowScripts: { 'code-server': false, 'argon2@0.44.0': true, 'unrs-resolver@1.11.1': true },
+      }, null, 2), 'utf8');
+    } catch (e) {
+      console.warn('[setup-code-server] 安装根 package.json 写入失败(allowScripts 可能不生效):', e.message);
+    }
+  }
   npm([
     'install', `code-server@${CODE_SERVER_VERSION}`,
-    '--no-save', '--no-audit', '--no-fund', '--prefix', pkgRoot,
-  ], pkgRoot);
+    '--no-save', '--no-audit', '--no-fund', '--prefix', prefix,
+  ], prefix);
 }
 
 function main() {

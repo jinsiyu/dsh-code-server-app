@@ -48,13 +48,19 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
 ### 安装机制
 
 - **code-server 不在 `dependencies`**(pnpm 不触碰它、无脚本许可问题);
-- 插件的 `postinstall`(`scripts/setup-code-server.mjs`)在**插件包内**用 **npm** 自装
-  `code-server@4.134.0 --prefix <插件包>`:
-  - npm 读取包内 `allowScripts`:`code-server: false`(跳过官方 `sh ./postinstall.sh`,
-    Windows 无 sh 会失败)、`argon2/unrs-resolver: true`(native 构建);
+- 插件的 `postinstall`(`scripts/setup-code-server.mjs`)在 **profile 专用目录**用 **npm** 自装
+  `code-server@4.134.0`:
+  - 安装根:`<profile>\.code-server-app`(如 `C:\Users\User\.dsh\profiles\web\.code-server-app`),
+    独立项目,与 profile 依赖树隔离(避开 ERESOLVE);
+  - 安装根自带 `package.json`(allowScripts:`code-server: false` 跳过官方 `sh ./postinstall.sh`
+    ——Windows 无 sh 会失败、`argon2/unrs-resolver: true` native 构建);
   - 装完补装 VS Code 内部依赖(144 包)+ `bin\code-server.cmd`;
-- **全部落在插件包内**(`profile\node_modules\dsh-code-server\node_modules\code-server\`),
-  不写全局、不动 profile 顶层;幂等自愈(pnpm 重装插件 → postinstall 重跑 → 自动重装)。
+- **code-server 落在** `<profile>\.code-server-app\node_modules\code-server\`;
+  幂等自愈(pnpm 重装插件 → postinstall 重跑 → 检测已实例化则跳过)。
+
+> **卸载**:code-server 目录独立于插件包——先手动删除
+> `Remove-Item -Recurse -Force <profile>\.code-server-app`,再 `dsh plugin --profile web remove dsh-code-server`。
+> 设置卡片"环境检测"区也显示此提示。
 
 > 安装/依赖变化后请**重启 `dsh web`**(静态插件行与 host 探测路径在启动时加载)。
 
@@ -86,7 +92,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 ### 兼容旧的 runtime 目录安装
 
 `runtime/node_modules/code-server`(早期 README 的手动安装方式)已移除支持——
-host 探测顺序:`插件包内 node_modules`> `profile 顶层(hoisted)`> PATH/配置 `bin`。
+host 探测顺序:`<profile>\.code-server-app`(专用目录)> 插件包内 `node_modules`> `profile 顶层(hoisted)`> PATH/配置 `bin`。
 
 ## 设置卡片(设置 → 插件 → Code Server)
 
@@ -105,7 +111,7 @@ host 探测顺序:`插件包内 node_modules`> `profile 顶层(hoisted)`> PATH/�
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `bin` | `code-server`(占位) | 启动优先级:本配置显式 `bin` > 插件包内自装(`<插件包>/node_modules/code-server/out/node/entry.js`,自动以 node 运行)> profile 顶层(hoisted)> PATH 中的 `code-server`。都不存在时启动报错并给出安装指引 |
+| `bin` | `code-server`(占位) | 启动优先级:本配置显式 `bin` > `<profile>\.code-server-app`(专用目录,自动以 node 运行)> 插件包内 `node_modules`> profile 顶层(hoisted)> PATH 中的 `code-server`。都不存在时启动报错并给出安装指引 |
 | `host` | `127.0.0.1` | 绑定地址;`auth: none` 仅允许回环(localhost/127.0.0.1/::1) |
 | `port` | `8090` | 端口;被占用时启动失败并给出诊断(不自动换端口) |
 | `auth` | `none` | `none` \| `password`;非回环 host 自动要求 password |
