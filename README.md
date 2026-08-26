@@ -105,7 +105,8 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 ### 兼容旧的 runtime 目录安装
 
 `runtime/node_modules/code-server`(早期 README 的手动安装方式)已移除支持——
-host 探测顺序:`<profile>\.code-server-app`(专用目录)> 插件包内 `node_modules`> `profile 顶层(hoisted)`> PATH/配置 `bin`。
+host 探测顺序:`<profile>\.code-server-app`(专用目录)> 插件包内 `node_modules`> PATH/配置 `bin`
+(profile 顶层 hoisted 属历史布局,已不再探测)。
 
 ## 设置卡片(设置 → 插件 → Code Server)
 
@@ -124,7 +125,7 @@ host 探测顺序:`<profile>\.code-server-app`(专用目录)> 插件包内 `node
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `bin` | `code-server`(占位) | 启动优先级:本配置显式 `bin` > `<profile>\.code-server-app`(专用目录,自动以 node 运行)> 插件包内 `node_modules`> profile 顶层(hoisted)> PATH 中的 `code-server`。都不存在时启动报错并给出安装指引 |
+| `bin` | `code-server`(占位) | 启动优先级:本配置显式 `bin` > `<profile>\.code-server-app`(专用目录,自动以 node 运行)> 插件包内 `node_modules`> PATH 中的 `code-server`。都不存在时启动报错并给出安装指引 |
 | `host` | `127.0.0.1` | 绑定地址;`auth: none` 仅允许回环(localhost/127.0.0.1/::1) |
 | `port` | `8090` | 端口;被占用时启动失败并给出诊断(不自动换端口) |
 | `auth` | `none` | `none` \| `password`;非回环 host 自动要求 password |

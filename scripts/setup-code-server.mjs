@@ -52,13 +52,11 @@ function profileRootOf() {
 function findCodeServer() {
   // 布局候选(与安装目标同顺序):
   //   1. profile 专用目录:profileRoot\code-server-app\node_modules\code-server
-  //   2. 与主包平级:profileRoot\node_modules\code-server(pnpm hoisted,历史布局)
-  //   3. 包内:pkgRoot/node_modules/code-server(回退/独立目录)
+  //   2. 包内:pkgRoot/node_modules/code-server(开发期 link:/独立目录)
   const profileRoot = profileRootOf();
   const cands = [];
   if (profileRoot !== null) {
     cands.push(join(profileRoot, APP_DIR_NAME, 'node_modules', 'code-server'));
-    cands.push(join(profileRoot, 'node_modules', 'code-server'));
   }
   cands.push(join(pkgRoot, 'node_modules', 'code-server'));
   for (const cand of cands) {
