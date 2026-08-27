@@ -116,10 +116,11 @@ host 探测顺序:`<profile>\.code-server-app`(专用目录)> 插件包内 `node
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `reserveComposer` | `true` | 窗口是否**保留输入框上方空间**:开启时窗口初始/拖动/缩放/最大化都止于输入栏上方(不遮挡 composer);关闭后允许盖住输入框(最大化到视口底) |
+| `windowedOpen` | `false` | **窗口化打开**:开启后点击悬浮球在浏览器**新标签页**打开 code-server(自动启动并跟随当前工作区目录);关闭(默认)使用内部浮动窗口 |
 
-> 卡片改动经 `scope.watch` 实时生效(host 端 status API 同步返回 `reserveComposer`,
-> 客户端窗口立即重新 fit);无需重启 dsh。首次使用前需 **重启 dsh web** 让 host
-> 注册该设置命名空间(静态插件行加载)。
+> 卡片改动经 `scope.watch` 实时生效(host 端 status API 同步返回 `reserveComposer` 与
+> `windowedOpen`,客户端立即生效);无需重启 dsh。**新增设置键后首次使用前需重启 dsh web**,
+> 让 host 重新注册设置命名空间(schema 含新键),否则新键的保存与校验不生效。
 
 ## 配置(cordis.patch.yml 的 `config`,均有默认值)
 

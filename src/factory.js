@@ -92,6 +92,19 @@ let React = require('react')
       return undefined
     }
 
+    /** 构建 code-server 页面 URL(base + ?folder=<cwd>,Windows 路径须为 /C:/ 形式)。
+     *  cwd 为空时回退 status.cwd;两者皆无 → 裸根 URL。 */
+    function buildPageUrl(status, cwd) {
+      if (status == null || typeof status.url !== 'string' || status.url === '') return null
+      var dir = typeof cwd === 'string' && cwd !== '' ? cwd : (status != null && status.cwd != null ? status.cwd : null)
+      if (dir == null || dir === '') return status.url
+      var normalized = dir.replace(/\\/g, '/')
+      var folder = normalized
+      if (/^[A-Za-z]:\//.test(normalized)) folder = '/' + normalized
+      else if (normalized.charCodeAt(0) !== 47) folder = '/' + normalized
+      return status.url + '?folder=' + encodeURIComponent(folder)
+    }
+
     // ---------- 窗口几何(复刻 univer-office 的 fit/move/resize) ----------
     // 底部预留输入栏高度(可在设置卡片切换):true 时窗口初始/缩放/最大化
     // 都止于输入框上方,不遮挡 composer;false 时允许盖住输入框(最大化到视口底)。
@@ -379,6 +392,24 @@ let React = require('react')
       }
       var ballOnClick = function () {
         if (suppressClickRef.current === true) { suppressClickRef.current = false; return }
+        // 窗口化:新标签页打开(未运行时先启动,带当前工作区目录)
+        if (status != null && status.windowedOpen === true) {
+          var cwdBall = activeWorkspaceCwd(props && props.useSessions, props && props.useWorkspaces)
+          var openTab = function (st) {
+            var u = buildPageUrl(st, cwdBall)
+            if (u != null && typeof window.open === 'function') window.open(u, '_blank', 'noopener')
+          }
+          if (status.running === true) { openTab(status); return }
+          if (store.busy === true) return
+          setState({ busy: true })
+          api('/code-server/start', typeof cwdBall === 'string' ? { cwd: cwdBall } : {})
+            .then(function (s) {
+              setState({ status: s, busy: false })
+              openTab(s)
+            })
+            .catch(function () { setState({ busy: false }) })
+          return
+        }
         setState({ open: !isOpen })
       }
       // 位置:默认输入框上方靠右;拖动后固定于记忆位置(不遮挡 composer;打开时仍可见可点)
@@ -391,7 +422,9 @@ let React = require('react')
           className: 'dshcs-ball' + (isOpen ? ' dshcs-ball-open' : ''),
           style: style,
           'data-dragging': dragging === true ? '' : undefined,
-          title: isOpen ? '收起 Code Server(Esc)' : '打开 Code Server(可拖动)',
+          title: status != null && status.windowedOpen === true
+            ? '在浏览器新标签页打开 Code Server(可拖动)'
+            : (isOpen ? '收起 Code Server(Esc)' : '打开 Code Server(可拖动)'),
           'aria-label': isOpen ? '收起 Code Server(Esc)' : '打开 Code Server',
           'aria-expanded': isOpen,
           onPointerDown: ballOnPointerDown,
@@ -867,7 +900,7 @@ let React = require('react')
       try {
         var scope = props.scope
         var [snapshot, setSnapshot] = React.useState(function () { return scope !== undefined ? scope.getSnapshot() : null })
-        var [draft, setDraft] = React.useState(null) // null | boolean(未保存草稿)
+        var [draft, setDraft] = React.useState(null) // null | { reserveComposer, windowedOpen }(未保存草稿)
         var [saving, setSaving] = React.useState(false)
         var [failed, setFailed] = React.useState(false)
         React.useEffect(function () {
@@ -891,9 +924,13 @@ let React = require('react')
         }
       var value = snapshot.value !== undefined && snapshot.value !== null ? snapshot.value : {}
       var user = snapshot.user
-      var loaded = value.reserveComposer === true
+      var loaded = {
+        reserveComposer: value.reserveComposer !== false,
+        windowedOpen: value.windowedOpen === true,
+      }
       var overridden = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'reserveComposer')
-      var dirty = draft !== null && draft !== loaded
+      var overriddenWin = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'windowedOpen')
+      var dirty = draft !== null && (draft.reserveComposer !== loaded.reserveComposer || draft.windowedOpen !== loaded.windowedOpen)
       var saveDisabled = !dirty || saving
       var state = {
         available: true,
@@ -902,14 +939,24 @@ let React = require('react')
         invalid: false,
         saving: saving,
         failed: failed,
-        reserveComposer: { text: draft !== null ? draft : loaded, overridden: overridden },
+        reserveComposer: { text: draft !== null ? draft.reserveComposer : loaded.reserveComposer, overridden: overridden },
+      }
+      // 保存/恢复成功后,把 host 最新 status(含 windowedOpen/reserveComposer)推给
+      // 模块共享 store → 悬浮球与窗口立即按新设置生效(无需刷新页面)。
+      function syncStatusToStore() {
+        api('/code-server/status').then(function (s) {
+          if (s != null && typeof s === 'object') setState({ status: s })
+        }).catch(function () { /* 失败由下次轮询兜底 */ })
       }
       async function doSave() {
         if (dirty && !saving) {
           setSaving(true); setFailed(false)
           try {
-            await props.scope.set('reserveComposer', draft === true)
+            var d = draft !== null ? draft : loaded
+            await props.scope.set('reserveComposer', d.reserveComposer === true)
+            await props.scope.set('windowedOpen', d.windowedOpen === true)
             setDraft(null)
+            syncStatusToStore()
           } catch (e) {
             setFailed(true)
           }
@@ -921,9 +968,15 @@ let React = require('react')
         setSaving(true); setFailed(false)
         try {
           // unset 清除 user 覆盖层 → 回到 base 默认值;成功后镜像同步
-          if (typeof props.scope.unset === 'function') await props.scope.unset('reserveComposer')
-          else await props.scope.set('reserveComposer', value.reserveComposer === undefined || value.reserveComposer === null ? true : value.reserveComposer)
+          if (typeof props.scope.unset === 'function') {
+            await props.scope.unset('reserveComposer')
+            await props.scope.unset('windowedOpen')
+          } else {
+            await props.scope.set('reserveComposer', value.reserveComposer === undefined || value.reserveComposer === null ? true : value.reserveComposer)
+            await props.scope.set('windowedOpen', value.windowedOpen === true)
+          }
           setDraft(null)
+          syncStatusToStore()
         } catch (e) {
           setFailed(true)
         }
@@ -1000,7 +1053,7 @@ let React = require('react')
       )
       return React.createElement(csCard, {
         title: 'Code Server',
-        description: '窗口行为:是否保留输入框上方空间(不遮挡 composer)',
+        description: '窗口行为:保留输入框上方空间 / 窗口化(新标签页)打开',
         state: state,
         unsavedLabel: '未保存', readOnlyLabel: '本部署的设置为只读。',
         saveFailedLabel: '本部署没有接受这些值，已保留供你修改。',
@@ -1019,10 +1072,27 @@ let React = require('react')
               : null
           ),
           React.createElement(csCheck, {
-            checked: draft !== null ? draft : loaded,
+            checked: draft !== null ? draft.reserveComposer : loaded.reserveComposer,
             disabled: snapshot.writable !== true,
-            onChange: function (v) { setDraft(v === true); setFailed(false) },
+            onChange: function (v) { setDraft(function (prev) { return Object.assign({}, prev !== null ? prev : loaded, { reserveComposer: v === true }) }); setFailed(false) },
           }, '开启时窗口初始/缩放/最大化止于输入框上方;关闭后允许盖住输入框(最大化到视口底)')
+        ),
+        React.createElement('div', { className: 'dshcs-field' },
+          React.createElement('div', { className: 'dshcs-fieldHead' },
+            React.createElement('span', { className: 'dshcs-fieldLabel' }, '窗口化打开(新标签页)'),
+            overriddenWin === true
+              ? React.createElement(csBadges, {
+                  overridden: true, disabled: snapshot.writable !== true,
+                  overriddenLabel: '已覆盖', resetLabel: '恢复默认',
+                  onReset: function () { doReset() },
+                })
+              : null
+          ),
+          React.createElement(csCheck, {
+            checked: draft !== null ? draft.windowedOpen : loaded.windowedOpen,
+            disabled: snapshot.writable !== true,
+            onChange: function (v) { setDraft(function (prev) { return Object.assign({}, prev !== null ? prev : loaded, { windowedOpen: v === true }) }); setFailed(false) },
+          }, '开启后点击悬浮球在浏览器新标签页打开 code-server(自动启动并跟随当前工作区);关闭则使用内部浮动窗口')
         ),
         envSection
       )
