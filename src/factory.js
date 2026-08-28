@@ -28,9 +28,9 @@ let React = require('react')
     // 缺失时在此显式失败(而非静默降级导致窗口被输入框遮挡)。
     let ReactDOM = require('react-dom')
 
-    // ---------- 模块级共享 store(两个 occupant 之间同步 open/status) ----------
+    // ---------- 模块级共享 store:同步 open/status + 悬浮球位置(动画锚点) --------haihui
     var listeners = new Set()
-    var state = { open: false, status: null, busy: false }
+    var state = { open: false, status: null, busy: false, ballPos: null }
     function setState(patch) {
       state = Object.assign({}, state, patch)
       listeners.forEach(function (fn) { fn() })
@@ -251,6 +251,10 @@ let React = require('react')
       '.dshcs-drag:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary,#172033) 5%,transparent)}' +
       '.dshcs-body{position:relative;display:flex;flex:1;min-width:0;min-height:0;flex-direction:column;background:var(--dsw-alias-bg-base,#fff)}.dshcs-body[hidden]{display:none}' +
       '.dshcs-frame{display:block;position:absolute;inset:0;z-index:1;width:100%;height:100%;border:0;background:var(--dsw-alias-bg-base,#fff)}' +
+      '.dshcs-loading{position:absolute;inset:0;z-index:2;display:grid;place-items:center;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-tertiary,#7d8798);font-size:13px}' +
+      // 最小化:收起=隐藏(不卸载)。保留 DOM/iframe,VS Code 状态不丢;重新展开瞬时恢复。
+      // opacity/位置由 motion 驱动(球锚动画),此处仅 pointer-events 关闭。
+      '.dshcs-win-hidden{pointer-events:none!important}' +
       '.dshcs-empty{position:relative;z-index:2;flex:1;display:flex;align-items:center;justify-content:center;padding:44px 24px 24px}' +
       '.dshcs-emptybox{max-width:560px;text-align:left;background:var(--dsw-alias-bg-layer-2,#f7f8fb);border:1px solid var(--dsw-alias-border-l2,#dfe3eb);border-radius:12px;padding:16px 18px}' +
       '.dshcs-error{color:var(--dsw-alias-label-error,#d92d20);white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Consolas,monospace;font-size:12px;margin:8px 0 0}' +
@@ -354,6 +358,14 @@ let React = require('react')
         window.addEventListener('resize', onResize)
         return function () { window.removeEventListener('resize', onResize) }
       }, [])
+      // 悬浮球位置同步到共享 store(Window 动画锚点);默认位(未拖动)也计算基准
+      React.useEffect(function () {
+        var base = pos != null ? pos : (function () {
+          var reserve = reserveOf(status != null ? status.reserveComposer : true)
+          return { x: window.innerWidth - BALL_MARGIN - BALL_SIZE, y: window.innerHeight - BALL_MARGIN - BALL_SIZE - (reserve > 0 ? reserve + 10 : 18) }
+        })()
+        setState({ ballPos: clampBall(base) })
+      }, [pos, status])
       // 仅当环境明确检测不通过时隐藏(必须放在所有 Hook 之后,避免 React Hook 顺序违规)
       if (env != null && env.ok !== true) return null
       var ballOnPointerDown = function (event) {
@@ -616,9 +628,9 @@ let React = require('react')
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [store.open])
 
-      // 跟随活动工作区:快照变化(切换会话/工作区)自动重启到新目录,成功后刷新 iframe
+      // 跟随活动工作区(常驻,不等点球):工作区/会话变化即同步 cwd 到 code-server
+      // (未运行时启动、运行中切目录重启),成功后刷新 iframe——后台持续对齐。
       React.useEffect(function () {
-        if (!store.open) return
         if (typeof cwd !== 'string' || cwd === '') return
         if (lastSyncedCwdRef.current === cwd) return
         var changed = lastSyncedCwdRef.current !== undefined && lastSyncedCwdRef.current !== cwd
@@ -635,21 +647,20 @@ let React = require('react')
         }
         sync()
         return function () { cancelled = true }
-      }, [store.open, cwd])
+      }, [cwd])
 
       // 窗口关闭时重置跟随基线,下次打开重新对齐
       React.useEffect(function () {
         if (!store.open) lastSyncedCwdRef.current = undefined
       }, [store.open])
 
-      // 打开期间每 3s 轮询状态
+      // 每 3s 轮询状态(常驻:最小化期间也保持状态新鲜,展开即时准确)
       React.useEffect(function () {
-        if (!store.open) return
         var timer = window.setInterval(function () {
           api('/code-server/status').then(function (s) { setState({ status: s }) })
         }, 3000)
         return function () { window.clearInterval(timer) }
-      }, [store.open])
+      }, [])
 
       // Esc 关闭
       React.useEffect(function () {
@@ -661,8 +672,7 @@ let React = require('react')
         return function () { window.removeEventListener('keydown', onKey) }
       }, [store.open])
 
-      if (!store.open) return null
-
+      // 常挂载:收起(open=false)仅隐藏,不卸载窗口/iframe——VS Code 状态保留,重新展开瞬时恢复
       var baseUrl = status != null && typeof status.url === 'string' ? status.url : null
       // code-server 前端记住"最近工作区"并自行恢复;必须用 ?folder= 显式指定
       // 打开目录,否则 iframe 裸根 URL 会显示上一次的工具区(不跟随切换)。
@@ -685,6 +695,7 @@ let React = require('react')
 
       var body
       if (running && pageUrl !== null) {
+        // 已就绪:直接挂 iframe(预启动后通常打开即此处)
         body = React.createElement('iframe', {
           key: reloadTick,
           className: 'dshcs-frame',
@@ -692,13 +703,26 @@ let React = require('react')
           title: 'code-server',
           sandbox: 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock',
         })
+      } else if (starting || (status != null && status.status === 'starting')) {
+        // 启动中:立即渲染窗口 iframe(about:blank)+ 加载提示;
+        // running 后由轮询自动替换 src——不阻塞打开
+        body = React.createElement(React.Fragment, null,
+          React.createElement('iframe', {
+            key: reloadTick,
+            className: 'dshcs-frame',
+            src: 'about:blank',
+            title: 'code-server',
+            sandbox: 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock',
+          }),
+          React.createElement('div', { className: 'dshcs-loading' }, '正在启动 code-server…')
+        )
       } else {
         var errText = errored && status != null && status.error
           ? status.error
-          : (starting ? '正在启动 code-server…' : 'code-server 未运行')
+          : 'code-server 未运行'
         body = React.createElement('div', { className: 'dshcs-empty' },
           React.createElement('div', { className: 'dshcs-emptybox' },
-            React.createElement('div', null, starting ? '正在启动 code-server…' : errored ? 'code-server 启动失败' : 'code-server 未运行'),
+            React.createElement('div', null, errored ? 'code-server 启动失败' : 'code-server 未运行'),
             React.createElement('pre', { className: 'dshcs-error' }, errText),
             React.createElement('p', { className: 'dshcs-hint' },
               '安装命令(Windows 原生):npm install -g code-server@latest(需配套最新版 node-gyp 与 VS Spectre 缓解库);' +
@@ -707,24 +731,48 @@ let React = require('react')
           ))
       }
 
-      var className = ['dshcs-win', maximized ? 'dshcs-win-max' : '', snapMax ? 'dshcs-win-snap' : ''].filter(Boolean).join(' ')
+      var className = ['dshcs-win', maximized ? 'dshcs-win-max' : '', snapMax ? 'dshcs-win-snap' : '', store.open === false ? 'dshcs-win-hidden' : ''].filter(Boolean).join(' ')
       // 最大化由 rect 驱动(maximizedRect 占满"输入栏上方"区域),不用 CSS inset;
       // 还原时回到拖动前的位置。
       var shownRect = maximized ? maximizedRect(viewportSize(), reserve) : rect
       // motion 驱动几何:拖动/缩放中即时跟随(duration 0),松手后的吸附/最大化/恢复用弹簧。
-      var winPhysics = {
-        x: shownRect.x,
-        y: shownRect.y,
-        width: shownRect.width,
-        height: shownRect.height,
-      }
+      // 展开/收回以悬浮球为锚点:收起 → 整体缩放(transform scale,内部不重新布局)
+      // 到球的尺寸并落到球位;展开 → 从球位弹簧回窗口 rect。
+      // 尺寸恒为 rect(不动画)——避免内容重排;视觉缩放只走 scale。
+      var ball = store.ballPos != null ? store.ballPos : { x: window.innerWidth - BALL_MARGIN - BALL_SIZE, y: window.innerHeight - BALL_MARGIN - BALL_SIZE - (reserve > 0 ? reserve + 10 : 18) }
+      var ballCenter = { x: ball.x + BALL_SIZE / 2, y: ball.y + BALL_SIZE / 2 }
+      // scale 以元素中心为原点;收起时视觉最大边≈球径
+      var shrinkScale = Math.max(0.05, BALL_SIZE / Math.max(shownRect.width, shownRect.height))
+      var winPhysics = store.open === false
+        ? {
+            x: ballCenter.x - shownRect.width / 2,
+            y: ballCenter.y - shownRect.height / 2,
+            width: shownRect.width,
+            height: shownRect.height,
+            scale: shrinkScale,
+            borderRadius: 19,
+            opacity: 0.35,
+          }
+        : {
+            x: shownRect.x,
+            y: shownRect.y,
+            width: shownRect.width,
+            height: shownRect.height,
+            scale: 1,
+            borderRadius: 12,
+            opacity: 1,
+          }
       var winTransition = interaction !== null
         ? { duration: 0 }
-        : { type: 'spring', stiffness: 430, damping: 42, mass: 0.9 }
+        : { type: 'spring', stiffness: 340, damping: 38, mass: 0.9, opacity: { type: 'spring', stiffness: 420, damping: 40, mass: 0.8 }, borderRadius: { duration: 0.2 } }
 
       var windowTree = React.createElement(motion.section, {
           className: className,
-          style: { left: 0, top: 0 },
+          // 收起态由样式直接兜底(不依赖 motion 结束态)——pointer-events 关闭防误点;
+          // 视觉由 motion 驱动(scale 小球 + 半透明),不用 style opacity(避免与 motion 动画冲突)。
+          style: store.open === false
+            ? { left: 0, top: 0, pointerEvents: 'none' }
+            : { left: 0, top: 0 },
           animate: winPhysics,
           initial: false,
           transition: winTransition,
