@@ -30,6 +30,8 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "assets/favicon.ico",
+    "assets/favicon.svg",
     "scripts/setup-code-server.mjs",
     "cordis.patch.yml",
     "README.md"

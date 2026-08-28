@@ -295,7 +295,7 @@ let React = require('react')
         }
       }, [props.url])
       if (props.url != null && broken !== true) {
-        // 官方图标:运行中的 code-server 提供的 favicon SVG(支持深色模式)
+        // 固化官方图标(host /code-server/icon.svg,assets 随插件分发)
         // draggable:false 禁止原生图片拖拽,避免抓住图标时触发浏览器默认拖动(与指针拖拽打架)
         return React.createElement('img', {
           src: props.url, key: 'img-' + props.url, alt: '', 'aria-hidden': true,
@@ -339,9 +339,9 @@ let React = require('react')
       var statusKind = running ? 'running' : status != null && status.status === 'starting' ? 'starting' : status != null && status.status === 'error' ? 'error' : 'idle'
       var reserve = reserveOf(status != null ? status.reserveComposer : true)
       var isOpen = store.open === true
-      var iconUrl = running && status != null && typeof status.url === 'string'
-        ? status.url + '_static/src/browser/media/favicon-dark-support.svg'
-        : null
+      // 悬浮球图标固化:始终使用 host 提供的 code-server 官方图标(assets 随插件分发),
+      // 不依赖 code-server 运行时——启动即显示,未运行/加载失败才回退自绘网格。
+      var iconUrl = '/code-server/icon.svg'
       // 拖动定位:pos=null 时用默认位(输入框上方、右侧);拖动后记忆到 localStorage
       var [pos, setPos] = React.useState(loadBallPos)
       var [dragging, setDragging] = React.useState(false)
