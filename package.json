@@ -1,6 +1,6 @@
 {
   "name": "dsh-code-server-app",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "description": "Integrate code-server (VS Code in the browser) into DSH Web: floating ball entry + fullscreen overlay, host-side process lifecycle over a /code-server JSON API (motion-based spring window animations).",
   "homepage": "https://github.com/jinsiyu/dsh-code-server-app",
   "repository": {
@@ -51,7 +51,7 @@
   "license": "MIT",
   "allowScripts": {
     "code-server": false,
-    "argon2@0.44.0": true,
-    "unrs-resolver@1.11.1": true
+    "argon2": true,
+    "unrs-resolver": true
   }
 }

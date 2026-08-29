@@ -66,14 +66,15 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
 
 - **code-server 不在 `dependencies`**(pnpm 不触碰它、无脚本许可问题);
 - 插件的 `postinstall`(`scripts/setup-code-server.mjs`)在 **profile 专用目录**用 **npm** 自装
-  `code-server@4.134.0`:
+  **最新版** `code-server`(不锁版本,安装时取 npm latest):
   - 安装根:`<profile>\.code-server-app`(如 `C:\Users\User\.dsh\profiles\web\.code-server-app`),
     独立项目,与 profile 依赖树隔离(避开 ERESOLVE);
   - 安装根自带 `package.json`(allowScripts:`code-server: false` 跳过官方 `sh ./postinstall.sh`
-    ——Windows 无 sh 会失败、`argon2/unrs-resolver: true` native 构建);
+    ——Windows 无 sh 会失败、`argon2/unrs-resolver: true` native 构建,均不带版本号);
   - 装完补装 VS Code 内部依赖(144 包)+ `bin\code-server.cmd`;
 - **code-server 落在** `<profile>\.code-server-app\node_modules\code-server\`;
-  幂等自愈(pnpm 重装插件 → postinstall 重跑 → 检测已实例化则跳过)。
+  幂等自愈(pnpm 重装插件 → postinstall 重跑 → 检测已实例化则跳过;**若已装版本与最新不一致则自动升级到最新**)。
+- **锁版本**:设置环境变量 `DSHCS_CODE_SERVER_VERSION`(如在 dsh web 环境)可钉住某个版本(如 `4.134.0`);缺省跟随 npm latest。
 
 > **卸载**:code-server 目录独立于插件包——先手动删除
 > `Remove-Item -Recurse -Force <profile>\.code-server-app`,再 `dsh plugin --profile web remove dsh-code-server-app`。
@@ -105,10 +106,9 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 
 ### 升级 code-server 版本
 
-1. 改 `scripts/setup-code-server.mjs` 的 `CODE_SERVER_VERSION`;
-2. 同步 `package.json` 的 `allowScripts` 表(若 native 依赖版本变更导致条目失配,
-   按 `npm install-scripts ls` 的结果更新;code-server 保持 `false`);
-3. 重新 `pnpm pack` + `dsh plugin --profile web add <tgz>`(包内旧版本由 postinstall 覆盖)。
+- **默认自动**:postinstall 不锁版本——已装版本与 npm latest 不一致时自动重装到最新(无需手动改)。
+- **想钉住版本**:设环境变量 `DSHCS_CODE_SERVER_VERSION`(如 `4.134.0`);去掉它回到跟随 latest。
+- 重新 `pnpm pack` + `dsh plugin --profile web add <tgz>` 即触发 postinstall 检查(或直接删 `.code-server-app` 重装)。
 
 ### 兼容旧的 runtime 目录安装
 

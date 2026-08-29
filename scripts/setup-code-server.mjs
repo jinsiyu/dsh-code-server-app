@@ -11,14 +11,15 @@
 // 幂等:code-server 已实例化(entry + VS Code 内部依赖 + argon2 native 均在)则跳过;
 // pnpm 重装插件后会重跑 postinstall → 自动重新自装(自愈)。
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync, copyFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url)); // .../dsh-code-server/scripts
 const pkgRoot = join(here, '..'); // <profile>\node_modules\dsh-code-server
 
-const CODE_SERVER_VERSION = '4.134.0';
+// 不锁定 code-server 版本:安装时总是取 npm 最新版(latest)。
+// 可用环境变量 DSHCS_CODE_SERVER_VERSION 显式锁版本(如 "4.134.0"),缺省为空 = latest。
 
 function run(cmd, args, cwd) {
   const useShell = process.platform === 'win32';
@@ -28,6 +29,43 @@ function run(cmd, args, cwd) {
 
 function npm(cmdArgs, cwd) {
   run(process.platform === 'win32' ? 'npm.cmd' : 'npm', cmdArgs, cwd);
+}
+
+/** 查询 npm 最新 code-server 版本;失败(离线/网络/权限)返回 null。
+ *  优先直连 registry JSON API(子进程 Node ESM,无 npm 缓存写);失败再试 npm view。 */
+function latestCodeServerVersion() {
+  try {
+    const code = "const r=await fetch('https://registry.npmjs.org/code-server/latest');const j=await r.json();process.stdout.write(j&&j.version||'')";
+    const res = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8' });
+    const v = String(res.stdout || '').trim();
+    if (v !== '' && /^\d+\./.test(v)) return v;
+  } catch { /* fall through */ }
+  try {
+    const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const res = spawnSync(npmBin, ['view', 'code-server', 'version'], { encoding: 'utf8', shell: process.platform === 'win32' });
+    if (res.status === 0) {
+      const v = String(res.stdout || '').trim();
+      if (v !== '' && /^\d+\./.test(v)) return v;
+    }
+  } catch { /* fall through */ }
+  return null;
+}
+
+/** 待安装的版本:DSHCS_CODE_SERVER_VERSION 优先(显式锁定),否则 latest 查询,再否则 latest 安装。 */
+function desiredVersion() {
+  const locked = process.env.DSHCS_CODE_SERVER_VERSION;
+  if (typeof locked === 'string' && locked.trim() !== '') return locked.trim();
+  return latestCodeServerVersion(); // null → npm install code-server(不带版本)=latest
+}
+
+/** 已安装版本(读 cs/package.json);读取失败返回 null。 */
+function installedVersion(cs) {
+  try {
+    const pkg = JSON.parse(readFileSync(join(cs, 'package.json'), 'utf8'));
+    return typeof pkg.version === 'string' ? pkg.version : null;
+  } catch {
+    return null;
+  }
 }
 
 function ensureNpmDeps(dir) {
@@ -83,10 +121,14 @@ function installPrefix() {
 
 function installCodeServer() {
   const prefix = installPrefix();
-  console.log(`[setup-code-server] npm 自装 code-server@${CODE_SERVER_VERSION}(target: ${prefix} → node_modules/code-server)${
+  const want = desiredVersion();
+  const versionSpec = typeof want === 'string' && want !== '' ? `code-server@${want}` : 'code-server';
+  console.log(`[setup-code-server] npm 自装 ${versionSpec}(latest)${
+    want != null ? '' : ''}(target: ${prefix} → node_modules/code-server)${
     prefix === pkgRoot ? '(包内回退)' : '(profile 专用目录)'}…`);
   // npm 读取 prefix 项目自己的 package.json 的 allowScripts;在安装根写一个最小配置,
   // 让 code-server:false(跳过官方 sh postinstall)、argon2/unrs:true(native 构建)生效。
+  // allowScripts 不带版本号(任何 argon2/unrs 版本都构建 native,避免版本变化后失配)。
   const appPkg = join(prefix, 'package.json');
   if (!existsSync(appPkg)) {
     try {
@@ -95,22 +137,30 @@ function installCodeServer() {
         name: 'dsh-code-server-app',
         private: true,
         version: '0.0.0',
-        allowScripts: { 'code-server': false, 'argon2@0.44.0': true, 'unrs-resolver@1.11.1': true },
+        allowScripts: { 'code-server': false, 'argon2': true, 'unrs-resolver': true },
       }, null, 2), 'utf8');
     } catch (e) {
       console.warn('[setup-code-server] 安装根 package.json 写入失败(allowScripts 可能不生效):', e.message);
     }
   }
   npm([
-    'install', `code-server@${CODE_SERVER_VERSION}`,
+    'install', versionSpec,
     '--no-save', '--no-audit', '--no-fund', '--prefix', prefix,
   ], prefix);
 }
 
 function main() {
   let cs = findCodeServer();
-  if (cs !== null && isComplete(cs)) {
-    console.log('[setup-code-server] code-server 已实例化(entry + 内部依赖 + native 均在),跳过');
+  const want = desiredVersion();
+  const have = cs !== null ? installedVersion(cs) : null;
+  // 升级判定独立于 isComplete:已有实例且(有 latest 且版本不同)→ 重装到最新。
+  if (want != null && have !== null && have !== want) {
+    console.log(`[setup-code-server] 当前 code-server@${have},最新 ${want}——自动升级…`);
+    installCodeServer();
+    cs = findCodeServer();
+  } else if (cs !== null && isComplete(cs)) {
+    console.log(`[setup-code-server] code-server 已实例化(entry + 内部依赖 + native 均在),跳过${
+      have !== null ? `(版本 ${have})` : ''}` + (want != null ? `;latest: ${want}` : ''));
     return;
   }
   if (cs === null || !existsSync(join(cs, 'out', 'node', 'entry.js'))) {

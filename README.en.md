@@ -60,14 +60,17 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
 ### Install mechanism
 
 - **code-server is not in `dependencies`** (pnpm never touches it; no script-approval issues);
-- The plugin's `postinstall` (`scripts/setup-code-server.mjs`) installs `code-server@4.134.0` **with npm into a dedicated profile directory**:
+- The plugin's `postinstall` (`scripts/setup-code-server.mjs`) installs **the latest** `code-server` **with npm into a dedicated profile directory**
+  (version not pinned; npm `latest` is used at install time):
   - Install root: `<profile>\.code-server-app` (e.g. `C:\Users\User\.dsh\profiles\web\.code-server-app`),
     a standalone project isolated from the profile dependency tree (avoids ERESOLVE);
   - The install root carries its own `package.json` with `allowScripts`: `code-server: false` (skips the official `sh ./postinstall.sh`
-    — Windows has no `sh`, it would fail; `argon2/unrs-resolver: true` builds native modules);
+    — Windows has no `sh`, it would fail; `argon2/unrs-resolver: true` builds native modules; both without version pins);
   - Afterwards it installs VS Code internal dependencies (144 packages) + `bin\code-server.cmd`;
 - **code-server lands at** `<profile>\.code-server-app\node_modules\code-server\`;
-  idempotent and self-healing (reinstalling the plugin → postinstall reruns → skips if already instantiated).
+  idempotent and self-healing (reinstalling the plugin → postinstall reruns → skips if already instantiated;
+  **if the installed version differs from the latest, it auto-upgrades**).
+- **Pin a version**: set the env var `DSHCS_CODE_SERVER_VERSION` (e.g. `4.134.0`) to freeze a specific release; unset it to follow latest.
 
 > **Uninstall**: the code-server directory is independent of the plugin package — first
 > `Remove-Item -Recurse -Force <profile>\.code-server-app`, then `dsh plugin --profile web remove dsh-code-server-app`.
@@ -99,10 +102,9 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 
 ### Upgrading the code-server version
 
-1. Change `CODE_SERVER_VERSION` in `scripts/setup-code-server.mjs`;
-2. Sync `package.json`'s `allowScripts` (if native dependency versions change and entries mismatch,
-   update per `npm install-scripts ls`; keep `code-server: false`);
-3. Re-run `pnpm pack` + `dsh plugin --profile web add <tgz>` (the old in-place version is overwritten by postinstall).
+- **Automatic by default**: postinstall does not pin the version — if the installed version differs from npm latest it reinstalls to latest (no manual edits).
+- **To pin**: set the env var `DSHCS_CODE_SERVER_VERSION` (e.g. `4.134.0`); unset it to follow latest again.
+- Re-run `pnpm pack` + `dsh plugin --profile web add <tgz>` to trigger the postinstall check (or delete `.code-server-app` and reinstall).
 
 ### Compatibility with the old runtime-directory install
 
