@@ -36,7 +36,8 @@
     "scripts/setup-code-server.mjs",
     "cordis.patch.yml",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "README.en.md"
   ],
   "scripts": {
     "postinstall": "node scripts/setup-code-server.mjs",
