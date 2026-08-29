@@ -95,25 +95,27 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 
 During installation (`postinstall` → `scripts/setup-code-server.mjs` → npm self-installs code-server + VS Code internal deps), **only one package really needs local compilation**:
 
-| Package | Build method | Local compile needed |
-|---|---|---|
-| **code-server** (main) | official `sh ./postinstall.sh` is skipped via `allowScripts: code-server: false` (no `sh` on Windows) | ❌ no |
-| **argon2** | `node-gyp-build` (binding.gyp + node-addon-api) | ✅ **yes — mandatory**: prebuilds only ship `win32-x64`, **no `win32-arm64`** |
-| **unrs-resolver** | `napi-postinstall check`; loads the prebuilt `@unrs/resolver-binding-win32-arm64-msvc` | ❌ pure prebuilt, no toolchain |
-| **VS Code internal deps** (`lib/vscode/node_modules`, 144 pkgs) | `ensureNpmDeps` runs `npm install` per dir; own postinstalls (node-pty/koffi/kerberos…) | ⚠️ **mostly prebuilt**; a few only build when a prebuilt is missing (official fork ships them) |
+| Package | Build method | ARM64 local compile | x64 local compile |
+|---|---|---|---|
+| **code-server** (main) | official `sh ./postinstall.sh` is skipped via `allowScripts: code-server: false` (no `sh` on Windows) | ❌ | ❌ |
+| **argon2** | `node-gyp-build` (binding.gyp + node-addon-api) | ✅ **mandatory** — prebuilds ship `win32-x64` only, **no `win32-arm64`** | ❌ **has `win32-x64` prebuild** |
+| **unrs-resolver** | `napi-postinstall check`; loads the prebuilt `@unrs/resolver-binding-win32-{x64,arm64}-msvc` | ❌ pure prebuilt | ❌ pure prebuilt |
+| **VS Code internal deps** (`lib/vscode/node_modules`, 144 pkgs) | `ensureNpmDeps` runs `npm install` per dir; own postinstalls (node-pty/koffi/kerberos…) | ⚠️ mostly prebuilt | ⚠️ mostly prebuilt |
 
 **Base environment checklist (verified locally, Windows ARM64)**:
 
-| Env | Version / requirement | Used for |
-|---|---|---|
-| Node.js | **v24.x** (latest code-server requirement; v24.13.1 here) | npm / entry.js |
-| npm | ships with Node | in-place install |
-| **MSVC build tools** | **VS Community 2026 (18.9) + C++ desktop workload** | argon2 local compile |
-| **VS Spectre-mitigated libs** | "MSVC v18x Spectre-mitigated libraries for ARM64" | compile (otherwise MSB8040) |
-| Python | **3.13.x** (e.g. `Python313-arm64\python.exe`) | node-gyp build scripts |
-| node-gyp | **13.x** (9.x doesn't recognize VS 2026) | argon2 compile |
+| Env | Version / requirement | ARM64 | x64 |
+|---|---|---|---|
+| Node.js | **v24.x** (latest code-server requirement; v24.13.1 here) | required | required |
+| npm | ships with Node | required | required |
+| **MSVC build tools** | **VS Community 2026 (18.9) + C++ desktop workload** | ✅ **required** (argon2 compile) | ⚪ optional (only if not using prebuilds / forced build) |
+| **VS Spectre-mitigated libs** | "MSVC v18x Spectre-mitigated libraries for ARM64" | ✅ required (otherwise MSB8040) | ⚪ optional |
+| Python | **3.13.x** (e.g. `Python313-arm64\python.exe`) | ✅ required (node-gyp scripts) | ⚪ optional |
+| node-gyp | **13.x** (9.x doesn't recognize VS 2026) | ✅ required | ⚪ optional |
 
-> Bottom line: **one C++ toolchain (MSVC + Spectre + Python + node-gyp 13) compiles all native deps**; unrs-resolver and VS Code internal deps use prebuilds — no extra tools needed.
+> **Bottom line**:
+> - **ARM64**: one full C++ toolchain (MSVC + Spectre + Python + node-gyp 13) compiles argon2; unrs-resolver and VS Code internal deps use prebuilds;
+> - **x64**: argon2 ships a `win32-x64` prebuild → **zero compilation by default, no toolchain needed** (C++ toolchain only needed for forced local builds or when prebuild downloading fails).
 
 ### Windows native build notes (verified locally, ARM64)
 
