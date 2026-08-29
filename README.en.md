@@ -91,6 +91,30 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 > to regenerate `lib/client.js` (that artifact is not tracked; a browser refresh picks it up — no host restart needed).
 > Window animations are driven by the embedded `motion`; feel parameters live in `winPhysics` (one spot) in `src/factory.js`.
 
+### Environment requirements (packages that need building + toolchain)
+
+During installation (`postinstall` → `scripts/setup-code-server.mjs` → npm self-installs code-server + VS Code internal deps), **only one package really needs local compilation**:
+
+| Package | Build method | Local compile needed |
+|---|---|---|
+| **code-server** (main) | official `sh ./postinstall.sh` is skipped via `allowScripts: code-server: false` (no `sh` on Windows) | ❌ no |
+| **argon2** | `node-gyp-build` (binding.gyp + node-addon-api) | ✅ **yes — mandatory**: prebuilds only ship `win32-x64`, **no `win32-arm64`** |
+| **unrs-resolver** | `napi-postinstall check`; loads the prebuilt `@unrs/resolver-binding-win32-arm64-msvc` | ❌ pure prebuilt, no toolchain |
+| **VS Code internal deps** (`lib/vscode/node_modules`, 144 pkgs) | `ensureNpmDeps` runs `npm install` per dir; own postinstalls (node-pty/koffi/kerberos…) | ⚠️ **mostly prebuilt**; a few only build when a prebuilt is missing (official fork ships them) |
+
+**Base environment checklist (verified locally, Windows ARM64)**:
+
+| Env | Version / requirement | Used for |
+|---|---|---|
+| Node.js | **v24.x** (latest code-server requirement; v24.13.1 here) | npm / entry.js |
+| npm | ships with Node | in-place install |
+| **MSVC build tools** | **VS Community 2026 (18.9) + C++ desktop workload** | argon2 local compile |
+| **VS Spectre-mitigated libs** | "MSVC v18x Spectre-mitigated libraries for ARM64" | compile (otherwise MSB8040) |
+| Python | **3.13.x** (e.g. `Python313-arm64\python.exe`) | node-gyp build scripts |
+| node-gyp | **13.x** (9.x doesn't recognize VS 2026) | argon2 compile |
+
+> Bottom line: **one C++ toolchain (MSVC + Spectre + Python + node-gyp 13) compiles all native deps**; unrs-resolver and VS Code internal deps use prebuilds — no extra tools needed.
+
 ### Windows native build notes (verified locally, ARM64)
 
 - **VS needs the Spectre-mitigated libraries** (MSB8040): Visual Studio Installer → Individual components →

@@ -95,6 +95,30 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 > 重新生成 `lib/client.js`(仓库不跟踪该产物;浏览器刷新即生效,host 无需重启)。
 > 窗口动画由内嵌 `motion` 驱动,手感参数在 `src/factory.js` 的 `winPhysics`(一处)。
 
+### 安装环境要求(需要编译的包与工具链)
+
+安装过程(`postinstall` → `scripts/setup-code-server.mjs` → npm 自装 code-server + VS Code 内部依赖)中,**真正需要本地编译的只有一个包**:
+
+| 包 | 构建方式 | 是否需要本地编译 |
+|---|---|---|
+| **code-server**(主包) | 官方 `sh ./postinstall.sh` 已被 `allowScripts: code-server: false` 跳过(Windows 无 sh) | ❌ 不编译 |
+| **argon2** | `node-gyp-build`(binding.gyp + node-addon-api) | ✅ **必须本地编译**——prebuilds 只有 win32-x64、**无 win32-arm64** |
+| **unrs-resolver** | `napi-postinstall check`,加载 `@unrs/resolver-binding-win32-arm64-msvc` 预编译绑定 | ❌ 纯预编译,无需工具链 |
+| **VS Code 内部依赖**(`lib/vscode/node_modules`,144 包) | `ensureNpmDeps` 逐一 `npm install`,自带 postinstall(node-pty/koffi/kerberos 等) | ⚠️ **多数带预编译**;个别需编译时缺预编译才触发(官方 fork 已带) |
+
+**基础环境清单(Windows ARM64 实测)**:
+
+| 环境 | 版本/要求 | 用在哪 |
+|---|---|---|
+| Node.js | **v24.x**(code-server 最新要求;本机 v24.13.1) | npm/entry.js |
+| npm | 跟随 Node | 包内自装 |
+| **MSVC 构建工具** | **VS Community 2026(18.9)+ C++ 桌面负载** | argon2 本地编译 |
+| **VS Spectre 缓解库** | "适用于 ARM64 的 MSVC v18x Spectre-mitigated 库" | 编译(否则 MSB8040 报错) |
+| Python | **3.13.x**(如 `Python313-arm64\python.exe`) | node-gyp 构建脚本 |
+| node-gyp | **13.x**(9.x 不识别 VS 2026) | argon2 编译 |
+
+> 结论:**只要一个 C++ 工具链(MSVC + Spectre + Python + node-gyp 13)即可编译全部原生依赖**;unrs-resolver、VS Code 内部依赖走预编译,无需额外工具。
+
 ### Windows 原生构建要点(本机实测,ARM64)
 
 - **VS 需 Spectre 缓解库组件**(MSB8040):Visual Studio Installer → 单个组件 →
