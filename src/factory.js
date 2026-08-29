@@ -751,7 +751,7 @@ let React = require('react')
             height: shownRect.height,
             scale: shrinkScale,
             borderRadius: 19,
-            opacity: 0.35,
+            opacity: 0, // 完全淡出:视觉被球收纳(球在该处,窗口不可见)
           }
         : {
             x: shownRect.x,
