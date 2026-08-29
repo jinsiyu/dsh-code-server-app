@@ -249,6 +249,18 @@ let React = require('react')
       '.dshcs-drag{position:absolute;top:0;left:0;right:0;height:14px;z-index:26;cursor:grab;touch-action:none;user-select:none}' +
       '.dshcs-win[data-interaction=move] .dshcs-drag{cursor:grabbing}.dshcs-win-max .dshcs-drag{cursor:default}' +
       '.dshcs-drag:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary,#172033) 5%,transparent)}' +
+      '.dshcs-artbtn{appearance:none;display:inline-grid;place-items:center;width:22px;height:22px;padding:0;border:1px solid var(--dsw-alias-border-l2,#dfe3eb);border-radius:6px;color:var(--dsw-alias-label-secondary,#566174);background:color-mix(in srgb,var(--dsw-alias-bg-base,#fff) 60%,transparent);cursor:pointer;transition:color .12s ease,background .12s ease,border-color .12s ease;vertical-align:middle}' +
+      '.dshcs-artbtn:hover{color:var(--dsw-alias-label-primary,#172033);border-color:color-mix(in srgb,var(--dshcs-accent) 40%,var(--dsw-alias-border-l2,#dfe3eb));background:color-mix(in srgb,var(--dshcs-accent) 8%,transparent)}' +
+      '.dshcs-artbtn:active{transform:scale(.94)}' +
+      '.dshcs-artbtn:focus-visible{outline:2px solid color-mix(in srgb,var(--dshcs-accent) 65%,transparent);outline-offset:1px}' +
+      '.dshcs-artifacts{display:grid;grid-template-columns:max-content minmax(0,1fr);align-items:center;gap:6px 8px;margin-top:16px;font-size:13px;line-height:22px;position:relative}' +
+      '.dshcs-artlabel{color:var(--dsw-alias-label-tertiary,#7d8798);grid-area:1/1}' +
+      '.dshcs-artrow{flex-wrap:nowrap;grid-area:1/2;align-items:center;gap:8px;min-width:0;display:flex;overflow:hidden}' +
+      '.dshcs-artitem{display:inline-flex;align-items:center;gap:4px;flex:none;min-width:0}' +
+      '.dshcs-artfile{text-overflow:ellipsis;white-space:nowrap;background:var(--dsw-alias-interactive-bg-hover);max-width:320px;color:var(--dsw-alias-label-secondary,#566174);font:inherit;cursor:pointer;border:none;border-radius:6px;margin:0;padding:0 8px;overflow:hidden}' +
+      '.dshcs-artfile:hover{color:var(--dsw-alias-label-primary,#172033);text-decoration:underline}' +
+      '.dshcs-artfile:focus-visible{box-shadow:inset 0 0 0 2px var(--dsw-alias-border-l3);outline:none}' +
+      '.dshcs-artmore{white-space:nowrap;color:var(--dsw-alias-label-tertiary,#7d8798);flex:none}' +
       '.dshcs-body{position:relative;display:flex;flex:1;min-width:0;min-height:0;flex-direction:column;background:var(--dsw-alias-bg-base,#fff)}.dshcs-body[hidden]{display:none}' +
       '.dshcs-frame{display:block;position:absolute;inset:0;z-index:1;width:100%;height:100%;border:0;background:var(--dsw-alias-bg-base,#fff)}' +
       '.dshcs-loading{position:absolute;inset:0;z-index:2;display:grid;place-items:center;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-tertiary,#7d8798);font-size:13px}' +
@@ -1151,7 +1163,78 @@ let React = require('react')
       }
     }
 
-    // ---------- 插件注册 ----------
+    // ---------- 产物列表+图标(替代官方 deliverables 列表,链内唯一匹配) ----------
+    // 数据:owner.turn.data.get("deliverables") → { produced: [{ path, seq }] }
+    // 过滤:produced.seq <= owner.seq(官方 producedForClosing 同款——不拿后续 tool 的文件)。
+    function producePathList(owner) {
+      var list = []
+      try {
+        var d = owner.turn.data.get('deliverables')
+        var seq = owner.seq != null ? owner.seq : Number.POSITIVE_INFINITY
+        if (d != null && Array.isArray(d.produced)) {
+          var seen = {}
+          for (var i = 0; i < d.produced.length; i++) {
+            var p = d.produced[i]
+            if (p == null || typeof p.path !== 'string' || p.path === '') continue
+            if (p.seq != null && p.seq > seq) continue
+            if (seen[p.path] === true) continue
+            seen[p.path] = true
+            list.push(p.path)
+          }
+        }
+      } catch (e) { /* respect */ }
+      return list
+    }
+    function selectProduced(owner) {
+      var paths = producePathList(owner)
+      return paths.length === 0 ? null : paths
+    }
+    function OpenFileGlyph(props) {
+      // code-server 官方图标(host /code-server/icon.svg,assets 固化分发)
+      return React.createElement('img', {
+        src: '/code-server/icon.svg', alt: '', 'aria-hidden': true, draggable: false,
+        style: { width: 15, height: 15, display: 'block', objectFit: 'contain', WebkitUserDrag: 'none', userSelect: 'none' },
+      })
+    }
+    function TurnArtifacts(props) {
+      if (props == null || !Array.isArray(props.matched) || props.matched.length === 0) return null
+      var paths = props.matched
+      function basenameOf(p) {
+        var s = String(p).replace(/\\/g, '/')
+        var i = s.lastIndexOf('/')
+        return i >= 0 ? s.slice(i + 1) : s
+      }
+      function openInCodeServer(p) {
+        setState({ open: true }) // 先展开窗口(若收起)
+        api('/code-server/open-file', { file: p }).then(function (s) {
+          if (s == null || s.ok !== true) {
+            window.alert(s != null && s.error ? s.error : '打开失败')
+          }
+        }).catch(function (e) { window.alert('打开失败: ' + String(e)) })
+      }
+      // 复刻官方列表(label + 行),但每个文件名旁加"仅图标"按钮 → 在 code-server 打开
+      return React.createElement('div', { className: 'dshcs-artifacts' },
+        React.createElement('span', { className: 'dshcs-artlabel' }, '产物'),
+        React.createElement('div', { className: 'dshcs-artrow' },
+          paths.slice(0, 6).map(function (p) {
+            return React.createElement('span', { key: p, className: 'dshcs-artitem' },
+              React.createElement('button', {
+                type: 'button', className: 'dshcs-artfile', title: p,
+                'aria-label': '打开: ' + p,
+                onClick: function () { openInCodeServer(p) },
+              }, basenameOf(p)),
+              React.createElement('button', {
+                type: 'button', className: 'dshcs-artbtn',
+                title: '在 Code Server 打开: ' + p,
+                'aria-label': '在 Code Server 打开: ' + p,
+                onClick: function () { openInCodeServer(p) },
+              }, React.createElement(OpenFileGlyph, null))
+            )
+          }),
+          paths.length > 6 ? React.createElement('span', { className: 'dshcs-artmore' }, '…' ) : null
+        )
+      )
+    }
     function apply(ctx) {
       try {
         internalApply(ctx)
@@ -1178,6 +1261,22 @@ let React = require('react')
           React.createElement(Window, props)
         )
       ))
+
+      // ---- 产物图标按钮(每轮产物旁,点击在 code-server 打开) ----
+      // 与 deliverables 共用 turnTail 插槽;select 读 owner.turn.data 的 deliverables。
+      try {
+        slots.inject('conversation.chat.turnTail', function () {
+          return slots.register({
+            name: 'conversation.chat.turnTail',
+            priority: -9, // 先于官方 deliverables(chain 唯一匹配 → 我们渲染完整"列表+图标")
+            id: 'dshcs-open-file',
+            select: selectProduced,
+          }, TurnArtifacts)
+        })
+        console.log('[code-server] turnTail artifacts buttons registered')
+      } catch (e) {
+        console.warn('[code-server] turnTail register failed:', e != null && e.message != null ? e.message : String(e))
+      }
 
       // ---- 设置卡片(settings.plugin.item 插槽 + settingsScope 命名空间) ----
       var settingsScope = ctx.settingsScope

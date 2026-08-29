@@ -32,6 +32,7 @@
     "lib/client.js",
     "assets/favicon.ico",
     "assets/favicon.svg",
+    "assets/extensions/dshcs-open-file",
     "scripts/setup-code-server.mjs",
     "cordis.patch.yml",
     "README.md"
