@@ -784,12 +784,14 @@ let React = require('react')
       var body
       if (running && pageUrl !== null) {
         // 已就绪:直接挂 iframe(预启动后通常打开即此处)
+        // allow 属性 = Permissions Policy(Chrome 授予剪贴板读写,否则终端无法粘贴)
         body = React.createElement('iframe', {
           key: reloadTick,
           className: 'dshcs-frame',
           src: pageUrl,
           title: 'code-server',
-          sandbox: 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock',
+          sandbox: 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock allow-clipboard-read allow-clipboard-write',
+          allow: 'clipboard-read; clipboard-write',
         })
       } else if (starting || (status != null && status.status === 'starting')) {
         // 启动中:立即渲染窗口 iframe(about:blank)+ 加载提示;
@@ -800,7 +802,8 @@ let React = require('react')
             className: 'dshcs-frame',
             src: 'about:blank',
             title: 'code-server',
-            sandbox: 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock',
+            sandbox: 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock allow-clipboard-read allow-clipboard-write',
+            allow: 'clipboard-read; clipboard-write',
           }),
           React.createElement('div', { className: 'dshcs-loading' }, '正在启动 code-server…')
         )
