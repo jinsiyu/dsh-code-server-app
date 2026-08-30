@@ -1,6 +1,6 @@
 {
   "name": "dsh-code-server-app",
-  "version": "0.1.22",
+  "version": "0.1.24",
   "description": "Integrate code-server (VS Code in the browser) into DSH Web: floating ball entry + fullscreen overlay, host-side process lifecycle over a /code-server JSON API (motion-based spring window animations).",
   "homepage": "https://github.com/jinsiyu/dsh-code-server-app",
   "repository": {
