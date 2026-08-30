@@ -102,24 +102,25 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 | 包 | 构建方式 | ARM64 本地编译 | x64 本地编译 |
 |---|---|---|---|
 | **code-server**(主包) | 官方 `sh ./postinstall.sh` 已被 `allowScripts: code-server: false` 跳过(Windows 无 sh) | ❌ | ❌ |
-| **argon2** | `node-gyp-build`(binding.gyp + node-addon-api) | ✅ **必须**——prebuilds 只有 **win32-x64**、**无 win32-arm64** | ❌ **有 win32-x64 预编译** |
+| **argon2** | `node-gyp-build`(binding.gyp + node-addon-api) | ✅ **必须** | ✅ **也必须**——prebuilds 目录里只有 Linux 的 `*.glibc.node`,**Windows 无任何预编译** |
 | **unrs-resolver** | `napi-postinstall check`,加载 `@unrs/resolver-binding-win32-{x64,arm64}-msvc` 预编译绑定 | ❌ 纯预编译 | ❌ 纯预编译 |
 | **VS Code 内部依赖**(`lib/vscode/node_modules`,144 包) | `ensureNpmDeps` 逐一 `npm install`,自带 postinstall(node-pty/koffi/kerberos 等) | ⚠️ 多数预编译 | ⚠️ 多数预编译 |
 
-**基础环境清单(Windows ARM64 实测)**:
+**基础环境清单(Windows 实测)**:
 
 | 环境 | 版本/要求 | ARM64 | x64 |
 |---|---|---|---|
 | Node.js | **v24.x**(code-server 最新要求;本机 v24.13.1) | 必需 | 必需 |
 | npm | 跟随 Node | 必需 | 必需 |
-| **MSVC 构建工具** | **VS Community 2026(18.9)+ C++ 桌面负载** | ✅ **必需**(argon2 编译) | ⚪ 可选(仅在不用预编译/强制构建时需要) |
-| **VS Spectre 缓解库** | "适用于 ARM64 的 MSVC v18x Spectre-mitigated 库" | ✅ 必需(否则 MSB8040) | ⚪ 可选 |
-| Python | **3.13.x**(如 `Python313-arm64\python.exe`) | ✅ 必需(node-gyp 脚本) | ⚪ 可选 |
-| node-gyp | **13.x**(9.x 不识别 VS 2026) | ✅ 必需 | ⚪ 可选 |
+| **MSVC 构建工具** | **VS Community 2026(18.9)+ C++ 桌面负载** | ✅ **必需**(argon2 编译) | ✅ **必需**(argon2 编译) |
+| **VS Spectre 缓解库** | "适用于 ARM64 的 MSVC v18x Spectre-mitigated 库"(x64 用对应位数库) | ✅ 必需(否则 MSB8040) | ✅ 必需(否则 MSB8040) |
+| Python | **3.13.x**(如 `Python313-arm64\python.exe`;x64 用 x64 版) | ✅ 必需(node-gyp 脚本) | ✅ 必需 |
+| node-gyp | **13.x**(9.x 不识别 VS 2026) | ✅ 必需 | ✅ 必需 |
 
-> **结论**:
-> - **ARM64**:必须一套 C++ 工具链(MSVC + Spectre + Python + node-gyp 13)编译 argon2;其余(unrs/VS Code 内部依赖)走预编译;
-> - **x64**:argon2 有 win32-x64 预编译 → **默认零编译、无需工具链**(C++ 工具链仅在强制本地构建或预编译下载失败时才需要)。
+> **结论(实测更正)**:
+> - **Windows(x64 与 ARM64 相同)**:argon2 的 prebuilds 目录里**只有 Linux 的 `*.glibc.node`,没有 Windows 预编译**——`node-gyp-build` 找不到 → **一律回退本地 node-gyp 编译**。因此 **x64 同样必须配齐 C++ 工具链**(MSVC + Spectre + Python + node-gyp 13),不存在"x64 零编译";
+> - 其余(unrs-resolver、VS Code 内部依赖)走预编译,无需额外工具;
+> - 若开发机没有工具链,可将安装根 `package.json` 的 `allowScripts.argon2` 设为 `false` 跳过(但 argon2 缺失会导致 code-server 启动报 `node-gyp-build` 错误——仅适合不依赖 argon2 的场景,通常不建议)。
 
 ### Windows 原生构建要点(本机实测,ARM64)
 

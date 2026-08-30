@@ -11,7 +11,7 @@
 // 幂等:code-server 已实例化(entry + VS Code 内部依赖 + argon2 native 均在)则跳过;
 // pnpm 重装插件后会重跑 postinstall → 自动重新自装(自愈)。
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -197,9 +197,40 @@ function main() {
   console.log('[setup-code-server] 完成;entry:', existsSync(join(cs, 'out', 'node', 'entry.js')));
 }
 
+/** 错误标记文件:安装失败时写入(host status 读取 → client 弹窗给用户查看),
+ *  成功安装后删除。位置 = 安装根(与安装产物同目录,独立于 pnpm 日志)。 */
+function errorMarkerPath() {
+  return join(installPrefix(), 'last-setup-error.json');
+}
+
+function writeErrorMarker(err) {
+  try {
+    const p = errorMarkerPath();
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, JSON.stringify({
+      at: new Date().toISOString(),
+      error: err && err.message ? err.message : String(err),
+    }, null, 2), 'utf8');
+  } catch { /* 标记失败不影响主流程 */ }
+}
+
+function clearErrorMarker() {
+  try {
+    const p = errorMarkerPath();
+    if (existsSync(p)) rmSync(p, { force: true });
+  } catch { /* ignore */ }
+}
+
 try {
   main();
+  clearErrorMarker();
 } catch (e) {
-  console.error('[setup-code-server] 安装失败(插件仍可启动;README 有恢复指引):', e.message);
+  const msg = errText(e);
+  console.error('[setup-code-server] 安装失败(插件仍可启动;README 有恢复指引):', msg);
+  writeErrorMarker(e);
   process.exitCode = 0; // 不阻断 pnpm/npm install
+}
+
+function errText(e) {
+  return e && e.message ? e.message : String(e);
 }

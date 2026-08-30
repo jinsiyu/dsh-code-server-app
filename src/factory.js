@@ -30,7 +30,7 @@ let React = require('react')
 
     // ---------- 模块级共享 store:同步 open/status + 悬浮球位置(动画锚点) --------haihui
     var listeners = new Set()
-    var state = { open: false, status: null, busy: false, ballPos: null }
+    var state = { open: false, status: null, busy: false, ballPos: null, guideVisible: false, guideDismissed: false }
     function setState(patch) {
       state = Object.assign({}, state, patch)
       listeners.forEach(function (fn) { fn() })
@@ -42,6 +42,82 @@ let React = require('react')
     function getState() { return state }
     function useStore() {
       return React.useSyncExternalStore(subscribe, getState)
+    }
+
+    // ---------- 安装失败横幅(直接 DOM,顶部固定;点"重新安装"走 /code-server/setup) ----------
+    var BANNER_ID = 'dshcs-setup-error-banner'
+    function showSetupErrorBanner(info) {
+      try {
+        if (typeof document === 'undefined') return
+        if (document.getElementById(BANNER_ID) != null) return // 已显示
+        var el = document.createElement('div')
+        el.id = BANNER_ID
+        el.setAttribute('role', 'alert')
+        el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483999;display:flex;align-items:flex-start;gap:10px;padding:10px 14px;font:13px/1.5 system-ui,sans-serif;color:#7d1a1a;background:#fff1f0;border-bottom:1px solid #f0c4c2;box-shadow:0 4px 16px rgba(0,0,0,.12)'
+        var text = document.createElement('div')
+        text.style.cssText = 'flex:1;min-width:0'
+        text.innerHTML = '<strong>Code Server 环境安装失败</strong><br>' +
+          '<span style="color:#8a3c3c">' + escapeHtml(info.error != null ? info.error : '安装脚本错误') + '</span>' +
+          (info.at != null ? '<br><span style="color:#b07a7a;font-size:11px">' + escapeHtml(info.at) + '</span>' : '') +
+          '<br><span style="color:#6a6a6a">可在设置 → 插件 → Code Server → 环境检测/安装环境 重试。</span>'
+        var btn = document.createElement('button')
+        btn.type = 'button'
+        btn.style.cssText = 'flex:none;font:inherit;cursor:pointer;border:1px solid #d9b0ae;background:#fff;border-radius:6px;padding:4px 10px;color:#7d1a1a'
+        btn.textContent = '重新安装'
+        btn.onclick = function () {
+          btn.disabled = true
+          btn.textContent = '安装中…'
+          api('/code-server/setup', {}).then(function (s) {
+            if (s != null && s.ok === true) {
+              btn.textContent = '已在后台安装…'
+              setTimeout(function () {
+                api('/code-server/status').then(function (st) {
+                  if (st != null && st.setup != null && st.setup.running !== true && st.setup.ok === true) {
+                    el.remove()
+                  } else {
+                    btn.disabled = false
+                    btn.textContent = '重新安装'
+                  }
+                })
+              }, 4000)
+            } else {
+              btn.disabled = false
+              btn.textContent = '重新安装'
+            }
+          }).catch(function () {
+            btn.disabled = false
+            btn.textContent = '重新安装'
+          })
+          // 轮询安装完成
+          var poll = function () {
+            api('/code-server/status').then(function (st) {
+              if (st == null || st.setup == null) return
+              if (st.setup.running === true) { setTimeout(poll, 2000); return }
+              if (st.setup.ok === true) { el.remove(); setState({ status: st }) }
+              else {
+                btn.disabled = false
+                btn.textContent = '重新安装'
+              }
+            })
+          }
+          setTimeout(poll, 3000)
+        }
+        var close = document.createElement('button')
+        close.type = 'button'
+        close.setAttribute('aria-label', '关闭')
+        close.style.cssText = 'flex:none;font:inherit;cursor:pointer;border:none;background:none;color:#8a3c3c;font-size:16px;line-height:1;padding:2px 6px'
+        close.textContent = '×'
+        close.onclick = function () { el.remove() }
+        el.appendChild(text)
+        el.appendChild(btn)
+        el.appendChild(close)
+        document.body.appendChild(el)
+      } catch (e) {
+        console.error('[code-server] banner failed:', e != null && e.message != null ? e.message : String(e))
+      }
+    }
+    function escapeHtml(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
     }
 
     // ---------- /code-server API ----------
@@ -954,6 +1030,70 @@ let React = require('react')
       )
     }
 
+    // ---------- 安装指引弹窗(环境未就绪时弹出;可永久关闭) ----------
+    function GuideModal(props) {
+      var store = useStore()
+      if (store.guideVisible !== true) return null
+      var scope = props.scope
+      var [busy, setBusy] = React.useState(false)
+      function closeOnce() { setState({ guideVisible: false }) }
+      function dismissForever() {
+        try {
+          if (scope != null && typeof scope.set === 'function') scope.set('installGuideDismissed', true)
+        } catch (e) { /* ignore */ }
+        setState({ guideVisible: false, guideDismissed: true })
+      }
+      function installNow() {
+        setBusy(true)
+        api('/code-server/setup', {}).then(function (s) {
+          if (s == null || s.ok !== true) {
+            setBusy(false)
+            window.alert(s != null && s.error ? s.error : '启动安装失败')
+            return
+          }
+          // 后台安装;轮询完成 → 更新 env,弹窗转"安装中…"状态
+          var poll = function () {
+            api('/code-server/status').then(function (st) {
+              if (st == null || st.setup == null) { setBusy(false); return }
+              if (st.setup.running === true) { setTimeout(poll, 2000); return }
+              setBusy(false)
+              setState({ status: st })
+              if (st.setup.ok === true) { setState({ guideVisible: false }) }
+            }).catch(function () { setBusy(false) })
+          }
+          setTimeout(poll, 3000)
+        }).catch(function () { setBusy(false) })
+      }
+      return ReactDOM.createPortal(
+        React.createElement('div', {
+          style: { position: 'fixed', inset: 0, zIndex: 2147483998, display: 'grid', placeItems: 'center', background: 'rgba(13,22,38,.35)' },
+          role: 'dialog', 'aria-modal': true, 'aria-label': '安装 Code Server 环境',
+        },
+          React.createElement('div', {
+            style: { width: 'min(520px, 92vw)', background: 'var(--dsw-alias-bg-base,#fff)', borderRadius: 14, padding: '20px 22px', boxShadow: '0 24px 64px rgba(13,22,38,.3)', border: '1px solid var(--dsw-alias-border-l2,#dfe3eb)', font: '13px/1.6 system-ui,sans-serif', color: 'var(--dsw-alias-label-primary,#172033)' },
+          },
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 } },
+              React.createElement('img', { src: '/code-server/icon.svg', alt: '', style: { width: 26, height: 26, objectFit: 'contain' } }),
+              React.createElement('strong', { style: { fontSize: 15 } }, '安装 Code Server 环境'),
+              React.createElement('span', { style: { flex: 1 } }),
+              React.createElement('button', { type: 'button', onClick: closeOnce, 'aria-label': '关闭', style: { border: 'none', background: 'none', cursor: 'pointer', fontSize: 16, color: 'var(--dsw-alias-label-tertiary,#7d8798)', padding: '2px 6px' } }, '×')
+            ),
+            React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary,#566174)', marginBottom: 12 } },
+              'code-server(VS Code 网页版)环境安装与使用指引。每次启动 DSH 后会弹出本窗口;点击「不再提示」或到 设置 → 插件 → Code Server 勾选可永久关闭。安装过程:在 profile 目录下自动构建 code-server(含原生模块,需 C++ 工具链)。'),
+            React.createElement('div', { style: { display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' } },
+              React.createElement('button', { type: 'button', onClick: dismissForever, style: btnGhost },
+                busy ? '安装中…' : '不再提示(永久关闭)'),
+              React.createElement('button', { type: 'button', onClick: installNow, disabled: busy, style: btnPrimary },
+                busy ? '安装中…' : '开始安装')
+            )
+          )
+        ),
+        document.body
+      )
+    }
+    var btnPrimary = 'appearance:none;font:inherit;font-size:13px;cursor:pointer;border:1px solid #5b6cff;background:#5b6cff;color:#fff;border-radius:7px;padding:7px 16px'
+    var btnGhost = 'appearance:none;font:inherit;font-size:13px;cursor:pointer;border:1px solid var(--dsw-alias-border-l2,#dfe3eb);background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-secondary,#566174);border-radius:7px;padding:7px 14px'
+
     /** 设置卡片页面:useState+useEffect 订阅 settingsScope(不投机 useSyncExternalStore
      *  对 snapshot 引用稳定性的要求;不建中间 store)。 */
     function csSettingsPage(props) {
@@ -987,10 +1127,12 @@ let React = require('react')
       var loaded = {
         reserveComposer: value.reserveComposer !== false,
         windowedOpen: value.windowedOpen === true,
+        installGuideDismissed: value.installGuideDismissed === true,
       }
       var overridden = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'reserveComposer')
       var overriddenWin = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'windowedOpen')
-      var dirty = draft !== null && (draft.reserveComposer !== loaded.reserveComposer || draft.windowedOpen !== loaded.windowedOpen)
+      var overriddenGuide = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'installGuideDismissed')
+      var dirty = draft !== null && (draft.reserveComposer !== loaded.reserveComposer || draft.windowedOpen !== loaded.windowedOpen || draft.installGuideDismissed !== loaded.installGuideDismissed)
       var saveDisabled = !dirty || saving
       var state = {
         available: true,
@@ -1015,6 +1157,7 @@ let React = require('react')
             var d = draft !== null ? draft : loaded
             await props.scope.set('reserveComposer', d.reserveComposer === true)
             await props.scope.set('windowedOpen', d.windowedOpen === true)
+            await props.scope.set('installGuideDismissed', d.installGuideDismissed === true)
             setDraft(null)
             syncStatusToStore()
           } catch (e) {
@@ -1031,9 +1174,11 @@ let React = require('react')
           if (typeof props.scope.unset === 'function') {
             await props.scope.unset('reserveComposer')
             await props.scope.unset('windowedOpen')
+            await props.scope.unset('installGuideDismissed')
           } else {
             await props.scope.set('reserveComposer', value.reserveComposer === undefined || value.reserveComposer === null ? true : value.reserveComposer)
             await props.scope.set('windowedOpen', value.windowedOpen === true)
+            await props.scope.set('installGuideDismissed', false)
           }
           setDraft(null)
           syncStatusToStore()
@@ -1154,6 +1299,23 @@ let React = require('react')
             onChange: function (v) { setDraft(function (prev) { return Object.assign({}, prev !== null ? prev : loaded, { windowedOpen: v === true }) }); setFailed(false) },
           }, '开启后点击悬浮球在浏览器新标签页打开 code-server(自动启动并跟随当前工作区);关闭则使用内部浮动窗口')
         ),
+        React.createElement('div', { className: 'dshcs-field' },
+          React.createElement('div', { className: 'dshcs-fieldHead' },
+            React.createElement('span', { className: 'dshcs-fieldLabel' }, '安装指引'),
+            overriddenGuide === true
+              ? React.createElement(csBadges, {
+                  overridden: true, disabled: snapshot.writable !== true,
+                  overriddenLabel: '已覆盖', resetLabel: '恢复默认',
+                  onReset: function () { doReset() },
+                })
+              : null
+          ),
+          React.createElement(csCheck, {
+            checked: draft !== null ? draft.installGuideDismissed : loaded.installGuideDismissed,
+            disabled: snapshot.writable !== true,
+            onChange: function (v) { setDraft(function (prev) { return Object.assign({}, prev !== null ? prev : loaded, { installGuideDismissed: v === true }) }); setFailed(false) },
+          }, '勾选=永久关闭安装指引弹窗(每次启动不再弹出);取消勾选=恢复每次启动弹出')
+        ),
         envSection
       )
       } catch (e) {
@@ -1252,6 +1414,10 @@ let React = require('react')
       // 预拉取 status:让悬浮球首帧就有 env 与运行状态(检测通过才显示,不闪烁)
       api('/code-server/status').then(function (s) {
         setState({ status: s })
+        // 安装脚本失败 → 页面顶部横幅弹给用户看(即使悬浮球被隐藏)
+        if (s != null && typeof s === 'object' && s.lastSetupError != null) {
+          showSetupErrorBanner(s.lastSetupError)
+        }
       }).catch(function () { /* 首次失败由后续轮询补救 */ })
       // 悬浮球 + 浮窗(球是唯一入口/开关;无侧栏按钮、无窗口控制按钮)
       slots.inject('shell.overlay', () => slots.register(
@@ -1289,6 +1455,39 @@ let React = require('react')
         { name: 'settings.plugin.item', key: 'code-server', label: 'Code Server', inject: function () { return { scope: scope } } },
         csSettingsPage
       ))
+
+      // ---- 安装指引弹窗:环境未就绪且未永久关闭 → 弹出 ----
+      try {
+        // 读"已永久关闭"状态(scope snapshot 含 user+value;installGuideDismissed 默认 false)
+        var dismissed = false
+        try {
+          var snap = scope.getSnapshot ? scope.getSnapshot() : null
+          if (snap != null) {
+            if (snap.user != null && snap.user.installGuideDismissed === true) dismissed = true
+            else if (snap.value != null && snap.value.installGuideDismissed === true) dismissed = true
+          }
+        } catch (e) { /* ignore */ }
+        setState({ guideDismissed: dismissed === true })
+        if (dismissed !== true) {
+          // 每次 DSH 启动后都弹出安装指引(默认);仅当用户永久关闭(设置/按钮)才不弹。
+          // 短暂延迟一条 status 拉取,确保弹窗时 store 已有 env/status(供内容按需显示)。
+          api('/code-server/status').then(function (s) {
+            setState({ status: s })
+            setState({ guideVisible: true })
+          }).catch(function () {
+            setState({ guideVisible: true })
+          })
+        }
+      } catch (e) {
+        console.warn('[code-server] guide check failed:', e != null && e.message != null ? e.message : String(e))
+      }
+      // 渲染指引弹窗(与悬浮球同 overlay;portal 到 body)
+      slots.inject('shell.overlay', function () {
+        return slots.register(
+          { name: 'shell.overlay', id: 'code-server-guide', order: 80, label: 'Code Server Guide' },
+          function () { return React.createElement(GuideModal, { scope: scope }) }
+        )
+      })
 
       console.log('[code-server] client bundle registered (floating ball + window + settings card)')
     }
