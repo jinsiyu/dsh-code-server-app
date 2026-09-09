@@ -1,0 +1,16 @@
+# 本仓库自身的 pnpm 配置(显式、可提交;不再由 pnpm 自动写占位值)。
+#
+# 依赖安装**不执行任何 postinstall**(本仓库只需 esbuild + motion 打包):
+#   - esbuild 的 postinstall 只是校验/补齐平台二进制,optionalDependencies 已带,
+#     忽略构建后 `pnpm run build:client` 正常(实测);
+#   - 其余条目来自 peerDependencies 自动安装的 DSH 运行时(打包/开发都用不到),
+#     显式写 false 是为了让 pnpm 11 不再报 ERR_PNPM_IGNORED_BUILDS(该错误会让 install 退出 1)。
+packages:
+  - .
+allowBuilds:
+  esbuild: false
+  '@deepseek-ai/dsh-subprocess-local': false
+  '@google/genai': false
+  koffi: false
+  node-pty: false
+  protobufjs: false

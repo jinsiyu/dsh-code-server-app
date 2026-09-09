@@ -10,7 +10,7 @@
 > - Microsoft **open-source** extensions (Python, TypeScript debugger, ESLint, …) are mirrored on Open VSX and install normally by search;
 > - **If you need a proprietary Microsoft extension**: download the `.vsix` from the Marketplace page and install it manually with `code-server --install-extension <file>` (or drop it into `--extensions-dir`).
 
-A static profile plugin (npm package with host + client bundle) that installs the latest [code-server](https://github.com/coder/code-server) **on demand into a dedicated profile directory** (installing the plugin itself is script-free and does not install code-server), auto-discovered and used on startup — no global npm install, no `bin` configuration.
+A static profile plugin (npm package with host + client bundle) that ships [code-server](https://github.com/coder/code-server) as a **platform-specific sub-package dependency** (a pack-time artifact at `vendor/code-server` → `@jinsiyu/dshcs-code-server-<platform>-<arch>`, with no install scripts and no postinstall) and runs it outside the plugin directory. VS Code's inner dependencies and the prebuilt native modules are **all installed by the package manager together with the plugin** — no global npm install, no `bin` configuration, no profile config changes, no second install command.
 
 ## UI carrier (chosen by the DSH version, feature-detected at runtime)
 
@@ -44,65 +44,123 @@ A static profile plugin (npm package with host + client bundle) that installs th
   while `file:///C:/...` reports "Workspace does not exist".
 - Process lifecycle is managed by the host plugin: startup writes `$DSH_HOME/code-server/pid.json`, stop kills the tree (`taskkill /T` or process-group SIGKILL),
   crash/exit updates status live; after a DSH host restart the plugin **adopts** a still-running instance (verifies pid + `/healthz`), without duplicate start or killing unrelated processes;
-- `node_modules` (dependencies, including code-server) is git-ignored; after cloning, follow "Install the plugin (script-free install; code-server installed on demand)" below — `pnpm pack` + `dsh plugin --profile web add`.
+- `node_modules` and the pack-time artifact `vendor/` are git-ignored; after cloning, follow
+  "Install the plugin (script-free install; code-server bundled)" below — `pnpm install` → `pnpm run build:client` →
+  `pnpm run vendor:code-server` → `pnpm pack` + `dsh plugin --profile web add`.
 
-> Verified locally (BM: Windows 11 ARM64): `code-server@4.134.0` (with Code 1.135.0)
-> shipped with the plugin, auto-discovered → started → healthz 200 → cwd switch restart while running → stopped → fully recycled.
+> Verified locally (BM: Windows 11 ARM64): `code-server@4.136.2` (with Code 1.136.1) bundled in the plugin,
+> placed offline at activation → VS Code internal deps installed → started → healthz 200 →
+> cwd switch restart while running → stopped → fully recycled.
 
-## Install the plugin (script-free install; code-server installed on demand)
+## Packaging (how to build the tarball)
 
 ```powershell
-# 1) Pack (in the plugin workspace)
 cd C:\Users\User\Desktop\dsh-code-server-app
-# Fresh clone: install dev deps and generate the client bundle first (lib/client.js is not committed; built from src/factory.js)
-pnpm install            # esbuild + motion (pack only)
-pnpm run build:client   # src/factory.js → lib/client.js
-pnpm pack
+pnpm install             # dev deps (esbuild + motion); allowBuilds is explicit → no postinstall runs
+pnpm run build:client    # src/factory.js → lib/client.js (not committed; must be built first)
+pnpm run vendor:check    # optional: show the bundled code-server version vs npm latest
+pnpm run vendor:code-server                     # ① produce vendor/code-server (code-server + its own deps)
+pnpm run repack:code-server -- --target win32-arm64,win32-x64 --pack   # ② platform sub-packages (incl. argon2)
+node scripts/vendor-repacks.mjs --target win32-arm64,win32-x64 --pack   # ③ build/repack the VS Code natives
+pnpm run publish:repacks                        # ④ publish every @jinsiyu/* sub-package
+pnpm pack                                       # ⑤ → dsh-code-server-app-<version>.tgz (~105KB)
+npm publish dsh-code-server-app-<version>.tgz --access public   # ⑥ publish the plugin itself (same verified tarball)
 ```
+
+| Goal | Command |
+|---|---|
+| **Build the latest code-server from npm** | `pnpm run vendor:latest` (= `--force`): snapshots `code-server@latest` into `vendor/code-server`; afterwards you **must** re-run `repack:code-server` (republish the sub-packages) and `vendor-repacks.mjs` (the inner dependency versions change) |
+| **Pin a version** | `pnpm run vendor:code-server -- --version 4.136.2` |
+| **Snapshot from an existing tree** | `pnpm run vendor:code-server -- --from <code-server dir>` (seconds) |
+| **Rebuild the code-server sub-packages** | `pnpm run repack:code-server -- --target win32-arm64,win32-x64 --pack` (x64 compiles argon2 and checks the PE machine type) |
+| **Rebuild prebuilt natives** | `node scripts/vendor-repacks.mjs [--from <existing full install>] --target win32-arm64,win32-x64 --pack` (without `--from` it npm-installs and compiles the source tree itself — slow) |
+| **Publish sub-packages** | `pnpm run publish:repacks` (`--dry-run` to preview; `--only <substr>` to filter; `--otp <code>` / `--limit N` for 2FA) |
+| **Publish the plugin itself** | `npm publish dsh-code-server-app-<version>.tgz --access public` (publishes the exact tarball that was verified; no re-packing) |
+| **Just report versions** | `pnpm run vendor:check` |
+
+> `pnpm pack`'s `prepack` runs the vendor-code-server script once; when `vendor/code-server` already exists it is
+> a **no-op that takes seconds**, so after ordinary code changes you can just run `pnpm pack` (it will never
+> silently upgrade code-server). Upgrading code-server requires an explicit `pnpm run vendor:latest`
+> (or `--force` / `--version`) **plus** republishing the sub-packages.
+
+## Install the plugin (one command; all dependencies installed by the package manager)
 
 ```powershell
-# 2) Install (published tarball; the plugin has no postinstall → no pnpm approve-builds / allowBuilds needed)
-dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.32.tgz
+# no postinstall in the package → no pnpm approve-builds / allowBuilds; one command installs everything
+dsh plugin --profile web add dsh-code-server-app@0.1.37
+# a local tarball works the same way:
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.37.tgz
 ```
 
-> Installation only drops plugin files: **no package scripts run and code-server is not installed**
-> (pnpm prints no build-scripts approval prompt). code-server is installed **on first use**: the startup
-> install-guide modal's "Install" button, Settings → Plugins → Code Server → "Install environment",
-> or manually `node <plugin-dir>\scripts\setup-code-server.mjs` (`npm run setup:code-server`).
+Ready to use immediately — **no second step, no "Install environment", no install-guide modal**.
+Since 0.1.37 the main package is only **~105KB** (the plugin's own code); everything else is dependencies:
 
-### Install mechanism
+- **the code-server tree** (`lib/vscode` 196.9MB + its own 136 runtime dependencies) ships as a **platform-specific
+  sub-package** `@jinsiyu/dshcs-code-server-<platform>-<arch>@<code-server version>` (gated by `os`/`cpu`, listed in
+  the plugin's `optionalDependencies`) → pnpm picks the right one for the architecture; it runs from
+  `<profile>\node_modules\@jinsiyu\dshcs-code-server-win32-arm64\code-server`;
+- the **pure-JS part** of VS Code's inner dependencies (35 packages: xterm / katex / typescript / ws / tar …) is
+  declared in the plugin's `dependencies` and installed by pnpm into the profile's `node_modules` (hoisted);
+- the **packages that need compiling** (node-pty / @vscode/sqlite3 / kerberos / koffi / ssh2 / cpu-features /
+  @parcel/watcher / @vscode/windows-* … 16 in total) are provided as prebuilt `@jinsiyu/dshcs-*` packages,
+  pulled back under their **original names** by the **platform aggregator**
+  `@jinsiyu/dsh-code-server-runtime-<platform>-<arch>` using `npm:` aliases;
+- consequently the dependency graph contains **no package with pre/install/postinstall or a `binding.gyp`** →
+  no profile `allowBuilds`, no build script ever runs, and **the user machine needs no C++ toolchain**;
+- **upgrading the plugin no longer re-downloads code-server**: the sub-package is cached by version, so only a
+  code-server version change pulls those ~58MB again.
 
-- **Script-free install**: `package.json` has no `postinstall`, so pnpm runs no package script while
-  installing the plugin (no `pnpm approve-builds` / `allowBuilds` approval needed) and does not install code-server;
-- **code-server is not in `dependencies`** (pnpm never touches it; no script-approval issues); instead
-  `scripts/setup-code-server.mjs` installs **the latest** `code-server` **with npm into a dedicated profile
-  directory** on demand (version not pinned; npm `latest` is used at install time):
-  - Triggers: host `POST /api/code-server/setup` (startup guide modal "Install" / settings card "Install environment"),
-    or manually `npm run setup:code-server`;
-  - Install root: `<profile>\.code-server-app` (e.g. `C:\Users\User\.dsh\profiles\web\.code-server-app`),
-    a standalone project isolated from the profile dependency tree (avoids ERESOLVE);
-  - The install root carries its own `package.json` with `allowScripts`: `code-server: false` (skips the official `sh ./postinstall.sh`
-    — Windows has no `sh`, it would fail; `argon2/unrs-resolver: true` builds native modules; both without version pins);
-  - Afterwards it installs VS Code internal dependencies (144 packages) + `bin\code-server.cmd`;
-- **code-server lands at** `<profile>\.code-server-app\node_modules\code-server\`;
-  idempotent and self-healing (every on-demand run checks first: skips when instantiated and equal to npm latest;
-  **auto-upgrades when the installed version differs**).
-- **Pin a version**: set the env var `DSHCS_CODE_SERVER_VERSION` (it must be visible to the **process that runs setup** — the `dsh web` process for UI-triggered installs; e.g. `4.134.0`); unset it to follow latest.
-- **Why no install-time setup**: installation stays fast and succeeds even without a C++ toolchain (a missing
-  toolchain surfaces later in the "Install" flow, with logs in the top banner and the settings card); code-server
-  upgrades now happen only during on-demand installs and **no longer on every plugin reinstall**.
+### Install mechanism (why it is built this way)
 
-> **Migration note when upgrading from ≤ 0.1.28**: the old plugin shipped a `postinstall`, so the profile's
-> `pnpm-workspace.yaml` may still carry `allowBuilds: dsh-code-server-app@file:...<old version>.tgz: true`
-> entries and pnpm 11 may have recorded an `ignoredBuilds` entry in `node_modules/.modules.yaml` — after which
-> every install reports `[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: dsh-code-server-app@file:...`
-> even though the new version has no install scripts at all. Fix: collapse those entries in the profile's
-> `pnpm-workspace.yaml` into a single `dsh-code-server-app: false` ("never build") and re-run the install;
-> this machine's 0.1.29 upgrade already performed that migration.
+- **The pnpm 11 hard constraint**: any package in the dependency graph whose manifest has
+  `preinstall|install|postinstall` (or whose tarball contains `binding.gyp`/`.hooks`) is treated as
+  "requires build" and must be approved through the **host profile's** `pnpm-workspace.yaml` (`allowBuilds`),
+  otherwise `dsh plugin add` exits 1 with `[ERR_PNPM_IGNORED_BUILDS]`. A dependency's own `pnpm.allowBuilds`,
+  `.npmrc`, the `patch:` protocol and `optionalDependencies` are all ineffective (measured 2026-09, pnpm 11.25);
+- **the code-server tree** is prepared at pack time with `npm install code-server@<version> --ignore-scripts`
+  (skips the official `sh ./postinstall.sh` — there is no `sh` on Windows and the script only accepts npm/yarn
+  user agents, so it always fails under pnpm) → supply the argon2 native binary (no Windows prebuild exists;
+  compile with `node-gyp-build`, or reuse an existing `argon2.node` via `DSHCS_ARGON2_BINARY`) → strip leftover
+  install scripts → snapshot to `vendor/code-server/`;
+- `scripts/vendor-code-server-pkg.mjs` then turns it into **platform sub-packages**: the tree lives in an inner
+  `code-server/` directory (npm/pnpm packing **always excludes the package root's `node_modules`**; a subdirectory
+  covered by `files` is included), and the sub-package declares **no `dependencies`** (those 136 packages are
+  already files inside `code-server/node_modules`; declaring them would make pnpm install a second copy).
+  `os`/`cpu` gated, each with its own compiled argon2 (arm64 0xaa64 / x64 0x8664);
+- **packages that need compiling** are repacked by `scripts/vendor-repacks.mjs` into `@jinsiyu/dshcs-*`:
+  copy the already-compiled package directory → **delete `scripts` / `files` / `binding.gyp` / `.hooks` /
+  `.npmignore`** (keeping the compiled `.node` and every runtime file) → rewrite dependencies that belong to the
+  same set to `npm:` aliases → platform-specific ones get an `os`/`cpu` pair and a `-<platform>-<arch>` suffix;
+- **the platform aggregator** maps those repacks back to their original names (e.g.
+  `"node-pty": "npm:@jinsiyu/dshcs-node-pty@1.2.0-beta.15"`), so VS Code's `require('node-pty')` needs no change.
+  The aggregator itself is `os`/`cpu` gated, and the plugin declares both win32-arm64 and win32-x64 in
+  `optionalDependencies` → one command picks the right one automatically;
+- **resolution path**: the host resolves the runtime root with
+  `require.resolve('@jinsiyu/dshcs-code-server-<platform>-<arch>/package.json')` (then the inner `code-server/`
+  directory) and launches `code-server/out/node/entry.js`; VS Code's inner dependencies are resolved upward from
+  there: `code-server/node_modules` → the sub-package's `node_modules` → `<profile>/node_modules` (hoisted
+  layout), exactly what the runtime sees. The in-package `vendor/code-server` is only a development/legacy
+  fallback.
 
-> **Uninstall**: the code-server directory is independent of the plugin package — first
-> `Remove-Item -Recurse -Force <profile>\.code-server-app`, then `dsh plugin --profile web remove dsh-code-server-app`.
-> The settings card's "Environment check" section also shows this hint.
+> **Size note**: the plugin tarball is **~105KB**; each `@jinsiyu/dshcs-code-server-win32-*` sub-package is
+> **~58–60MB** (249MB unpacked); the inner dependencies and prebuilt natives add ~250MB. A full install downloads
+> roughly 310MB. Neither `vendor/` nor `repack/` is tracked by git (see `.gitignore`).
+
+> **Upgrading from ≤ 0.1.36**: the in-package `vendor/code-server/` moved into the platform sub-packages and the
+> main package shrank to ~105KB. The upgrade command is unchanged
+> (`dsh plugin --profile web add dsh-code-server-app@<version>`); the old `vendor/` disappears with the old
+> package directory.
+
+> **Upgrading from ≤ 0.1.35**: the old install root `<profile>\.code-server-app` (with ~1.4GB of inner
+> dependencies) and the "Install environment" step are gone. The new version detects the old root and logs that it
+> can be safely deleted: `Remove-Item -Recurse -Force <profile>\.code-server-app`. Old
+> `dsh-code-server-app: false` entries in the profile's `pnpm-workspace.yaml` can be removed too (no build
+> approval is needed any more).
+
+> **Uninstall**: `dsh plugin --profile web remove dsh-code-server-app` is enough; the code-server sub-package and
+> the natives are separate dependencies, so to remove everything run e.g.
+> `dsh plugin --profile web remove @jinsiyu/dshcs-code-server-win32-arm64` (or `pnpm remove` inside the profile);
+> if an old install root is still around, delete `<profile>\.code-server-app` manually.
 
 > After install/dependency changes, **restart `dsh web`** (the static plugin row and host probe paths load at startup).
 
@@ -112,64 +170,66 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
 dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 ```
 
-> A source path installs via `link:`; when the profile layout is unavailable, the host's
-> `scripts/setup-code-server.mjs` falls back to installing code-server into the **plugin workspace node_modules**
-> (the host supports both layouts). The install itself runs no scripts; on first use click "Install" or run
-> `npm run setup:code-server` manually.
+> A source path installs via `link:`. On a dev machine without `vendor/code-server`, run
+> `pnpm run vendor:code-server` first. Dependencies (inner JS deps + the platform aggregator) are installed by pnpm
+> too — but the not-yet-published local `@jinsiyu/*` packages must either be published first, or the
+> `repack/tgz/*.tgz` files must be installed into the profile as `file:` dependencies.
 >
 > **Changing the client bundle**: edit `src/factory.js` then run `pnpm run build:client`
 > to regenerate `lib/client.js` (that artifact is not tracked; a browser refresh picks it up — no host restart needed).
 > Window animations are driven by the embedded `motion`; feel parameters live in `winPhysics` (one spot) in `src/factory.js`.
 
-### Environment requirements (packages that need building + toolchain)
+### Pack-machine environment (the user machine needs nothing)
 
-During the on-demand install (`scripts/setup-code-server.mjs` → npm self-installs code-server + VS Code internal deps), **only one package really needs local compilation** (installing the plugin itself needs no toolchain):
+**A toolchain is needed at pack time only — never on the user machine.**
 
-| Package | Build method | ARM64 local compile | x64 local compile |
-|---|---|---|---|
-| **code-server** (main) | official `sh ./postinstall.sh` is skipped via `allowScripts: code-server: false` (no `sh` on Windows) | ❌ | ❌ |
-| **argon2** | `node-gyp-build` (binding.gyp + node-addon-api) | ✅ **mandatory** | ✅ **mandatory too** — prebuilds only contain Linux `*.glibc.node`; **no Windows prebuilds at all** |
-| **unrs-resolver** | `napi-postinstall check`; loads the prebuilt `@unrs/resolver-binding-win32-{x64,arm64}-msvc` | ❌ pure prebuilt | ❌ pure prebuilt |
-| **VS Code internal deps** (`lib/vscode/node_modules`, 144 pkgs) | `ensureNpmDeps` runs `npm install` per dir; own postinstalls (node-pty/koffi/kerberos…) | ⚠️ mostly prebuilt | ⚠️ mostly prebuilt |
-
-**Base environment checklist (verified locally, Windows)**:
-
-| Env | Version / requirement | ARM64 | x64 |
+| Env | Version / requirement | User machine | Pack machine |
 |---|---|---|---|
 | Node.js | **v24.x** (latest code-server requirement; v24.13.1 here) | required | required |
-| npm | ships with Node | required | required |
-| **MSVC build tools** | **VS Community 2026 (18.9) + C++ desktop workload** | ✅ **required** (argon2 compile) | ✅ **required** (argon2 compile) |
-| **VS Spectre-mitigated libs** | "MSVC v18x Spectre-mitigated libraries for ARM64" (use the matching-arch libs on x64) | ✅ required (otherwise MSB8040) | ✅ required (otherwise MSB8040) |
-| Python | **3.13.x** (e.g. `Python313-arm64\python.exe`; x64 version on x64) | ✅ required (node-gyp scripts) | ✅ required |
-| node-gyp | **13.x** (9.x doesn't recognize VS 2026) | ✅ required | ✅ required |
+| npm / pnpm | npm ships with Node; pnpm comes from DSH | required (installs deps) | required |
+| **MSVC build tools** | **VS Community 2026 + C++ desktop workload** | ❌ **not needed** | pack time (16 native packages + argon2) |
+| **VS Spectre-mitigated libs** | one set for ARM64 **and** one for x86/x64 ("MSVC v14x Spectre-mitigated libs") | ❌ not needed | pack time (otherwise MSB8040) |
+| Python | **3.13.x** | ❌ not needed | pack time (node-gyp) |
+| node-gyp | **13.x** (older versions don't recognize VS 2026) | ❌ not needed | pack time |
 
-> **Bottom line (corrected from measurements)**:
-> - **Windows (x64 and ARM64 are the same)**: argon2's prebuilds contain **only Linux `*.glibc.node` — no Windows prebuilds at all**; `node-gyp-build` can't find one → **always falls back to a local node-gyp compile**. So **x64 also needs the full C++ toolchain** (MSVC + Spectre + Python + node-gyp 13); there is no "zero-compile on x64";
-> - unrs-resolver and VS Code internal deps use prebuilds — no extra tools;
-> - On a machine without a toolchain you may set `allowScripts.argon2: false` in the install root `package.json`, but argon2 missing makes code-server fail at startup with a `node-gyp-build` error — only suitable if you don't depend on argon2 (not recommended).
+> **Packing still works without the Spectre libs**: when a package fails to compile, `vendor-repacks.mjs` downgrades
+> `SpectreMitigation` to `false` in that architecture's `*.gyp` files and retries (only the Spectre hardening is
+> lost, functionality is unaffected) and says so in the log.
 
-### Windows native build notes (verified locally, ARM64)
+### Windows native build notes (pack time, verified locally ARM64)
 
 - **VS needs the Spectre-mitigated libraries** (MSB8040): Visual Studio Installer → Individual components →
-  "MSVC v18x Spectre-mitigated libraries for ARM64" (same for x86/x64).
+  "MSVC v14x Spectre-mitigated libs" — **install the ARM64 and the x86/x64 sets separately**.
 - **node-gyp 13.x** (9.x does not recognize VS 2026): `npm install -g node-gyp@latest`.
-- Latest code-server requires **Node v24** (v24.13.1 verified here; a lower version fails at startup).
+- **x64 cross-compiling**: `vendor-repacks.mjs` uses `npm install --os=win32 --cpu=x64 --ignore-scripts` to fetch
+  the packages, then `npm rebuild --arch=x64` per package; the resulting PE machine types were verified
+  (kerberos / sqlite3 / spdlog …).
+- Latest code-server requires **Node v24**.
 - If you don't need the self-contained install (e.g. a global code-server already exists), skip it:
   the plugin falls back to a configured/PATH `bin` (see the "Config" table).
 
 ### Upgrading the code-server version
 
-- **Automatic by default**: the script does not pin the version — during an on-demand install, if the installed version differs from npm latest it reinstalls to latest (no manual edits).
-- **How to trigger**: Settings → Plugins → Code Server → "Install environment", or `npm run setup:code-server`;
-  **it no longer upgrades on plugin reinstall** (reinstalling the plugin neither installs nor upgrades code-server).
-- **To pin**: set the env var `DSHCS_CODE_SERVER_VERSION` (e.g. `4.134.0`; must be in the `dsh web` process environment); unset it to follow latest again.
-- Measured locally: installed `4.135.0`, npm latest `4.136.2` — the next on-demand install will upgrade to `4.136.2`.
+- **The version is decided at pack time**: `pnpm run vendor:latest` (= `--force`) rebuilds with the npm
+  **latest** version; or use `pnpm run vendor:code-server -- --version 4.136.2` / `DSHCS_CODE_SERVER_VERSION`.
+  With an existing `vendor/code-server`, a plain `pnpm pack` never upgrades (it is a no-op).
+- **Check first**: `pnpm run vendor:check` prints the bundled version / npm latest.
+- **A version bump requires republishing two kinds of sub-packages** (the inner dependency versions change with
+  code-server):
+  1. `pnpm run repack:code-server -- --target win32-arm64,win32-x64 --pack` → the new code-server sub-packages;
+  2. `node scripts/vendor-repacks.mjs --target win32-arm64,win32-x64 --pack` → the prebuilt natives (also rewrites
+     the plugin's pure-JS `dependencies` and both aggregator versions);
+  3. `pnpm run publish:repacks` → publish; then bump the plugin version → `pnpm pack` → publish the plugin.
+- **No runtime auto-upgrade anymore**: nothing fetches latest at startup; the version is fully determined by the bundled artifact.
+- Bundled locally right now: `code-server@4.136.2` (with Code 1.136.1).
 
-### Compatibility with the old runtime-directory install
+### Compatibility with the old install locations
 
-`runtime/node_modules/code-server` (the earlier manual approach) is no longer supported —
-host probe order: `<profile>\.code-server-app` (dedicated dir) > plugin-internal `node_modules` > PATH/config `bin`
-(top-level hoisted is a historical layout and is no longer probed).
+Host probe order: `@jinsiyu/dshcs-code-server-<platform>-<arch>/code-server` (**the real layout since 0.1.37**) >
+the in-package `vendor/code-server` (0.1.36 and earlier / development) > the old install root
+`<profile>\.code-server-app\node_modules\code-server` (0.1.35 and earlier) > plugin-internal
+`node_modules/code-server` (development) > PATH/config `bin`. The old root is only mentioned in a startup log
+line; nothing writes to it any more.
 
 ## Settings card (Settings → Plugins → Code Server)
 
@@ -185,11 +245,16 @@ persisted via the official settings domain (`settingsScope`, namespace `code-ser
 > `windowedOpen`; the client applies them at once); no dsh restart needed. **After adding new setting keys, restart dsh web before first use**,
 > so the host re-registers the settings namespace (schema includes the new key); otherwise save/validation of the new key won't work.
 
+The bottom of the card is **Environment check** (click "Check environment" to read the host `status.env`): entry,
+`native` (argon2), VS Code inner dependencies, and **prebuilt native packages** (platform aggregator name +
+resolved module count). Since 0.1.36 there is no "Install environment" button — dependencies are installed by the
+package manager, and the card only reports the result.
+
 ## Config (`config` in cordis.patch.yml; all have defaults)
 
 | Key | Default | Description |
 |---|---|---|
-| `bin` | `code-server` (placeholder) | Launch priority: explicit `bin` in config > `<profile>\.code-server-app` (dedicated dir, auto-run with node) > plugin-internal `node_modules` > `code-server` on PATH. None present → startup error with install guidance |
+| `bin` | `code-server` (placeholder) | Launch priority: explicit `bin` in config > the platform sub-package `@jinsiyu/dshcs-code-server-<platform>-<arch>/code-server/out/node/entry.js` > the in-package `vendor/code-server` > the old install root `.code-server-app` > plugin-internal `node_modules` > `code-server` on PATH. None present → startup error with troubleshooting hints |
 | `host` | `127.0.0.1` | Bind address; `auth: none` only allows loopback (localhost/127.0.0.1/::1) |
 | `port` | `8090` | Port; on conflict startup fails with diagnostics (no automatic port change) |
 | `auth` | `none` | `none` \| `password`; non-loopback host automatically requires password |
@@ -218,10 +283,10 @@ Host/Origin fence and browser auth); in the desktop profile `apps/desktop-host` 
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/code-server/status` | `{ ok, running, status, host, port, pid, cwd, url, version, error, logTail, adopted }` (also `env` environment check and `setup` install-task progress) |
+| GET | `/api/code-server/status` | `{ ok, running, status, host, port, pid, cwd, url, version, error, logTail, adopted }` (also `env` environment check and the `setup` compatibility field) |
 | POST | `/api/code-server/start` | body `{ cwd? }` (omit cwd to keep the current workspace); idempotent |
 | POST | `/api/code-server/stop` | Stop and recycle the process tree |
-| POST | `/api/code-server/setup` | Run the environment install in the background (npm install code-server + native + VS Code internal deps); progress via `status.setup` polling |
+| POST | `/api/code-server/setup` | **Compatibility no-op**: since 0.1.36 dependencies are installed by the package manager, so this only re-runs the env self-check and returns |
 | POST | `/api/code-server/open-file` | body `{ file }` — writes the signal consumed by the built-in `dshcs-open-file` extension to open the file in code-server |
 
 > The plugin no longer registers `/code-server/*` webServer-only routes, and the code-server icon is inlined as a data URI

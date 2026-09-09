@@ -1,6 +1,6 @@
 {
   "name": "dsh-code-server-app",
-  "version": "0.1.32",
+  "version": "0.1.37",
   "description": "Integrate code-server (VS Code in the browser) into DSH Web and Desktop: right-sidebar tab (DSH >= 0.1.5-alpha.1) with a floating-ball fallback for older hosts, over the Connection /api channel (ctx.connection.fetch; no webServer dependency) with host-side process lifecycle.",
   "homepage": "https://github.com/jinsiyu/dsh-code-server-app",
   "repository": {
@@ -40,17 +40,28 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "lib/vendor.js",
+    "lib/native.js",
     "assets/favicon.ico",
     "assets/favicon.svg",
     "assets/extensions/dshcs-open-file",
-    "scripts/setup-code-server.mjs",
+    "scripts/vendor-code-server.mjs",
+    "scripts/vendor-code-server-pkg.mjs",
+    "scripts/vendor-repacks.mjs",
+    "vendor/VENDOR.json",
     "cordis.patch.yml",
     "LICENSE",
     "README.md",
     "README.en.md"
   ],
   "scripts": {
-    "setup:code-server": "node scripts/setup-code-server.mjs",
+    "vendor:code-server": "node scripts/vendor-code-server.mjs",
+    "vendor:latest": "node scripts/vendor-code-server.mjs --force",
+    "vendor:check": "node scripts/vendor-code-server.mjs --check",
+    "repack:build": "node scripts/vendor-repacks.mjs",
+    "repack:code-server": "node scripts/vendor-code-server-pkg.mjs",
+    "publish:repacks": "node scripts/publish-repacks.mjs",
+    "prepack": "node scripts/vendor-code-server.mjs",
     "build:client": "node scripts/build-client.mjs"
   },
   "devDependencies": {
@@ -58,9 +69,47 @@
     "motion": "^12.0.0"
   },
   "license": "MIT",
-  "allowScripts": {
-    "code-server": false,
-    "argon2": true,
-    "unrs-resolver": true
+  "dependencies": {
+    "@microsoft/1ds-core-js": "3.2.13",
+    "@microsoft/1ds-post-js": "3.2.13",
+    "@vscode/iconv-lite-umd": "0.7.1",
+    "@vscode/ripgrep-universal": "1.18.0",
+    "@vscode/sandbox-runtime": "0.0.1",
+    "@vscode/tree-sitter-wasm": "0.3.1",
+    "@vscode/vscode-languagedetection": "1.0.23",
+    "@xterm/addon-clipboard": "0.3.0-beta.301",
+    "@xterm/addon-image": "0.10.0-beta.299",
+    "@xterm/addon-ligatures": "0.11.0-beta.299",
+    "@xterm/addon-progress": "0.3.0-beta.299",
+    "@xterm/addon-search": "0.17.0-beta.299",
+    "@xterm/addon-serialize": "0.15.0-beta.299",
+    "@xterm/addon-unicode11": "0.10.0-beta.299",
+    "@xterm/addon-webgl": "0.20.0-beta.298",
+    "@xterm/headless": "6.1.0-beta.301",
+    "@xterm/xterm": "6.1.0-beta.302",
+    "cookie": "0.7.2",
+    "detect-libc": "2.1.2",
+    "http-proxy-agent": "7.0.0",
+    "https-proxy-agent": "7.0.2",
+    "jschardet": "3.1.4",
+    "katex": "0.16.22",
+    "minimist": "1.2.8",
+    "node-addon-api": "6.1.0",
+    "tar": "7.5.22",
+    "tas-client": "0.4.3",
+    "typescript": "6.0.3",
+    "vscode-oniguruma": "1.7.0",
+    "vscode-regexpp": "3.1.0",
+    "vscode-textmate": "9.3.2",
+    "ws": "8.21.0",
+    "yauzl": "3.3.1",
+    "yazl": "2.4.3",
+    "zod": "4.4.3"
+  },
+  "optionalDependencies": {
+    "@jinsiyu/dsh-code-server-runtime-win32-arm64": "^0.1.37",
+    "@jinsiyu/dsh-code-server-runtime-win32-x64": "^0.1.37",
+    "@jinsiyu/dshcs-code-server-win32-arm64": "4.136.2",
+    "@jinsiyu/dshcs-code-server-win32-x64": "4.136.2"
   }
 }
