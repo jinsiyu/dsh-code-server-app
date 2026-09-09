@@ -69,7 +69,7 @@ pnpm pack
 
 ```powershell
 # 2) 安装(发布形态 tarball;插件无 postinstall → 无需 pnpm approve-builds / allowBuilds)
-dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.31.tgz
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.32.tgz
 ```
 
 > 安装只落插件文件,**不执行任何包脚本、不安装 code-server**(pnpm 不会提示 build scripts 许可)。
@@ -83,7 +83,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
 - **code-server 不在 `dependencies`**(pnpm 不触碰它、无脚本许可问题),改由
   `scripts/setup-code-server.mjs` 在 **profile 专用目录**用 **npm** 按需安装
   **最新版** `code-server`(不锁版本,安装时取 npm latest):
-  - 触发方式:host `POST /code-server/setup`(启动安装指引弹窗「开始安装」/ 设置卡片「安装环境」)
+  - 触发方式:host `POST /api/code-server/setup`(启动安装指引弹窗「开始安装」/ 设置卡片「安装环境」)
     或手动 `npm run setup:code-server`;
   - 安装根:`<profile>\.code-server-app`(如 `C:\Users\User\.dsh\profiles\web\.code-server-app`),
     独立项目,与 profile 依赖树隔离(避开 ERESOLVE);
@@ -210,14 +210,31 @@ host 探测顺序:`<profile>\.code-server-app`(专用目录)> 插件包内 `node
     bin: C:\Users\User\AppData\Roaming\npm\code-server.cmd
 ```
 
-## JSON API(同源 fetch,浮层与网页共用)
+## JSON API(同源 fetch;web 与 desktop 同一套路径)
+
+**不依赖 `webServer`**:host 半部经 `ctx.connection.fetch.register` 把路由挂在 DSH Connection 的共享 `/api` 通道上——
+web profile 由 Connection 自己把 `/api` 前缀挂到 webServer(带 Host/Origin 校验 + 浏览器鉴权),
+desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createSharedFetchHandler('/api')`(IPC 帧管道,无 HTTP 服务器)。
+客户端只写相对路径 `fetch('/api/code-server/<op>')`,两端行为一致。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/code-server/status` | `{ ok, running, status, host, port, pid, cwd, url, version, error, logTail, adopted }`(另含 `env` 环境检测与 `setup` 安装任务进度) |
-| POST | `/code-server/start` | body `{ cwd? }`(省略 cwd 不切换工作目录);幂等 |
-| POST | `/code-server/stop` | 停止并回收进程树 |
-| POST | `/code-server/setup` | 后台执行环境安装(npm 自装 code-server + native + VS Code 内部依赖);进度经 `status.setup` 轮询 |
+| GET | `/api/code-server/status` | `{ ok, running, status, host, port, pid, cwd, url, version, error, logTail, adopted }`(另含 `env` 环境检测与 `setup` 安装任务进度) |
+| POST | `/api/code-server/start` | body `{ cwd? }`(省略 cwd 不切换工作目录);幂等 |
+| POST | `/api/code-server/stop` | 停止并回收进程树 |
+| POST | `/api/code-server/setup` | 后台执行环境安装(npm 自装 code-server + native + VS Code 内部依赖);进度经 `status.setup` 轮询 |
+| POST | `/api/code-server/open-file` | body `{ file }` — 写信号文件,由内置扩展 `dshcs-open-file` 在 code-server 中打开 |
+
+> 插件不再注册 `/code-server/*` 这类 webServer 专有路由;code-server 图标已内联为 data URI(client bundle 内),
+> 因此客户端不请求任何插件自有 HTTP 资源。
+
+## DSH Desktop(无 webServer)
+
+- host 半部 `inject = ['connection', 'settings']`(**不含 `webServer`**)——desktop profile 关掉了 webserver/web-runtime,
+  本插件照常工作;`/api/*` 请求由 Electron `dsh-app://` 协议处理器 → IPC 帧管道 → `createSharedFetchHandler('/api')`。
+- 右侧栏标签、guide 入口框、产物按钮、设置卡片在 desktop 下与 web 相同(code-server 仍是本机 `http://127.0.0.1:<port>` 的 iframe;
+  桌面端 `webSecurity: true` 且页面无 CSP 限制,跨源 iframe 正常加载)。
+- 安装到 desktop profile:`dsh plugin --profile desktop add dsh-code-server-app@<版本>`(或桌面端插件管理窗)。
 
 ## 已知限制
 

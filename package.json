@@ -1,7 +1,7 @@
 {
   "name": "dsh-code-server-app",
-  "version": "0.1.31",
-  "description": "Integrate code-server (VS Code in the browser) into DSH Web: right-sidebar tab (DSH >= 0.1.5-alpha.1) with a floating-ball fallback for older hosts, over a /code-server JSON API (host-side process lifecycle).",
+  "version": "0.1.32",
+  "description": "Integrate code-server (VS Code in the browser) into DSH Web and Desktop: right-sidebar tab (DSH >= 0.1.5-alpha.1) with a floating-ball fallback for older hosts, over the Connection /api channel (ctx.connection.fetch; no webServer dependency) with host-side process lifecycle.",
   "homepage": "https://github.com/jinsiyu/dsh-code-server-app",
   "repository": {
     "type": "git",

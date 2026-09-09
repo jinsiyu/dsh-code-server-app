@@ -5,10 +5,12 @@
 // 直接落在 factory 的 require 参数上(DSH 冻结模块表;种子含 react/jsx-runtime)。
 // 唯一源码:src/factory.js;改动后执行 `pnpm run build:client` 重新生成 lib/client.js。
 //
-// 数据通道:同源 fetch DSH webServer 上的 /code-server JSON API
-//   GET  /code-server/status → { ok, running, status, port, host, pid, cwd, url, version, error, logTail, adopted }
-//   POST /code-server/start  → { cwd? } → status
-//   POST /code-server/stop   → status
+// 数据通道:同源 fetch DSH Connection 的共享 /api 通道(host: ctx.connection.fetch.register)
+//   GET  /api/code-server/status → { ok, running, status, port, host, pid, cwd, url, version, error, logTail, adopted }
+//   POST /api/code-server/start  → { cwd? } → status
+//   POST /api/code-server/stop   → status
+//   POST /api/code-server/setup / open-file
+// web 与 desktop 路径相同:web 由 webServer 的 /api 前缀承载,desktop 由 IPC 帧管道承载 → 插件不依赖 webServer。
 //
 // UI 载体(二选一,运行时特性检测,不按版本号硬判):
 //   A) DSH ≥ 0.1.5-alpha.1 且右侧栏服务就绪(ctx.inject(['sidebarRightTabs','sidebarRight'])
@@ -55,7 +57,7 @@ let React = require('react')
       return React.useSyncExternalStore(subscribe, getState)
     }
 
-    // ---------- 安装失败横幅(直接 DOM,顶部固定;点"重新安装"走 /code-server/setup) ----------
+    // ---------- 安装失败横幅(直接 DOM,顶部固定;点"重新安装"走 /api/code-server/setup) ----------
     var BANNER_ID = 'dshcs-setup-error-banner'
     function showSetupErrorBanner(info) {
       try {
@@ -131,14 +133,21 @@ let React = require('react')
       return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
     }
 
-    // ---------- /code-server API ----------
+    // ---------- /api/code-server API ----------
+    // 通道:DSH Connection 服务的共享 /api 通道(host 侧 ctx.connection.fetch.register)。
+    // web 由 webServer 的 /api 前缀承载,desktop 由 IPC 帧管道承载 → 客户端只写相对路径,
+    // 不再依赖 /code-server/* 这类 webServer 专有路由。
+    var API_PREFIX = '/api'
+    // code-server 官方图标(assets/favicon.svg 内联为 data URI)。
+    // 内联原因:插件不再注册任何 HTTP 路由(desktop 无 webServer),图标不依赖服务端路径。
+    var ICON_URL = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiB2aWV3Qm94PSIwIDAgMTQ3IDE0NyIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KICA8c3R5bGU+QG1lZGlhIChwcmVmZXJzLWNvbG9yLXNjaGVtZTogZGFyaykgeyogeyBmaWxsOiB3aGl0ZTsgfX08L3N0eWxlPgogIDxwYXRoIGQ9Im00Mi40MjE0LDM5LjY1NWMtMjQuNDA1NywwIC00Mi4xNTU0LDEzLjE3MjEgLTQyLjE1NTQsMzMuODQ1YzAsMjAuNTgxNCAxOC40ODkyLDMzLjg0NSA0Mi4xNTU0LDMzLjg0NWMyMy42NjYyLDAgMzguMTgwMywtMTEuNjE3MSAzOC43MzQ5LC0yOC43MjI1bC0yMS4wNzc3LC0wLjQ1NzRjLTAuOTI0NCw5LjMzMDMgLTkuMTA1OSwxNS4xODQ1IC0xNy42NTcyLDE1LjE4NDVjLTExLjc0MDYsMCAtMjAuNDMwNiwtNy41OTIyIC0yMC40MzA2LC0xOS44NDk2YzAsLTEyLjI1NzQgOC42OSwtMTkuOTg2OCAyMC40MzA2LC0yMC4yMTU1YzguNTUxMywtMC4xODMgMTYuOTE3Nyw1Ljk0NTcgMTcuNDcyMywxNS4yNzZsMjEuMDc3NywtMC42NDAzYy0wLjQ2MjIsLTE2LjgzMTEgLTE0LjE0NDIsLTI4LjI2NTIgLTM4LjU1LC0yOC4yNjUyem00OC44NDQ2LDJsNTUuNDY4LDBsMCw2NC4wMzExbC01NS40NjgsMGwwLC02NC4wMzExeiIgY2xpcC1ydWxlPSJldmVub2RkIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiLz4KPC9zdmc+Cg=='
     async function api(path, body) {
       var options = { method: body === undefined ? 'GET' : 'POST', headers: {} }
       if (body !== undefined) {
         options.headers['content-type'] = 'application/json'
         options.body = JSON.stringify(body)
       }
-      var res = await fetch(path, options)
+      var res = await fetch(API_PREFIX + path, options)
       var text = await res.text()
       var data = null
       try { data = text === '' ? null : JSON.parse(text) } catch (e) { data = null }
@@ -454,7 +463,7 @@ let React = require('react')
         }
       }, [props.url])
       if (props.url != null && broken !== true) {
-        // 固化官方图标(host /code-server/icon.svg,assets 随插件分发)
+        // 固化官方图标(内联 data URI,随插件分发;不依赖任何服务端路由)
         // draggable:false 禁止原生图片拖拽,避免抓住图标时触发浏览器默认拖动(与指针拖拽打架)
         return React.createElement('img', {
           src: props.url, key: 'img-' + props.url, alt: '', 'aria-hidden': true,
@@ -500,7 +509,7 @@ let React = require('react')
       var isOpen = store.open === true
       // 悬浮球图标固化:始终使用 host 提供的 code-server 官方图标(assets 随插件分发),
       // 不依赖 code-server 运行时——启动即显示,未运行/加载失败才回退自绘网格。
-      var iconUrl = '/code-server/icon.svg'
+      var iconUrl = ICON_URL
       // 拖动定位:pos=null 时用默认位(输入框上方、右侧);拖动后记忆到 localStorage
       var [pos, setPos] = React.useState(loadBallPos)
       var [dragging, setDragging] = React.useState(false)
@@ -946,11 +955,11 @@ let React = require('react')
     // 产物按钮/设置卡调用侧栏的桥接;未注册(旧版 DSH)时保持 null。
     var sidebarBridge = { openTab: null }
 
-    /** 侧栏入口图标:code-server 官方图标(host /code-server/icon.svg,随插件分发,不依赖运行时)。 */
+    /** 侧栏入口图标:code-server 官方图标(内联 data URI,不依赖服务端路径)。 */
     function CodeServerIcon(props) {
       var size = props != null && typeof props.size === 'number' ? props.size : 16
       return React.createElement('img', {
-        src: '/code-server/icon.svg', alt: '', 'aria-hidden': true, draggable: false,
+        src: ICON_URL, alt: '', 'aria-hidden': true, draggable: false,
         className: props != null ? props.className : undefined,
         style: { width: size, height: size, display: 'block', objectFit: 'contain', WebkitUserDrag: 'none', userSelect: 'none' },
       })
@@ -1189,7 +1198,7 @@ let React = require('react')
         panel.style.cssText = 'width:min(520px,92vw);background:var(--dsw-alias-bg-base,#fff);border-radius:14px;padding:20px 22px;box-shadow:0 24px 64px rgba(13,22,38,.3);border:1px solid var(--dsw-alias-border-l2,#dfe3eb);font:13px/1.6 system-ui,sans-serif;color:var(--dsw-alias-label-primary,#172033)'
         var head = document.createElement('div')
         head.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:10px'
-        head.innerHTML = '<img src="/code-server/icon.svg" alt="" style="width:26px;height:26px;object-fit:contain"><strong style="font-size:15px">安装 Code Server 环境</strong>'
+        head.innerHTML = '<img src="' + ICON_URL + '" alt="" style="width:26px;height:26px;object-fit:contain"><strong style="font-size:15px">安装 Code Server 环境</strong>'
         var closeX = document.createElement('button')
         closeX.type = 'button'
         closeX.setAttribute('aria-label', '关闭')
@@ -1346,7 +1355,7 @@ let React = require('react')
         }
         setSaving(false)
       }
-      // ---- 环境检测/安装(host /code-server/status.env + /code-server/setup) ----
+      // ---- 环境检测/安装(host /api/code-server/status.env + /api/code-server/setup) ----
       var [envInfo, setEnvInfo] = React.useState(null) // null=待检测 | { ok, entry, native, vscodeInner, pathToSetup } | { error }
       var [setupBusy, setSetupBusy] = React.useState(false)
       var [setupMsg, setSetupMsg] = React.useState(null)
@@ -1528,9 +1537,9 @@ let React = require('react')
       return paths.length === 0 ? null : paths
     }
     function OpenFileGlyph(props) {
-      // code-server 官方图标(host /code-server/icon.svg,assets 固化分发)
+      // code-server 官方图标(内联 data URI,随插件分发)
       return React.createElement('img', {
-        src: '/code-server/icon.svg', alt: '', 'aria-hidden': true, draggable: false,
+        src: ICON_URL, alt: '', 'aria-hidden': true, draggable: false,
         style: { width: 15, height: 15, display: 'block', objectFit: 'contain', WebkitUserDrag: 'none', userSelect: 'none' },
       })
     }

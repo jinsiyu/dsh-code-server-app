@@ -62,7 +62,7 @@ pnpm pack
 
 ```powershell
 # 2) Install (published tarball; the plugin has no postinstall → no pnpm approve-builds / allowBuilds needed)
-dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.31.tgz
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.32.tgz
 ```
 
 > Installation only drops plugin files: **no package scripts run and code-server is not installed**
@@ -77,7 +77,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
 - **code-server is not in `dependencies`** (pnpm never touches it; no script-approval issues); instead
   `scripts/setup-code-server.mjs` installs **the latest** `code-server` **with npm into a dedicated profile
   directory** on demand (version not pinned; npm `latest` is used at install time):
-  - Triggers: host `POST /code-server/setup` (startup guide modal "Install" / settings card "Install environment"),
+  - Triggers: host `POST /api/code-server/setup` (startup guide modal "Install" / settings card "Install environment"),
     or manually `npm run setup:code-server`;
   - Install root: `<profile>\.code-server-app` (e.g. `C:\Users\User\.dsh\profiles\web\.code-server-app`),
     a standalone project isolated from the profile dependency tree (avoids ERESOLVE);
@@ -208,15 +208,32 @@ User-level override example (write in `$DSH_HOME/profiles/web/cordis.patch.yml`,
     bin: C:\Users\User\AppData\Roaming\npm\code-server.cmd
 ```
 
-## JSON API (same-origin fetch; shared by the overlay and the web page)
+## JSON API (same-origin fetch; identical paths in web and desktop)
+
+**No `webServer` dependency**: the host half registers its routes on DSH Connection's shared `/api` channel through
+`ctx.connection.fetch.register`. In the web profile Connection mounts the `/api` prefix on webServer itself (with the
+Host/Origin fence and browser auth); in the desktop profile `apps/desktop-host` feeds `/api/*` into the same
+`createSharedFetchHandler('/api')` (IPC framed pipe, no HTTP server). The client only writes relative paths
+(`fetch('/api/code-server/<op>')`), so both carriers behave identically.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/code-server/status` | `{ ok, running, status, host, port, pid, cwd, url, version, error, logTail, adopted }` (also `env` environment check and `setup` install-task progress) |
-| POST | `/code-server/start` | body `{ cwd? }` (omit cwd to keep the current workspace); idempotent |
-| POST | `/code-server/stop` | Stop and recycle the process tree |
-| POST | `/code-server/setup` | Run the environment install in the background (npm install code-server + native + VS Code internal deps); progress via `status.setup` polling |
-| POST | `/code-server/open-file` | body `{ file }` — writes the signal consumed by the built-in `dshcs-open-file` extension to open the file in code-server (also auto-expands the window from the client side) |
+| GET | `/api/code-server/status` | `{ ok, running, status, host, port, pid, cwd, url, version, error, logTail, adopted }` (also `env` environment check and `setup` install-task progress) |
+| POST | `/api/code-server/start` | body `{ cwd? }` (omit cwd to keep the current workspace); idempotent |
+| POST | `/api/code-server/stop` | Stop and recycle the process tree |
+| POST | `/api/code-server/setup` | Run the environment install in the background (npm install code-server + native + VS Code internal deps); progress via `status.setup` polling |
+| POST | `/api/code-server/open-file` | body `{ file }` — writes the signal consumed by the built-in `dshcs-open-file` extension to open the file in code-server |
+
+> The plugin no longer registers `/code-server/*` webServer-only routes, and the code-server icon is inlined as a data URI
+> in the client bundle — the client requests no plugin-owned HTTP resource at all.
+
+## DSH Desktop (no webServer)
+
+- The host half is `inject = ['connection', 'settings']` (**no `webServer`**) — the desktop profile disables webserver/web-runtime
+  and the plugin still works: `/api/*` requests travel Electron `dsh-app://` protocol handler → IPC framed pipe → `createSharedFetchHandler('/api')`.
+- The right-sidebar tab, guide entry box, artifact button, and settings card behave the same as in web (code-server remains an
+  iframe to the local `http://127.0.0.1:<port>`; the desktop renderer uses `webSecurity: true` with no CSP, so the cross-origin iframe loads).
+- Install into the desktop profile with `dsh plugin --profile desktop add dsh-code-server-app@<version>` (or the desktop plugin manager).
 
 ## Artifact open buttons
 
