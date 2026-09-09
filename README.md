@@ -11,7 +11,7 @@
 > - **需要微软专有扩展时**:从 Marketplace 网页下载 `.vsix`,用 `code-server --install-extension <文件>`(或放入 `--extensions-dir`)手动安装,即可在插件列表使用。
 
 静态 profile 插件(npm 包形态,host + client bundle),把最新版 [code-server](https://github.com/coder/code-server)
-**作为插件依赖随装**(package.json dependencies),插件启动时自动发现并使用它,
+**按需安装到 profile 专用目录**(安装插件本身零脚本、不装 code-server),插件启动时自动发现并使用它,
 无需全局 npm 安装、无需配置 `bin`。
 
 - **右下角悬浮球**(code-server 官方图标,输入框上方):点击**展开浮窗并亮起**(蓝色光环),再点击**收起并复原**;
@@ -33,12 +33,12 @@
 - process 生命周期由 host 插件管理:启动写 `$DSH_HOME/code-server/pid.json`,停止树级终止(taskkill /T 或进程组 SIGKILL),
   崩溃/退出实时更新状态;DSH host 重启后自动 adopt 仍在运行的实例(校验 pid + /healthz),不重复启动、不误杀别的进程;
 - `node_modules`(依赖,含 code-server)已被 `.gitignore` 排除,推送/克隆仓库后按下方
-  "安装插件(code-server 包内自装)"执行 `pnpm pack` + `dsh plugin --profile web add` 即可。
+  "安装插件(安装期零脚本,code-server 按需安装)"执行 `pnpm pack` + `dsh plugin --profile web add` 即可。
 
 > 本机(BM: Windows 11 ARM64)实测:`code-server@4.134.0`(with Code 1.135.0)
 > 随插件依赖安装并完成自动发现 → 启动 → healthz 200 → 运行中切换 cwd 重启 → 停止 → 回收全链路验证。
 
-## 安装插件(code-server 包内自装,零 flag 零报错)
+## 安装插件(安装期零脚本,code-server 按需安装)
 
 ```powershell
 # 1) 打包(在插件工作区)
@@ -47,34 +47,43 @@ cd C:\Users\User\Desktop\dsh-code-server-app
 pnpm install            # esbuild + motion(仅打包用)
 pnpm run build:client   # src/factory.js → lib/client.js
 pnpm pack
-
-# 2) 一次性前置:批准插件 postinstall 许可(pnpm 只认宿主根配置,无包内声明路径)
-cd C:\Users\User\.dsh\profiles\web
-pnpm approve-builds dsh-code-server-app   # 交互选 yes;失败时手动编辑 pnpm-workspace.yaml
 ```
-
-> 若 `approve-builds` 不接受 file: spec(提示 unknown),把 `pnpm-workspace.yaml` 的
-> `allowBuilds` 中 `dsh-code-server-app@file:...tgz`改为 `true`
-> (等价于交互批准,仅此一次;之后安装无需再次处理)。
 
 ```powershell
-# 3) 安装(发布形态 tarball;无需 --ignore-scripts / --allow-build)
-dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.15.tgz
+# 2) 安装(发布形态 tarball;插件无 postinstall → 无需 pnpm approve-builds / allowBuilds)
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.30.tgz
 ```
+
+> 安装只落插件文件,**不执行任何包脚本、不安装 code-server**(pnpm 不会提示 build scripts 许可)。
+> code-server 在**首次使用时按需安装**:启动安装指引弹窗「开始安装」→ 设置 → 插件 → Code Server
+> → 「安装环境」,或手动 `node <插件目录>\scripts\setup-code-server.mjs`(`npm run setup:code-server`)。
 
 ### 安装机制
 
-- **code-server 不在 `dependencies`**(pnpm 不触碰它、无脚本许可问题);
-- 插件的 `postinstall`(`scripts/setup-code-server.mjs`)在 **profile 专用目录**用 **npm** 自装
+- **安装期零脚本**:`package.json` 无 `postinstall`,pnpm 安装插件时不执行任何包脚本
+  (无需 `pnpm approve-builds` / `allowBuilds` 批准),也不安装 code-server;
+- **code-server 不在 `dependencies`**(pnpm 不触碰它、无脚本许可问题),改由
+  `scripts/setup-code-server.mjs` 在 **profile 专用目录**用 **npm** 按需安装
   **最新版** `code-server`(不锁版本,安装时取 npm latest):
+  - 触发方式:host `POST /code-server/setup`(启动安装指引弹窗「开始安装」/ 设置卡片「安装环境」)
+    或手动 `npm run setup:code-server`;
   - 安装根:`<profile>\.code-server-app`(如 `C:\Users\User\.dsh\profiles\web\.code-server-app`),
     独立项目,与 profile 依赖树隔离(避开 ERESOLVE);
   - 安装根自带 `package.json`(allowScripts:`code-server: false` 跳过官方 `sh ./postinstall.sh`
     ——Windows 无 sh 会失败、`argon2/unrs-resolver: true` native 构建,均不带版本号);
   - 装完补装 VS Code 内部依赖(144 包)+ `bin\code-server.cmd`;
 - **code-server 落在** `<profile>\.code-server-app\node_modules\code-server\`;
-  幂等自愈(pnpm 重装插件 → postinstall 重跑 → 检测已实例化则跳过;**若已装版本与最新不一致则自动升级到最新**)。
-- **锁版本**:设置环境变量 `DSHCS_CODE_SERVER_VERSION`(如在 dsh web 环境)可钉住某个版本(如 `4.134.0`);缺省跟随 npm latest。
+  幂等自愈(每次按需调用先检测:已实例化且版本与 npm latest 一致则跳过;**不一致则自动升级到最新**)。
+- **锁版本**:设置环境变量 `DSHCS_CODE_SERVER_VERSION`(需出现在**执行 setup 的进程**环境中,UI 触发即 dsh web 进程)可钉住某个版本(如 `4.134.0`);缺省跟随 npm latest。
+- **为什么安装期不装**:安装快、没有 C++ 工具链也能装成功(缺工具链的失败延后到「开始安装」,错误显示在
+  顶部横幅与设置卡片日志);code-server 升级只发生在按需安装时,**不再随每次重装插件自动升级**。
+
+> **从旧版本升级的迁移提示(≤ 0.1.28)**:旧版插件带 `postinstall`,profile 的 `pnpm-workspace.yaml`
+> 里曾有 `allowBuilds: dsh-code-server-app@file:...<旧版本>.tgz: true` 条目,pnpm 11 还可能在
+> `node_modules/.modules.yaml` 留下 `ignoredBuilds` 记录——于是每次安装后都会报
+> `[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: dsh-code-server-app@file:...`(即使新版本已无任何
+> 安装脚本)。处理:把 profile 的 `pnpm-workspace.yaml` 中该包相关条目合并为一条
+> `dsh-code-server-app: false`(显式声明"永不构建"),重跑安装即可;本机 0.1.29 升级已完成该迁移。
 
 > **卸载**:code-server 目录独立于插件包——先手动删除
 > `Remove-Item -Recurse -Force <profile>\.code-server-app`,再 `dsh plugin --profile web remove dsh-code-server-app`。
@@ -88,8 +97,9 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
 dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 ```
 
-> 源码路径以 `link:` 安装,pnpm 会把 code-server 装到**插件工作区 node_modules**;
-> 与方案 D 的布局不同(host 已支持两种)。首次也需按上面的步骤 2 批准 postinstall 许可。
+> 源码路径以 `link:` 安装;host 的 `scripts/setup-code-server.mjs` 在 profile 布局不可用时回退把
+> code-server 装到**插件工作区 node_modules**(两种布局 host 都支持)。
+> 安装本身不跑脚本,首次使用需点「开始安装」或手动 `npm run setup:code-server`。
 >
 > **改动 client bundle**:编辑 `src/factory.js` 后执行 `pnpm run build:client`
 > 重新生成 `lib/client.js`(仓库不跟踪该产物;浏览器刷新即生效,host 无需重启)。
@@ -97,7 +107,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 
 ### 安装环境要求(需要编译的包与工具链)
 
-安装过程(`postinstall` → `scripts/setup-code-server.mjs` → npm 自装 code-server + VS Code 内部依赖)中,**真正需要本地编译的只有一个包**:
+按需安装过程(`scripts/setup-code-server.mjs` → npm 自装 code-server + VS Code 内部依赖)中,**真正需要本地编译的只有一个包**(安装插件本身不需要任何工具链):
 
 | 包 | 构建方式 | ARM64 本地编译 | x64 本地编译 |
 |---|---|---|---|
@@ -127,15 +137,17 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 - **VS 需 Spectre 缓解库组件**(MSB8040):Visual Studio Installer → 单个组件 →
   "适用于 ARM64 的 MSVC v18x Spectre-mitigated 库"(x86/x64 同理)。
 - **node-gyp 13.x**(旧版 9.x 不识别 VS 2026):`npm install -g node-gyp@latest`。
-- code-server 最新版要求 **Node v24**(postinstall 校验;本机 v24.13.1 通过)。
+- code-server 最新版要求 **Node v24**(本机 v24.13.1 通过;版本不足时启动会报错)。
 - 若不需要插件自足(例如已有全局 code-server),可跳过安装:
   插件会回退到 PATH/配置的 `bin`(见"配置"表)。
 
 ### 升级 code-server 版本
 
-- **默认自动**:postinstall 不锁版本——已装版本与 npm latest 不一致时自动重装到最新(无需手动改)。
-- **想钉住版本**:设环境变量 `DSHCS_CODE_SERVER_VERSION`(如 `4.134.0`);去掉它回到跟随 latest。
-- 重新 `pnpm pack` + `dsh plugin --profile web add <tgz>` 即触发 postinstall 检查(或直接删 `.code-server-app` 重装)。
+- **默认自动**:脚本不锁版本——按需安装时若已装版本与 npm latest 不一致则自动重装到最新(无需手动改)。
+- **触发检查**:设置 → 插件 → Code Server → 「安装环境」,或手动 `npm run setup:code-server`;
+  **不再随插件重装自动升级**(重装插件本身不安装/升级 code-server)。
+- **想钉住版本**:设环境变量 `DSHCS_CODE_SERVER_VERSION`(如 `4.134.0`;需在 dsh web 进程环境中);去掉它回到跟随 latest。
+- 本机当前实测:已装 `4.135.0`,npm latest `4.136.2`——下次按需安装会升级到 `4.136.2`。
 
 ### 兼容旧的 runtime 目录安装
 

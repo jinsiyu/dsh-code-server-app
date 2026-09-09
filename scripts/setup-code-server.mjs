@@ -1,15 +1,18 @@
-// scripts/setup-code-server.mjs — 方案 D:插件包内 npm 自装 code-server(Windows 兼容)。
+// scripts/setup-code-server.mjs — 按需安装 code-server(Windows 兼容)。
 //
 // 背景:code-server 的官方 postinstall 是 `sh ./postinstall.sh`(依赖 bash/symlink),
 // Windows 无 sh 会直接失败;pnpm 的 build-scripts 许可只认宿主根 pnpm-workspace.yaml,
-// 依赖包声明无效。因此把 code-server 从 dependencies 移除,改由本脚本在插件包
-// postinstall 内用 **npm** 安装:
-//   - npm 读取包内 package.json 的 allowScripts(code-server:false 跳过 sh;argon2/unrs
+// 依赖包声明无效。因此把 code-server 从 dependencies 移除,改由本脚本用 **npm** 安装:
+//   - npm 读取安装根 package.json 的 allowScripts(code-server:false 跳过 sh;argon2/unrs
 //     true 构建 native)——无需 --ignore-scripts,无需改宿主配置,零报错;
-//   - 安装落在 **包内 node_modules**(--prefix 钉死),不写全局、不动 profile 顶层。
+//   - 安装落在 **profile 专用目录**(--prefix 钉死),不写全局、不动 profile 顶层。
 //
-// 幂等:code-server 已实例化(entry + VS Code 内部依赖 + argon2 native 均在)则跳过;
-// pnpm 重装插件后会重跑 postinstall → 自动重新自装(自愈)。
+// 调用时机(插件安装期没有 postinstall,安装过程零脚本):
+//   - host 运行时:POST /code-server/setup(启动安装指引弹窗「开始安装」/ 设置卡片「安装环境」);
+//   - 手动:npm run setup:code-server / node scripts/setup-code-server.mjs。
+//
+// 幂等:code-server 已实例化(entry + VS Code 内部依赖 + argon2 native 均在)且版本与
+// npm latest 一致则跳过;版本不一致则升级(每次调用都重新检查 → 自愈)。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
