@@ -14,6 +14,24 @@
 **按需安装到 profile 专用目录**(安装插件本身零脚本、不装 code-server),插件启动时自动发现并使用它,
 无需全局 npm 安装、无需配置 `bin`。
 
+## UI 载体(DSH 版本决定,运行时特性检测)
+
+| DSH 版本 | 载体 | 入口 |
+|---|---|---|
+| **≥ 0.1.5-alpha.1**(有 `sidebarRight` / `sidebarRightTabs` 服务) | **右侧栏标签**(kind=`code-server`,标签名 `Code Server`),**不再使用悬浮窗** | ① 右侧栏「开始」页的 **Code Server 入口框**;② 每轮产物旁的图标按钮;③ 设置 → 插件 → Code Server → **「在右侧栏打开」** |
+| 更早(无右侧栏服务) | 悬浮球 + 内部浮动窗口(与旧版一致) | 右下角悬浮球 |
+
+- 检测方式:`ctx.inject(['sidebarRightTabs','sidebarRight'], …)`——服务就绪才注册标签类型;
+  服务缺失/注册失败则整段不生效,自动回退悬浮球(不按版本号硬判,也不影响插件激活)。
+- 侧栏标签内即 code-server 页面(iframe),跟随当前会话工作区;面板可折叠/分屏/浮动/全屏(由 DSH 右侧栏提供)。
+- **已知取舍**:DSH 只渲染「当前激活标签」的 body,切到别的标签再切回会重挂 iframe
+  (code-server 整页重载,未保存的编辑缓冲区会丢);需要长驻会话时请把该标签**浮动**出来或保持激活。
+- 设置卡片在侧栏模式下隐藏「保留输入框上方空间」(只对浮窗有意义);
+  「窗口化打开(新标签页)」仍然生效(开启后各入口改为浏览器新标签页打开)。
+- `windowedOpen` 优先级最高:开启时入口按钮一律新开浏览器标签页。
+
+## 悬浮球 / 浮窗(仅旧版 DSH 回退路径)
+
 - **右下角悬浮球**(code-server 官方图标,输入框上方):点击**展开浮窗并亮起**(蓝色光环),再点击**收起并复原**;
   **可按住拖动到任意位置**(松手后记忆,刷新不丢;拖完不会误触发点击);
   无侧栏按钮、无窗口控制按钮组(球是唯一入口/开关);球上带运行状态点(绿=运行 / 黄=启动中 / 红=错误);
@@ -22,7 +40,7 @@
   **最大化后按住顶部细条向下拖 = 恢复**并继续跟手拖动)、双击最大化、8 向缩放、Esc 关闭(与球收起等效),
   初始位置在输入框上方靠右,最大化与缩放都止于输入栏上方,不遮挡 composer;
 - 窗口内直接是 code-server 页面(iframe);未运行/启动失败时显示状态说明与错误信息;
-- code-server 服务目录**跟随活动工作区/会话**:浮层打开期间切换 DSH 会话/工作区,code-server 自动重启到新目录
+- code-server 服务目录**跟随活动工作区/会话**:打开期间切换 DSH 会话/工作区,code-server 自动重启到新目录
   (解析优先级:当前会话 cwd → 会话所属 workspace.path → recentWorkspace.path → 首个 workspace.path);
   打开目录显示在 code-server 页面内(`?folder=<cwd>`,跟随切换时页面自动重新加载);
   实现要点:iframe src 必须带 `?folder=<cwd>`——code-server 前端会记住“最近工作区”并自行恢复,
@@ -51,7 +69,7 @@ pnpm pack
 
 ```powershell
 # 2) 安装(发布形态 tarball;插件无 postinstall → 无需 pnpm approve-builds / allowBuilds)
-dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.30.tgz
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.31.tgz
 ```
 
 > 安装只落插件文件,**不执行任何包脚本、不安装 code-server**(pnpm 不会提示 build scripts 许可)。
@@ -162,8 +180,8 @@ host 探测顺序:`<profile>\.code-server-app`(专用目录)> 插件包内 `node
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `reserveComposer` | `true` | 窗口是否**保留输入框上方空间**:开启时窗口初始/拖动/缩放/最大化都止于输入栏上方(不遮挡 composer);关闭后允许盖住输入框(最大化到视口底) |
-| `windowedOpen` | `false` | **窗口化打开**:开启后点击悬浮球在浏览器**新标签页**打开 code-server(自动启动并跟随当前工作区目录);关闭(默认)使用内部浮动窗口 |
+| `reserveComposer` | `true` | 窗口是否**保留输入框上方空间**:开启时窗口初始/拖动/缩放/最大化都止于输入栏上方(不遮挡 composer);关闭后允许盖住输入框(最大化到视口底)。**仅对旧版 DSH 的浮窗生效**——右侧栏模式下该行隐藏 |
+| `windowedOpen` | `false` | **窗口化打开**:开启后各入口(产物按钮 / 设置卡 / 悬浮球)在浏览器**新标签页**打开 code-server(自动启动并跟随当前工作区目录);关闭(默认)使用右侧栏标签(旧版 DSH 为内部浮动窗口) |
 
 > 卡片改动经 `scope.watch` 实时生效(host 端 status API 同步返回 `reserveComposer` 与
 > `windowedOpen`,客户端立即生效);无需重启 dsh。**新增设置键后首次使用前需重启 dsh web**,
@@ -205,6 +223,8 @@ host 探测顺序:`<profile>\.code-server-app`(专用目录)> 插件包内 `node
 
 - **子路径不支持**:code-server 前端使用根路径/WebSocket/Service Worker,因此必须独立端口
   iframe 直连,不做 DSH webServer 反向代理;`--base-path` 官方不支持。
-- **跨会话单实例**:host 级共享一份 code-server;切换 cwd 需重启实例(浮层自动处理并提示)。
+- **跨会话单实例**:host 级共享一份 code-server;切换 cwd 需重启实例(右侧栏标签/浮窗自动处理并提示)。
+- **侧栏标签切换重载**:DSH 右侧栏只渲染当前激活标签的 body,切走再切回会重挂 iframe(code-server 整页重载);
+  长驻会话请保持该标签激活或将其浮动为独立面板。
 - **远程访问**:默认仅回环 + 无认证。跨机访问需改 `host` + `auth: password` + `passwordToken`,
   且浏览器必须能直接到达该主机(本插件的“在新标签打开”按 `host:port` 拼 URL)。

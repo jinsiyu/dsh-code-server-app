@@ -12,6 +12,21 @@
 
 A static profile plugin (npm package with host + client bundle) that installs the latest [code-server](https://github.com/coder/code-server) **on demand into a dedicated profile directory** (installing the plugin itself is script-free and does not install code-server), auto-discovered and used on startup — no global npm install, no `bin` configuration.
 
+## UI carrier (chosen by the DSH version, feature-detected at runtime)
+
+| DSH version | Carrier | Entry points |
+|---|---|---|
+| **>= 0.1.5-alpha.1** (has `sidebarRight` / `sidebarRightTabs`) | **Right-sidebar tab** (kind `code-server`, chip `Code Server`); the floating window is **no longer used** | ① the **Code Server box** on the sidebar's guide ("开始") page; ② the icon button beside each turn's artifacts; ③ Settings → Plugins → Code Server → **"Open in right sidebar"** |
+| older (no sidebar service) | floating ball + internal floating window (unchanged) | the bottom-right floating ball |
+
+- Detection: `ctx.inject(['sidebarRightTabs','sidebarRight'], …)` registers the tab type only when the services are ready; if they never appear (or registration fails) nothing is registered and the floating ball fallback stays in place. No version comparison, and the plugin's own activation is never blocked.
+- The sidebar tab hosts the code-server page (iframe) and follows the current session workspace; the panel can be collapsed/split/floated/fullscreened by DSH's right sidebar.
+- **Known trade-off**: DSH renders only the active tab's body, so switching away and back remounts the iframe (a full code-server reload; unsaved editor buffers are lost). Float the tab into its own panel or keep it active for long-running sessions.
+- In sidebar mode the settings card hides "Reserve space above the composer" (floating-window geometry only). "Open in a window (new tab)" still applies to every entry point.
+- `windowedOpen` has the highest priority: when on, entry buttons always open a browser tab.
+
+## Floating ball / window (legacy-DSH fallback path only)
+
 - **Floating ball** (bottom-right, official code-server icon, above the composer): click to **expand the floating window and light it up** (blue glow), click again to **collapse**; **drag to any position** (remembered across refreshes; no accidental click after drag);
   no sidebar button, no window control button group (the ball is the only entry/toggle); the ball carries a status dot (green = running / amber = starting / red = error);
 - Window is an **internal floating window** (modeled on dsh-univer-office's WorktreeWindow): fixed-position overlay + an inert root container, the window takes over pointer events,
@@ -47,7 +62,7 @@ pnpm pack
 
 ```powershell
 # 2) Install (published tarball; the plugin has no postinstall → no pnpm approve-builds / allowBuilds needed)
-dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.30.tgz
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.31.tgz
 ```
 
 > Installation only drops plugin files: **no package scripts run and code-server is not installed**
@@ -163,8 +178,8 @@ persisted via the official settings domain (`settingsScope`, namespace `code-ser
 
 | Key | Default | Description |
 |---|---|---|
-| `reserveComposer` | `true` | Whether the window **reserves space above the composer**: on, the window's initial/drag/resize/maximize stop above the composer (never covers it); off, it may cover the composer (maximize to viewport bottom) |
-| `windowedOpen` | `false` | **Open in a window**: on, clicking the floating ball opens code-server in a browser **new tab** (auto-starts and follows the active workspace); off (default) uses the internal floating window |
+| `reserveComposer` | `true` | Whether the window **reserves space above the composer**: on, the window's initial/drag/resize/maximize stop above the composer (never covers it); off, it may cover the composer (maximize to viewport bottom). **Applies to the legacy floating window only** — hidden in sidebar mode |
+| `windowedOpen` | `false` | **Open in a window**: on, every entry point (artifact button / settings card / floating ball) opens code-server in a browser **new tab** (auto-starts and follows the active workspace); off (default) uses the right-sidebar tab (or the internal floating window on older DSH) |
 
 > Card changes take effect immediately via `scope.watch` (the host status API returns `reserveComposer` and
 > `windowedOpen`; the client applies them at once); no dsh restart needed. **After adding new setting keys, restart dsh web before first use**,
@@ -206,7 +221,9 @@ User-level override example (write in `$DSH_HOME/profiles/web/cordis.patch.yml`,
 ## Artifact open buttons
 
 Each produced file (written/edited) in a turn is shown as a chip with a **code-server icon button** next to it
-in the conversation's turn tail; clicking either opens the file in code-server (and expands the floating window if collapsed).
+in the conversation's turn tail; clicking either opens the file in code-server — in the right-sidebar tab on
+DSH >= 0.1.5-alpha.1 (opening/expanding the column and focusing the tab), or in the floating window on older hosts
+(when `windowedOpen` is on, both open a browser tab instead).
 The `dshcs-open-file` extension is installed as a **built-in** extension of code-server (in `lib/vscode/extensions`),
 so users cannot remove it from the extensions panel.
 
@@ -214,6 +231,7 @@ so users cannot remove it from the extensions panel.
 
 - **No sub-path**: the code-server front-end uses root paths/WebSocket/Service Worker, so it must be a direct iframe on its own port;
   no DSH webServer reverse proxy; `--base-path` is not officially supported.
-- **Single instance across sessions**: one shared code-server per host; switching cwd requires a restart (the overlay handles it and hints).
+- **Single instance across sessions**: one shared code-server per host; switching cwd requires a restart (the sidebar tab / floating window handles it and hints).
+- **Sidebar tab switching reloads**: DSH's right sidebar renders only the active tab's body, so switching away and back remounts the iframe (a full code-server reload); keep the tab active or float it for long-running sessions.
 - **Remote access**: default is loopback + no auth. Cross-machine access requires `host` + `auth: password` + `passwordToken`,
   and the browser must be able to reach that host directly (the plugin's "open in new tab" builds the URL from `host:port`).

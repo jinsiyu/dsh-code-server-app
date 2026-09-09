@@ -1,4 +1,4 @@
-// dsh-code-server — client bundle(悬浮球 + 内部浮动窗口 iframe)
+// dsh-code-server — client bundle(右侧栏标签 iframe;旧版 DSH 回退悬浮球 + 浮动窗口)
 // 构建:node scripts/build-client.mjs → lib/client.js。
 // 产物形态:window.__ModuleLoader__.load({ id, factory })——esbuild 以 CJS 打包,
 // 整个 bundle 内嵌进 factory 函数体,静态 require('react'/'react-dom'/'react/jsx-runtime')
@@ -10,7 +10,17 @@
 //   POST /code-server/start  → { cwd? } → status
 //   POST /code-server/stop   → status
 //
-// UI 结构(参照 dsh-univer-office 的 WorktreeWindow):
+// UI 载体(二选一,运行时特性检测,不按版本号硬判):
+//   A) DSH ≥ 0.1.5-alpha.1 且右侧栏服务就绪(ctx.inject(['sidebarRightTabs','sidebarRight'])
+//      回调触发)→ 注册 tab 类型 kind=code-server(id=dsh-code-server-app):
+//        - 一段:ctx.sidebarRightTabs.register({ id, kind, priority:'extension', title, guide })
+//          → 右侧栏 guide 页出现入口框(data-sidebar-right-guide-entry="code-server")
+//        - 二段:ctx.slots.register({ name:'sidebar.right.pane.tab', key:id }, CodeServerBody)
+//          → tab 内渲染 code-server iframe;body 经 props.useTabInfo() 取 navigation/visible
+//        此时悬浮球与浮窗一律渲染 null(不再使用悬浮窗)。
+//   B) 服务缺失(旧版 DSH / 注册失败)→ 保持原样:shell.overlay 悬浮球 + 内部浮动窗口。
+//
+// 浮窗结构(参照 dsh-univer-office 的 WorktreeWindow,仅回退路径使用):
 //   - shell.overlay(id code-server):悬浮球(code-server 图标,点击展开/收起浮窗,
 //     打开时发光)+ 内部浮动窗口——无标题栏、无控制按钮,顶部细条拖动、
 //     双击最大化、8 向缩放;最大化/恢复/吸附动画由 motion 弹簧驱动
@@ -30,7 +40,8 @@ let React = require('react')
 
     // ---------- 模块级共享 store:同步 open/status + 悬浮球位置(动画锚点) --------haihui
     var listeners = new Set()
-    var state = { open: false, status: null, busy: false, ballPos: null, guideVisible: false, guideDismissed: false }
+    // sidebarActive=true 表示右侧栏服务已就绪并注册成功 → 悬浮球/浮窗全部停用。
+    var state = { open: false, status: null, busy: false, ballPos: null, guideVisible: false, guideDismissed: false, sidebarActive: false }
     function setState(patch) {
       state = Object.assign({}, state, patch)
       listeners.forEach(function (fn) { fn() })
@@ -179,6 +190,60 @@ let React = require('react')
       if (/^[A-Za-z]:\//.test(normalized)) folder = '/' + normalized
       else if (normalized.charCodeAt(0) !== 47) folder = '/' + normalized
       return status.url + '?folder=' + encodeURIComponent(folder)
+    }
+
+    /** code-server 内容区(浮窗与右侧栏标签共用):运行中 → iframe;启动中 → 占位 + 提示;否则 → 诊断面板。
+     *  reloadTick 变化强制重建 iframe(切工作区/重试);返回元素由调用方放进 .dshcs-body / .dshcs-tabroot。 */
+    function serverBody(status, pageUrl, reloadTick) {
+      var running = status != null && status.ok === true && status.running === true
+      var starting = status != null && status.status === 'starting'
+      var errored = status != null && status.ok === false
+      // allow 属性 = Permissions Policy(Chrome 授予剪贴板读写,否则终端无法粘贴)
+      var frame = function (src) {
+        return React.createElement('iframe', {
+          key: reloadTick,
+          className: 'dshcs-frame',
+          src: src,
+          title: 'code-server',
+          sandbox: 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock allow-clipboard-read allow-clipboard-write',
+          allow: 'clipboard-read; clipboard-write',
+        })
+      }
+      if (running && pageUrl !== null) return frame(pageUrl)
+      if (starting) {
+        // 启动中:立即渲染 iframe(about:blank)+ 加载提示;running 后由轮询自动替换 src
+        return React.createElement(React.Fragment, null,
+          frame('about:blank'),
+          React.createElement('div', { className: 'dshcs-loading' }, '正在启动 code-server…')
+        )
+      }
+      var errText = errored && status != null && status.error
+        ? status.error
+        : 'code-server 未运行'
+      return React.createElement('div', { className: 'dshcs-empty' },
+        React.createElement('div', { className: 'dshcs-emptybox' },
+          React.createElement('div', null, errored ? 'code-server 启动失败' : 'code-server 未运行'),
+          React.createElement('pre', { className: 'dshcs-error' }, errText),
+          React.createElement('p', { className: 'dshcs-hint' },
+            '安装命令(Windows 原生):npm install -g code-server@latest(需配套最新版 node-gyp 与 VS Spectre 缓解库);' +
+            '或在 cordis.patch.yml 的 code-server config 中设置 bin 指向已安装位置。' +
+            '端口 ' + (status != null ? status.port : '8090') + ' 被占用时请释放或修改 port 配置。')
+        ))
+    }
+
+    /** 在浏览器新标签页打开 code-server(windowedOpen=true 的入口共用);未运行先启动。 */
+    function openExternalTab(cwd) {
+      var openTab = function (s) {
+        var u = buildPageUrl(s, cwd)
+        if (u != null && typeof window.open === 'function') window.open(u, '_blank', 'noopener')
+      }
+      var current = getState().status
+      if (current != null && current.running === true) { openTab(current); return }
+      if (getState().busy === true) return
+      setState({ busy: true })
+      api('/code-server/start', typeof cwd === 'string' ? { cwd: cwd } : {})
+        .then(function (s) { setState({ status: s, busy: false }); openTab(s) })
+        .catch(function () { setState({ busy: false }) })
     }
 
     // ---------- 窗口几何(复刻 univer-office 的 fit/move/resize) ----------
@@ -365,6 +430,8 @@ let React = require('react')
       '.dshcs-ball-dot[data-status=error]{background:#f85149}' +
       '.dshcs-ball-dot[data-status=idle]{background:#7d8798}' +
       '.dshcs-ball-dot[data-status=running]::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:1px solid currentColor;opacity:.3;animation:dshcs-pulse 2s ease-out infinite}' +
+      // 右侧栏标签 body:撑满面板(iframe/空态复用窗口内同一套 .dshcs-frame/.dshcs-empty)
+      '.dshcs-tabroot{position:relative;display:flex;flex-direction:column;width:100%;height:100%;min-width:0;min-height:0;background:var(--dsw-alias-bg-base,#fff)}' +
       '@keyframes dshcs-pulse{0%{transform:scale(.7);opacity:.35}70%,100%{transform:scale(1.65);opacity:0}}'
     var CSS_TAG = 'dsh-code-server/styles'
     if (typeof document !== 'undefined' && document.querySelector('style[data-dshcs=' + JSON.stringify(CSS_TAG) + ']') === null) {
@@ -456,6 +523,8 @@ let React = require('react')
       }, [pos, status])
       // 仅当环境明确检测不通过时隐藏(必须放在所有 Hook 之后,避免 React Hook 顺序违规)
       if (env != null && env.ok !== true) return null
+      // 右侧栏模式:不再使用悬浮窗(入口 = 右侧栏 guide 入口框 / 产物按钮 / 设置卡按钮)
+      if (store.sidebarActive === true) return null
       var ballOnPointerDown = function (event) {
         if (event.button !== 0) return
         var el = event.currentTarget
@@ -494,20 +563,7 @@ let React = require('react')
         if (suppressClickRef.current === true) { suppressClickRef.current = false; return }
         // 窗口化:新标签页打开(未运行时先启动,带当前工作区目录)
         if (status != null && status.windowedOpen === true) {
-          var cwdBall = activeWorkspaceCwd(props && props.useSessions, props && props.useWorkspaces)
-          var openTab = function (st) {
-            var u = buildPageUrl(st, cwdBall)
-            if (u != null && typeof window.open === 'function') window.open(u, '_blank', 'noopener')
-          }
-          if (status.running === true) { openTab(status); return }
-          if (store.busy === true) return
-          setState({ busy: true })
-          api('/code-server/start', typeof cwdBall === 'string' ? { cwd: cwdBall } : {})
-            .then(function (s) {
-              setState({ status: s, busy: false })
-              openTab(s)
-            })
-            .catch(function () { setState({ busy: false }) })
+          openExternalTab(activeWorkspaceCwd(props && props.useSessions, props && props.useWorkspaces))
           return
         }
         setState({ open: !isOpen })
@@ -697,7 +753,7 @@ let React = require('react')
       // ---- 生命周期/数据同步(与原全屏浮层一致) ----
       // 打开时:拉状态;未运行则尝试启动(带当前会话 cwd)
       React.useEffect(function () {
-        if (!store.open) return
+        if (!store.open || store.sidebarActive === true) return
         var cancelled = false
         async function boot() {
           setState({ busy: true })
@@ -714,11 +770,12 @@ let React = require('react')
         boot()
         return function () { cancelled = true }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [store.open])
+      }, [store.open, store.sidebarActive])
 
       // 跟随活动工作区(常驻,不等点球):工作区/会话变化即同步 cwd 到 code-server
       // (未运行时启动、运行中切目录重启),成功后刷新 iframe——后台持续对齐。
       React.useEffect(function () {
+        if (store.sidebarActive === true) return
         if (typeof cwd !== 'string' || cwd === '') return
         if (lastSyncedCwdRef.current === cwd) return
         var changed = lastSyncedCwdRef.current !== undefined && lastSyncedCwdRef.current !== cwd
@@ -735,7 +792,7 @@ let React = require('react')
         }
         sync()
         return function () { cancelled = true }
-      }, [cwd])
+      }, [cwd, store.sidebarActive])
 
       // 窗口关闭时重置跟随基线,下次打开重新对齐
       React.useEffect(function () {
@@ -744,11 +801,12 @@ let React = require('react')
 
       // 每 3s 轮询状态(常驻:最小化期间也保持状态新鲜,展开即时准确)
       React.useEffect(function () {
+        if (store.sidebarActive === true) return
         var timer = window.setInterval(function () {
           api('/code-server/status').then(function (s) { setState({ status: s }) })
         }, 3000)
         return function () { window.clearInterval(timer) }
-      }, [])
+      }, [store.sidebarActive])
 
       // Esc 关闭
       React.useEffect(function () {
@@ -759,6 +817,9 @@ let React = require('react')
         window.addEventListener('keydown', onKey)
         return function () { window.removeEventListener('keydown', onKey) }
       }, [store.open])
+
+      // 右侧栏模式:浮窗整棵子树不渲染(iframe 随之卸载;侧栏 body 自己挂 iframe)
+      if (store.sidebarActive === true) return null
 
       // 常挂载:收起(open=false)仅隐藏,不卸载窗口/iframe——VS Code 状态保留,重新展开瞬时恢复
       var baseUrl = status != null && typeof status.url === 'string' ? status.url : null
@@ -781,46 +842,7 @@ let React = require('react')
         ? baseUrl + (folderParam !== null ? '?folder=' + encodeURIComponent(folderParam) : '')
         : null
 
-      var body
-      if (running && pageUrl !== null) {
-        // 已就绪:直接挂 iframe(预启动后通常打开即此处)
-        // allow 属性 = Permissions Policy(Chrome 授予剪贴板读写,否则终端无法粘贴)
-        body = React.createElement('iframe', {
-          key: reloadTick,
-          className: 'dshcs-frame',
-          src: pageUrl,
-          title: 'code-server',
-          sandbox: 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock allow-clipboard-read allow-clipboard-write',
-          allow: 'clipboard-read; clipboard-write',
-        })
-      } else if (starting || (status != null && status.status === 'starting')) {
-        // 启动中:立即渲染窗口 iframe(about:blank)+ 加载提示;
-        // running 后由轮询自动替换 src——不阻塞打开
-        body = React.createElement(React.Fragment, null,
-          React.createElement('iframe', {
-            key: reloadTick,
-            className: 'dshcs-frame',
-            src: 'about:blank',
-            title: 'code-server',
-            sandbox: 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock allow-clipboard-read allow-clipboard-write',
-            allow: 'clipboard-read; clipboard-write',
-          }),
-          React.createElement('div', { className: 'dshcs-loading' }, '正在启动 code-server…')
-        )
-      } else {
-        var errText = errored && status != null && status.error
-          ? status.error
-          : 'code-server 未运行'
-        body = React.createElement('div', { className: 'dshcs-empty' },
-          React.createElement('div', { className: 'dshcs-emptybox' },
-            React.createElement('div', null, errored ? 'code-server 启动失败' : 'code-server 未运行'),
-            React.createElement('pre', { className: 'dshcs-error' }, errText),
-            React.createElement('p', { className: 'dshcs-hint' },
-              '安装命令(Windows 原生):npm install -g code-server@latest(需配套最新版 node-gyp 与 VS Spectre 缓解库);' +
-              '或在 cordis.patch.yml 的 code-server config 中设置 bin 指向已安装位置。' +
-              '端口 ' + (status != null ? status.port : '8090') + ' 被占用时请释放或修改 port 配置。')
-          ))
-      }
+      var body = serverBody(status, pageUrl, reloadTick)
 
       var className = ['dshcs-win', maximized ? 'dshcs-win-max' : '', snapMax ? 'dshcs-win-snap' : '', store.open === false ? 'dshcs-win-hidden' : ''].filter(Boolean).join(' ')
       // 最大化由 rect 驱动(maximizedRect 占满"输入栏上方"区域),不用 CSS inset;
@@ -914,6 +936,123 @@ let React = require('react')
         React.createElement(React.Fragment, null, windowTree, snapGhost),
         document.body
       )
+    }
+
+    // ---------- 右侧栏标签(DSH ≥ 0.1.5-alpha.1:ctx.sidebarRightTabs / ctx.sidebarRight) ----------
+    // 二段式注册:类型定义进 sidebarRightTabs,body 进 keyed 插槽 sidebar.right.pane.tab。
+    // 服务缺失(旧版 DSH / 注册失败)时整段不生效 → 自动回退悬浮球(见 internalApply 的 ctx.inject)。
+    var CS_KIND = 'code-server'
+    var CS_TAB_ID = 'dsh-code-server-app'
+    // 产物按钮/设置卡调用侧栏的桥接;未注册(旧版 DSH)时保持 null。
+    var sidebarBridge = { openTab: null }
+
+    /** 侧栏入口图标:code-server 官方图标(host /code-server/icon.svg,随插件分发,不依赖运行时)。 */
+    function CodeServerIcon(props) {
+      var size = props != null && typeof props.size === 'number' ? props.size : 16
+      return React.createElement('img', {
+        src: '/code-server/icon.svg', alt: '', 'aria-hidden': true, draggable: false,
+        className: props != null ? props.className : undefined,
+        style: { width: size, height: size, display: 'block', objectFit: 'contain', WebkitUserDrag: 'none', userSelect: 'none' },
+      })
+    }
+
+    /** 右侧栏 tab 的 body:面板里铺满 code-server iframe。
+     *  与浮窗共用共享 store 与 serverBody 渲染;挂载即让实例跟随当前会话工作区。
+     *  注:ui-dockkit 只渲染当前激活标签的 body → 切走再切回会重挂 iframe(接受整页重载)。 */
+    function CodeServerBody(props) {
+      var info = props.useTabInfo()
+      var tab = info.tab
+      var store = useStore()
+      var status = store.status
+      var cwd = activeWorkspaceCwd(props.useSessions, null)
+      var lastCwdRef = React.useRef(undefined)
+      var [tick, setTick] = React.useState(0)
+      var navigation = tab.navigation
+      var revision = navigation != null && typeof navigation.revision === 'number' ? navigation.revision : 0
+
+      // 工作区跟随:对齐会话 cwd(未运行则启动;运行中切目录由 host 重启),成功后刷新 iframe
+      React.useEffect(function () {
+        if (typeof cwd !== 'string' || cwd === '') return
+        if (lastCwdRef.current === cwd) return
+        var changed = lastCwdRef.current !== undefined
+        lastCwdRef.current = cwd
+        var cancelled = false
+        api('/code-server/start', { cwd: cwd }).then(function (s) {
+          if (cancelled) return
+          setState({ status: s })
+          if (changed && s != null && s.ok === true && s.running === true) setTick(function (t) { return t + 1 })
+        }).catch(function () { /* 由状态轮询兜底 */ })
+        return function () { cancelled = true }
+      }, [cwd])
+
+      // 标签挂载期间保持状态新鲜(切走即停;回来时先 GET 一次再挂 iframe)
+      React.useEffect(function () {
+        api('/code-server/status').then(function (s) { if (s != null) setState({ status: s }) }).catch(function () {})
+        var timer = window.setInterval(function () {
+          api('/code-server/status').then(function (s) { setState({ status: s }) }).catch(function () {})
+        }, 3000)
+        return function () { window.clearInterval(timer) }
+      }, [])
+
+      // 再次导航(产物按钮 / 重复点 guide 入口框)带 path → 交给内建扩展打开该文件;
+      // 扩展每 800ms 轮询信号文件且失败保留重试,故实例尚未就绪时也可先写入。
+      React.useEffect(function () {
+        var params = navigation != null ? navigation.params : null
+        var file = params != null && typeof params.path === 'string' ? params.path : ''
+        if (file === '') return
+        api('/code-server/open-file', { file: file }).catch(function () { /* 忽略:由用户重试 */ })
+      }, [revision])
+
+      return React.createElement('div', { className: 'dshcs-tabroot', 'data-code-server-tab': 'body' },
+        serverBody(status, buildPageUrl(status, cwd), tick)
+      )
+    }
+
+    /** 注册右侧栏 tab 类型 + body,并接上入口桥接(仅当两个服务都已就绪时被调用)。 */
+    function registerSidebarTab(sctx) {
+      var tabs = sctx.sidebarRightTabs
+      var controller = sctx.sidebarRight
+      if (tabs == null || controller == null) return
+      sctx.effect(function () {
+        return tabs.register({
+          id: CS_TAB_ID,
+          kind: CS_KIND,
+          // 产品外插件 = extension 段(最高;同名 kind 可覆盖 builtin,本插件无冲突)
+          priority: 'extension',
+          title: function () { return 'Code Server' },
+          // guide 页入口框:点它即以本类型打开一个页面 tab(替换 guide 自身)
+          guide: [{
+            order: 20,
+            title: function () { return 'Code Server' },
+            description: function () { return '在右侧栏标签里运行 VS Code 网页版,跟随当前会话工作区。' },
+            icon: CodeServerIcon,
+          }],
+        })
+      }, 'code-server: sidebar tab type')
+      sctx.effect(function () {
+        return sctx.slots.inject('sidebar.right.pane.tab', function () {
+          return sctx.slots.register({ name: 'sidebar.right.pane.tab', key: CS_TAB_ID }, CodeServerBody)
+        })
+      }, 'code-server: sidebar tab body')
+      sidebarBridge.openTab = function (params) {
+        try {
+          controller.openTab(CS_KIND, params != null ? { params: params } : undefined)
+          return true
+        } catch (e) {
+          // 无挂载 seat(无会话/侧栏未渲染)→ 调用方回退新标签页或浮窗
+          console.warn('[code-server] sidebar openTab failed:', e != null && e.message != null ? e.message : String(e))
+          return false
+        }
+      }
+      // 卸载 / HMR 重载:复位为悬浮球模式,避免桥接指向已失效的服务
+      sctx.effect(function () {
+        return function () {
+          sidebarBridge.openTab = null
+          setState({ sidebarActive: false })
+        }
+      }, 'code-server: sidebar mode reset')
+      setState({ sidebarActive: true, open: false })
+      console.log('[code-server] right-sidebar tab registered (kind=' + CS_KIND + ')')
     }
 
     // ---------- 设置卡片(参照 auto-open-web 的自绘卡片模式) ----------
@@ -1120,6 +1259,8 @@ let React = require('react')
         var [draft, setDraft] = React.useState(null) // null | { reserveComposer, windowedOpen }(未保存草稿)
         var [saving, setSaving] = React.useState(false)
         var [failed, setFailed] = React.useState(false)
+        // 共享 store:读取当前 UI 载体(右侧栏标签 / 悬浮球),必须放在所有提前 return 之前
+        var liveStore = useStore()
         React.useEffect(function () {
           if (scope === undefined || typeof scope.subscribe !== 'function') return
           function onUpdate() {
@@ -1149,6 +1290,7 @@ let React = require('react')
       var overridden = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'reserveComposer')
       var overriddenWin = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'windowedOpen')
       var overriddenGuide = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'installGuideDismissed')
+      var sidebarActive = liveStore != null && liveStore.sidebarActive === true
       var dirty = draft !== null && (draft.reserveComposer !== loaded.reserveComposer || draft.windowedOpen !== loaded.windowedOpen || draft.installGuideDismissed !== loaded.installGuideDismissed)
       var saveDisabled = !dirty || saving
       var state = {
@@ -1275,14 +1417,31 @@ let React = require('react')
       )
       return React.createElement(csCard, {
         title: 'Code Server',
-        description: '窗口行为:保留输入框上方空间 / 窗口化(新标签页)打开',
+        description: '入口:右侧栏标签(DSH ≥ 0.1.5-alpha.1)/ 悬浮球回退;窗口化设置控制新标签页打开',
         state: state,
         unsavedLabel: '未保存', readOnlyLabel: '本部署的设置为只读。',
         saveFailedLabel: '本部署没有接受这些值，已保留供你修改。',
         discardLabel: '放弃修改', saveLabel: '保存', savingLabel: '保存中…',
         onSave: doSave, onDiscard: function () { setDraft(null); setFailed(false) },
       },
+        // 入口:说明当前载体,并给一个直接打开侧栏标签的按钮(悬浮球模式禁用)
         React.createElement('div', { className: 'dshcs-field' },
+          React.createElement('div', { className: 'dshcs-fieldHead' },
+            React.createElement('span', { className: 'dshcs-fieldLabel' }, '入口'),
+            React.createElement('span', { className: 'dshcs-badges' },
+              React.createElement(csBtn, {
+                disabled: sidebarActive !== true,
+                onClick: function () { if (sidebarBridge.openTab !== null) sidebarBridge.openTab(null) },
+              }, '在右侧栏打开')
+            )
+          ),
+          React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 6 } },
+            sidebarActive === true
+              ? '当前:右侧栏标签(DSH ≥ 0.1.5-alpha.1)。从右侧栏「开始」页的 Code Server 入口框、产物旁按钮或上面的按钮打开。'
+              : '当前:悬浮球(本部署无右侧栏服务)。点击右下角悬浮球展开浮窗。')
+        ),
+        // 右侧栏模式:浮窗几何设置无意义(浮窗不渲染),隐藏该行
+        sidebarActive === true ? null : React.createElement('div', { className: 'dshcs-field' },
           React.createElement('div', { className: 'dshcs-fieldHead' },
             React.createElement('span', { className: 'dshcs-fieldLabel' }, '保留输入框上方空间'),
             overridden === true
@@ -1314,7 +1473,7 @@ let React = require('react')
             checked: draft !== null ? draft.windowedOpen : loaded.windowedOpen,
             disabled: snapshot.writable !== true,
             onChange: function (v) { setDraft(function (prev) { return Object.assign({}, prev !== null ? prev : loaded, { windowedOpen: v === true }) }); setFailed(false) },
-          }, '开启后点击悬浮球在浏览器新标签页打开 code-server(自动启动并跟随当前工作区);关闭则使用内部浮动窗口')
+          }, '开启后入口(产物按钮/设置卡/悬浮球)在浏览器新标签页打开 code-server(自动启动并跟随当前工作区);关闭则使用右侧栏标签或内部浮动窗口')
         ),
         React.createElement('div', { className: 'dshcs-field' },
           React.createElement('div', { className: 'dshcs-fieldHead' },
@@ -1376,6 +1535,7 @@ let React = require('react')
       })
     }
     function TurnArtifacts(props) {
+      var store = useStore()
       if (props == null || !Array.isArray(props.matched) || props.matched.length === 0) return null
       var paths = props.matched
       function basenameOf(p) {
@@ -1383,8 +1543,17 @@ let React = require('react')
         var i = s.lastIndexOf('/')
         return i >= 0 ? s.slice(i + 1) : s
       }
+      /** 打开顺序:windowedOpen → 浏览器新标签页;侧栏模式 → 右侧栏 tab(带 path);否则浮窗。 */
       function openInCodeServer(p) {
-        setState({ open: true }) // 先展开窗口(若收起)
+        var st = store.status
+        if (st != null && st.windowedOpen === true) {
+          openExternalTab(activeWorkspaceCwd(props.useSessions, props.useWorkspaces))
+          return
+        }
+        if (store.sidebarActive === true && sidebarBridge.openTab !== null) {
+          if (sidebarBridge.openTab({ path: p }) === true) return
+        }
+        setState({ open: true }) // 回退:展开浮窗(若收起)
         api('/code-server/open-file', { file: p }).then(function (s) {
           if (s == null || s.ok !== true) {
             window.alert(s != null && s.error ? s.error : '打开失败')
@@ -1507,7 +1676,28 @@ let React = require('react')
         console.warn('[code-server] guide check failed:', e != null && e.message != null ? e.message : String(e))
       }
 
-      console.log('[code-server] client bundle registered (floating ball + window + settings card)')
+      // ---- 右侧栏标签(DSH ≥ 0.1.5-alpha.1) ----
+      // 特性检测而非版本比较:ctx.inject 在服务就绪时回调(可能晚于 apply),
+      // 服务缺失(旧版 DSH)时永久挂起且不影响本插件的 loader entry 状态 → 悬浮球回退。
+      try {
+        if (typeof ctx.inject === 'function') {
+          ctx.inject(['sidebarRightTabs', 'sidebarRight'], function (sctx) {
+            try {
+              registerSidebarTab(sctx)
+            } catch (e) {
+              console.warn('[code-server] sidebar tab registration failed; keep floating ball:',
+                e != null && e.message != null ? e.message : String(e))
+            }
+          })
+        } else {
+          console.warn('[code-server] ctx.inject unavailable; keep floating ball')
+        }
+      } catch (e) {
+        console.warn('[code-server] sidebar inject failed; keep floating ball:',
+          e != null && e.message != null ? e.message : String(e))
+      }
+
+      console.log('[code-server] client bundle registered (floating ball + window + settings card; right-sidebar tab pending/active)')
     }
 
     const inject = ['slots', 'settingsScope']
