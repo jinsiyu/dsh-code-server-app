@@ -312,3 +312,51 @@ GET /          → 200 text/html len=4222
 
 - `Config.keepResident: boolean`(默认 `true`)→ 插件启动后即建面并停在停放区(**预热**),
   首次点开标签不必等冷启动;`preload` 不抢正在停靠的面。设置卡片新增行「后台常驻(切标签不重载)」。
+
+## 9. 不再兼容旧版 DSH(0.2.3)
+
+### 9.1 决策与范围
+
+- 旧版 DSH(2026 早期、尚无右侧栏服务的版本)此前的载体是**插件自绘的悬浮球 + 内部浮动窗口**(参照 univer-office
+  的 WorktreeWindow)。0.2.3 起**整段删除**:常驻面、剪贴板 `allow`、面板折叠/分屏/全屏、键盘焦点都建立在
+  DSH 右侧栏之上,维护两套载体的成本高于其残余价值。
+- 旧版上的行为收敛为一条**设置页提示**(`设置 → 插件 → Code Server`):说明缺 `sidebarRightTabs`/`sidebarRight`
+  服务、本插件不再支持该版本、升级路径(≥ 0.1.5-alpha.1);升级后无需重装,刷新页面即恢复完整卡片。
+
+### 9.2 探测方式(特性检测,不按版本号硬判)
+
+1. 先同步探测:`ctx.get('sidebarRightTabs')` 与 `ctx.get('sidebarRight')` 同时存在 → 现代 DSH,立即注册;
+2. 服务可能晚于本插件就绪 → 退回 `ctx.inject(['sidebarRightTabs','sidebarRight'], cb)` 等待;
+3. **2.5 s 内既没同步命中、也没等到 `inject` 回调 → 判定 legacy**(`LEGACY_PROBE_TIMEOUT_MS`)。
+   注:DSH 客户端插件里没有可靠的版本号读数(无 `version` 服务、无 `DSH_VERSION` 环境变量,
+   只有 web shell 的 `window.__DSH_BOOT__`),故不引入版本比较。
+
+### 9.3 legacy 分支到底做了什么
+
+| 侧 | 行为 |
+|---|---|
+| 客户端 | 只注册 `settings.plugin.item`(提示卡,`noticeOnly` 模式:无只读条、无"保存/放弃"按钮,默认展开);**不注册** `shell.overlay`(悬浮球/预热)、`conversation.chat.turnTail`(产物按钮)、`sidebar.right.pane.tab`(侧栏 body) |
+| 客户端 → host | `POST /api/code-server/ui-mode { sidebar:false }` |
+| host | 记录 `state.sidebarUi=false`;`maybePrestart()` 直接返回(**不再预启动**);若当前实例是"本插件刚自动预启动且未被 adopt",则 `stop('legacy-ui')` **回收**,避免留下用不上的 IDE 进程与端口 |
+
+- 新增路由 `/api/code-server/ui-mode`(第 6 条 exact Fetch 路由);`snapshot()` 增加 `sidebarUi` 字段。
+- `reserveComposer` 配置键**保留但废弃**(只对已删除的浮窗有意义):保留是为了让旧设置文档继续通过校验,
+  schema 与 snapshot 里的字段仍在,客户端不再读取。
+
+### 9.4 验证(离线,不依赖渲染)
+
+`.spike/spike-legacy-ui.mjs`:用最小 `window/document/require/fetch` 桩跑 `lib/client.js` 导出的 factory,
+断言两个场景(共 17 项,全部 PASS):
+
+- **场景 A(旧版)**:只注册设置卡;没有 overlay / turnTail / 侧栏 body 注册;上报了 `{sidebar:false}`;
+  卡片元素树含"不再兼容旧版 DSH"与缺服务说明,且不含任何设置项。
+- **场景 B(现代)**:注册侧栏 tab 类型 + body + overlay + turnTail + 设置卡,且不上报 legacy;
+  卡片为常规卡片(含"窗口化打开")。
+
+真实 GUI(本机 DSH,带右侧栏)复核:刷新后页面**不存在** `.dshcs-ball` / `.dshcs-win` 节点;
+点产物旁的图标按钮 → 打开侧栏标签 → workbench 正常绘制(`docked:true`、`nudgeCount:1`)。
+
+### 9.5 体积副产物
+
+删除 `motion` 与浮窗/悬浮球后,客户端 bundle **180.4 KB → 37.3 KB**(-79%;`motion` 不再被打进客户端,
+`react-dom` 的静态 require 也随之消失——浮窗是唯一使用 portal 的地方)。

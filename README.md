@@ -22,20 +22,26 @@
 > 全部不再随包分发**(减少 ~34.5MB + 一条原生构建链);IDE 提供方式见下方「服务方式(serve)」。
 > 依据与实测证据见 `docs/analysis-code-server-as-dsh-plugin.md`(含子路径挂载、WS 路径、命名管道、fence 的逐项验证)。
 
-## UI 载体(DSH 版本决定,运行时特性检测)
+## UI 载体与 DSH 版本要求(0.2.3 起只支持带右侧栏的 DSH)
 
 | DSH 版本 | 载体 | 入口 |
 |---|---|---|
-| **≥ 0.1.5-alpha.1**(有 `sidebarRight` / `sidebarRightTabs` 服务) | **右侧栏标签**(kind=`code-server`,标签名 `Code Server`),**不再使用悬浮窗** | ① 右侧栏「开始」页的 **Code Server 入口框**;② 每轮产物旁的图标按钮;③ 设置 → 插件 → Code Server → **「在右侧栏打开」** |
-| 更早(无右侧栏服务) | 悬浮球 + 内部浮动窗口(与旧版一致) | 右下角悬浮球 |
+| **≥ 0.1.5-alpha.1**(有 `sidebarRight` / `sidebarRightTabs` 服务) | **右侧栏标签**(kind=`code-server`,标签名 `Code Server`) | ① 右侧栏「开始」页的 **Code Server 入口框**;② 每轮产物旁的图标按钮;③ 设置 → 插件 → Code Server → **「在右侧栏打开」** |
+| 更早(无右侧栏服务) | **不受支持**:除设置页的一条提示外**不提供任何入口** | 无(设置 → 插件 → Code Server 显示升级提示) |
 
-- 检测方式:`ctx.inject(['sidebarRightTabs','sidebarRight'], …)`——服务就绪才注册标签类型;
-  服务缺失/注册失败则整段不生效,自动回退悬浮球(不按版本号硬判,也不影响插件激活)。
+- 检测方式:先 `ctx.get('sidebarRightTabs') / ctx.get('sidebarRight')` 同步探测;
+  服务可能晚于本插件就绪,则 `ctx.inject(['sidebarRightTabs','sidebarRight'], …)` 等待,
+  **2.5 s 内仍未就绪即判定旧版 DSH**(不按版本号硬判,也不影响插件激活)。
+- **0.2.3 起不再兼容旧版 DSH**:悬浮球与内部浮动窗口回退**已删除**。判定为旧版时:
+  - 只注册设置卡片,内容是一条升级提示(见下),不注册悬浮球/浮窗/产物按钮,也不预热 IDE;
+  - 客户端向 host 上报 `/api/code-server/ui-mode { sidebar:false }`,host 据此**回收自动预启动的实例**
+    并停止预启动(用户手动启动的实例不受影响);
+  - 升级 DSH 后**无需重装插件**,刷新页面即可,本页会恢复为完整设置卡片。
 - 侧栏标签内即 code-server 页面(iframe),跟随当前会话工作区;面板可折叠/分屏/浮动/全屏(由 DSH 右侧栏提供)。
 - **IDE 常驻(0.2.2 起,默认开)**:切到别的标签/收起侧栏再回来**不再重载** code-server——
   未保存的编辑缓冲区、终端、调试会话都留在原处(见下方「为什么切标签不再重载」)。
-- 设置卡片在侧栏模式下隐藏「保留输入框上方空间」(只对浮窗有意义);
-  「窗口化打开(新标签页)」仍然生效(开启后各入口改为浏览器新标签页打开)。
+- 设置卡片只剩两行:「窗口化打开(新标签页)」与「后台常驻(切标签不重载)」。
+  `reserveComposer`(保留输入框上方空间)只对已删除的浮窗有意义,0.2.3 起**废弃**:设置文件里的旧值仍被接受但被忽略。
 - `windowedOpen` 优先级最高:开启时入口按钮一律新开浏览器标签页。
 
 ## 为什么切标签不再重载(IDE 常驻)
@@ -92,16 +98,27 @@
   (含 `Forwarded: host=` / `X-Forwarded-Host` 的反代语义),否则回 `403`;缺 `Origin` 的非浏览器请求放行。
   没有这道检查时,本机任意浏览器页面都能对 `ws://127.0.0.1:<port>/stable-<commit>` 完成握手并驱动 IDE。
 
-## 悬浮球 / 浮窗(仅旧版 DSH 回退路径)
+## 旧版 DSH(0.2.3 起不再支持)
 
-- **右下角悬浮球**(code-server 官方图标,输入框上方):点击**展开浮窗并亮起**(蓝色光环),再点击**收起并复原**;
-  **可按住拖动到任意位置**(松手后记忆,刷新不丢;拖完不会误触发点击);
-  无侧栏按钮、无窗口控制按钮组(球是唯一入口/开关);球上带运行状态点(绿=运行 / 黄=启动中 / 红=错误);
-- 窗口为**内部浮动窗口**(参照 dsh-univer-office 的 WorktreeWindow 模式):固定定位浮窗 + 空转根容器,窗口接管指针事件,
-  **无标题栏无按钮**——顶部细条拖动(悬停有淡色提示;**拖到窗口顶部松开 = 最大化**,
-  **最大化后按住顶部细条向下拖 = 恢复**并继续跟手拖动)、双击最大化、8 向缩放、Esc 关闭(与球收起等效),
-  初始位置在输入框上方靠右,最大化与缩放都止于输入栏上方,不遮挡 composer;
-- 窗口内直接是 code-server 页面(iframe);未运行/启动失败时显示状态说明与错误信息;
+**行为**:探测不到 `sidebarRightTabs` / `sidebarRight` 时,插件只注册一张设置卡片,内容是:
+
+> **Code Server** — 当前 DSH 版本不受支持(缺少右侧栏服务)
+> 本插件自 0.2.3 起不再兼容旧版 DSH。
+> 未检测到右侧栏插件服务 sidebarRightTabs / sidebarRight,因此插件不提供任何入口(旧版的悬浮球与浮动窗口已移除),
+> 也不会后台启动 IDE。升级 DSH 到带右侧栏的版本(≥ 0.1.5-alpha.1)后,Code Server 会出现在右侧栏标签里,
+> 本页同时显示完整设置项;升级后无需重装本插件,刷新页面即可。
+
+- **没有任何其他 UI**:不注册 `shell.overlay`(悬浮球)、不注册产物按钮、不做常驻预热。
+- **host 侧**:客户端会 `POST /api/code-server/ui-mode { sidebar:false }`;host 收到后
+  ① 不再自动预启动 IDE(`maybePrestart` 直接返回),② 若 IDE 是本插件刚自动预启动且尚未被 adopt,则**回收**该进程,
+  避免留下一个用不上的 IDE 与端口。用户手动启动的实例(`adopted`)不会被停。
+- **为什么删除而不是保留**:内部浮动窗口是 2026 年早期 DSH(无右侧栏服务)时代的临时载体,
+  常驻面、剪贴板、快捷键、面板折叠等能力都建立在 DSH 右侧栏之上;维护两套载体的成本高于其残余价值。
+  旧版用户继续用 `0.2.2` 即可(`dsh plugin --profile web add dsh-code-server-app@0.2.2`)。
+- **回滚**:任何版本都能降级到旧版实现,例如 `dsh plugin --profile web add dsh-code-server-app@0.2.2`。
+
+## code-server 服务目录与进程生命周期
+
 - code-server 服务目录**跟随活动工作区/会话**:打开期间切换 DSH 会话/工作区,code-server 自动重启到新目录
   (解析优先级:当前会话 cwd → 会话所属 workspace.path → recentWorkspace.path → 首个 workspace.path);
   打开目录显示在 code-server 页面内(`?folder=<cwd>`,跟随切换时页面自动重新加载);
@@ -322,15 +339,16 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `reserveComposer` | `true` | 窗口是否**保留输入框上方空间**:开启时窗口初始/拖动/缩放/最大化都止于输入栏上方(不遮挡 composer);关闭后允许盖住输入框(最大化到视口底)。**仅对旧版 DSH 的浮窗生效**——右侧栏模式下该行隐藏 |
-| `windowedOpen` | `false` | **窗口化打开**:开启后各入口(产物按钮 / 设置卡 / 悬浮球)在浏览器**新标签页**打开 code-server(自动启动并跟随当前工作区目录);关闭(默认)使用右侧栏标签(旧版 DSH 为内部浮动窗口) |
+| `windowedOpen` | `false` | **窗口化打开**:开启后各入口(产物按钮 / 设置卡)在浏览器**新标签页**打开 code-server(自动启动并跟随当前工作区目录);关闭(默认)使用右侧栏标签 |
+| `keepResident` | `true` | **后台常驻**:开启后宿主启动即把 IDE 预加载到"停放区",切标签/收起侧栏不重载、首次打开免等待;关闭则只在打开面板时加载(省内存) |
+| ~~`reserveComposer`~~ | `true` | **0.2.3 起废弃**:只对已删除的内部浮动窗口有意义。设置文件里的旧值仍被接受但被忽略(键保留,避免旧设置文档校验失败) |
 
 卡片底部是**环境检测**(点「检测环境」读取 host `status.env`):
 树版本 / `productPath` / server 入口、VS Code 内部依赖、**预编译原生包**(平台聚合包名 + 已解析模块数)。
 0.1.36 起没有「安装环境」按钮 —— 依赖由包管理器安装,卡片里只显示结果。
 
-> 卡片改动经 `scope.watch` 实时生效(host 端 status API 同步返回 `reserveComposer` 与
-> `windowedOpen`,客户端立即生效);无需重启 dsh。**新增设置键后首次使用前需重启 dsh web**,
+> 卡片改动经 `scope.watch` 实时生效(host 端 status API 同步返回 `windowedOpen` 与
+> `keepResident`,客户端立即生效);无需重启 dsh。**新增设置键后首次使用前需重启 dsh web**,
 > 让 host 重新注册设置命名空间(schema 含新键),否则新键的保存与校验不生效。
 
 ## 配置(cordis.patch.yml 的 `config`,均有默认值)
@@ -393,7 +411,9 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
   → 该模式下 Ports 面板的 **WebSocket** 转发不可用(HTTP 转发正常);需要时用 `serve: loopback`。
 - **`serve: dsh` 的 iframe 与 DSH 同源** → 该模式不挂 `sandbox`(同源 + `allow-same-origin` 可被 frame 自行摘除);
   `loopback` 模式跨源,`sandbox` 作为真防护保留。
-- **跨会话单实例**:host 级共享一份 IDE;切换 cwd 需重启实例(右侧栏标签/浮窗自动处理并提示)。
+- **跨会话单实例**:host 级共享一份 IDE;切换 cwd 需重启实例(右侧栏标签自动处理并提示)。
+- **旧版 DSH 不受支持(0.2.3 起)**:没有 `sidebarRightTabs`/`sidebarRight` 的 DSH 上,除设置页一条升级提示外无任何入口;
+  旧版用户请留在 `0.2.2`(`dsh plugin --profile web add dsh-code-server-app@0.2.2`)。
 - **侧栏标签切换**(0.2.2 起不再重载):DSH 右侧栏只渲染当前激活标签的 body,React 卸载会移走 iframe;
   插件把 iframe 收成单例常驻面,用 `Element.moveBefore()`(状态保持型原子移动)在停靠位与文档级停放区之间搬,
   切标签/收起侧栏再回来**不重载**。不支持 `moveBefore` 的浏览器退回旧行为(`appendChild` → 整页重载),

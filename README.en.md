@@ -12,17 +12,22 @@
 
 A static profile plugin (npm package with host + client bundle) that ships the **VS Code server tree** from a [code-server](https://github.com/coder/code-server) release as a **platform-independent dependency package** (pack-time artifact `vendor/vscode` → `@jinsiyu/dshcs-vscode-server`, no install scripts, no postinstall). The code-server **Node service layer is replaced by the plugin's own `lib/launcher.mjs`**: it drives `<tree>/lib/vscode/out/server-main.js` (`loadCodeWithNls()` / `createServer()` / `handleRequest()` / `handleUpgrade()`) directly and re-adds the few HTTP endpoints code-server used to provide (`/healthz`, `/manifest.json`, `/_static/*`, `/proxy/:port`). The 16 native modules (node-pty / @vscode/sqlite3 / spdlog / …) come from `@jinsiyu/dshcs-*-win32-<arch>` platform packages selected automatically per architecture by the platform aggregator. VS Code's inner dependencies and the prebuilt native modules are **all installed by the package manager together with the plugin** — no global npm install, no `bin` configuration, no profile config changes, no second install command, **no argon2/C++ toolchain**.
 
-## UI carrier (chosen by the DSH version, feature-detected at runtime)
+## UI carrier and required DSH version (0.2.3: right-sidebar DSH only)
 
 | DSH version | Carrier | Entry points |
 |---|---|---|
-| **>= 0.1.5-alpha.1** (has `sidebarRight` / `sidebarRightTabs`) | **Right-sidebar tab** (kind `code-server`, chip `Code Server`); the floating window is **no longer used** | ① the **Code Server box** on the sidebar's guide ("开始") page; ② the icon button beside each turn's artifacts; ③ Settings → Plugins → Code Server → **"Open in right sidebar"** |
-| older (no sidebar service) | floating ball + internal floating window (unchanged) | the bottom-right floating ball |
+| **>= 0.1.5-alpha.1** (has `sidebarRight` / `sidebarRightTabs`) | **Right-sidebar tab** (kind `code-server`, chip `Code Server`) | ① the **Code Server box** on the sidebar's guide ("开始") page; ② the icon button beside each turn's artifacts; ③ Settings → Plugins → Code Server → **"Open in right sidebar"** |
+| older (no sidebar service) | **Unsupported**: nothing but one notice on the settings page | none (Settings → Plugins → Code Server shows an upgrade notice) |
 
-- Detection: `ctx.inject(['sidebarRightTabs','sidebarRight'], …)` registers the tab type only when the services are ready; if they never appear (or registration fails) nothing is registered and the floating ball fallback stays in place. No version comparison, and the plugin's own activation is never blocked.
+- Detection: first a synchronous `ctx.get('sidebarRightTabs') / ctx.get('sidebarRight')` probe; because the services may come up after this plugin, `ctx.inject(['sidebarRightTabs','sidebarRight'], …)` is awaited and a **2.5 s timeout marks the DSH as legacy** (no version comparison, and the plugin's own activation is never blocked).
+- **0.2.3 dropped legacy-DSH compatibility**: the floating ball and the internal floating window are **deleted**. When the DSH is detected as legacy the plugin
+  - registers only the settings card (an upgrade notice) — no ball, no floating window, no artifact buttons, no IDE preload;
+  - reports `/api/code-server/ui-mode { sidebar:false }` to the host, which then **recycles an instance it auto-prestarted** and stops prestarting (a user-started/adopted instance is never touched);
+  - upgrading DSH needs **no reinstall** — refresh the page and the card turns back into the full settings card.
 - The sidebar tab hosts the code-server page (iframe) and follows the current session workspace; the panel can be collapsed/split/floated/fullscreened by DSH's right sidebar.
 - **Resident IDE (0.2.2, on by default)**: switching to another tab or collapsing the sidebar and coming back **no longer reloads** code-server — unsaved editor buffers, terminals and debug sessions all stay put (see "Why switching tabs no longer reloads" below).
-- In sidebar mode the settings card hides "Reserve space above the composer" (floating-window geometry only). "Open in a window (new tab)" still applies to every entry point.
+- The settings card now has just two rows: "Open in a window (new tab)" and "Resident in background".
+  `reserveComposer` (reserve space above the composer) only ever mattered for the deleted floating window: it is **deprecated** in 0.2.3 — an old value in the settings document is still accepted but ignored.
 - `windowedOpen` has the highest priority: when on, entry buttons always open a browser tab.
 
 ## Why switching tabs no longer reloads (resident IDE)
@@ -86,14 +91,29 @@ state preserved (no full reload). Full evidence and probe scripts: `docs/analysi
   browser page could complete a handshake against `ws://127.0.0.1:<port>/stable-<commit>` and drive the IDE.
 
 
-- **Floating ball** (bottom-right, official code-server icon, above the composer): click to **expand the floating window and light it up** (blue glow), click again to **collapse**; **drag to any position** (remembered across refreshes; no accidental click after drag);
-  no sidebar button, no window control button group (the ball is the only entry/toggle); the ball carries a status dot (green = running / amber = starting / red = error);
-- Window is an **internal floating window** (modeled on dsh-univer-office's WorktreeWindow): fixed-position overlay + an inert root container, the window takes over pointer events,
-  **no title bar / buttons** — drag the top strip to move (hover shows a faint hint; **drag to the top of the screen and release = maximize**,
-  **grab the top strip downward while maximized = restore** and keep dragging), double-click to maximize, 8-direction resize, Esc to close (same as collapsing the ball),
-  initial position above the composer, maximized/resized dimensions stop above the input bar (never cover the composer);
-- The window hosts the code-server page directly (iframe); shows status/error info when not running or failed to start;
-- code-server's workspace **follows the active DSH session/workspace**: switching sessions/workspaces while the overlay is open restarts code-server to the new directory
+## Legacy DSH (unsupported since 0.2.3)
+
+**Behaviour**: when `sidebarRightTabs` / `sidebarRight` cannot be found, the plugin registers a single settings card:
+
+> **Code Server** — this DSH version is unsupported (no right-sidebar service)
+> Since 0.2.3 this plugin no longer supports older DSH versions.
+> The right-sidebar plugin services `sidebarRightTabs` / `sidebarRight` were not detected, so the plugin exposes no
+> entry point at all (the old floating ball and floating window have been removed) and will not start the IDE in the
+> background. Upgrade DSH to a version with the right sidebar (>= 0.1.5-alpha.1): Code Server then appears as a
+> right-sidebar tab, this page shows the full settings again, and no reinstall is needed — a page refresh is enough.
+
+- **No other UI**: no `shell.overlay` registration (floating ball), no artifact buttons, no resident preload.
+- **Host side**: the client posts `/api/code-server/ui-mode { sidebar:false }`; the host then ① stops auto-prestarting
+  the IDE (`maybePrestart` returns immediately) and ② **recycles** an instance it had just auto-prestarted (unless it
+  was adopted), so no unusable IDE process or port is left behind. A user-started/adopted instance is never stopped.
+- **Why delete instead of keeping**: the internal floating window was a stopgap from the era of early-2026 DSH builds
+  without right-sidebar services. The resident surface, clipboard handling, shortcuts and panel collapsing all build on
+  DSH's right sidebar, so maintaining two carriers costs more than it is worth. Older-DSH users should stay on `0.2.2`
+  (`dsh plugin --profile web add dsh-code-server-app@0.2.2`).
+
+## code-server workspace and process lifecycle
+
+- code-server's workspace **follows the active DSH session/workspace**: switching sessions/workspaces while the IDE is open restarts code-server to the new directory
   (resolution order: current session cwd → session's workspace.path → recentWorkspace.path → first workspace.path);
   the opened directory is shown inside code-server (`?folder=<cwd>`, the page reloads when following a switch);
   implementation note: the iframe `src` must carry `?folder=<cwd>` — code-server's front-end remembers the "last workspace" and restores it by itself;
@@ -111,7 +131,6 @@ state preserved (no full reload). Full evidence and probe scripts: `docs/analysi
 > placed offline at activation → VS Code internal deps installed → started → healthz 200 →
 > cwd switch restart while running → stopped → fully recycled.
 
-## Floating ball / window (legacy-DSH fallback path only)
 ## Packaging (how to build the tarball)
 
 ```powershell
@@ -308,11 +327,12 @@ persisted via the official settings domain (`settingsScope`, namespace `code-ser
 
 | Key | Default | Description |
 |---|---|---|
-| `reserveComposer` | `true` | Whether the window **reserves space above the composer**: on, the window's initial/drag/resize/maximize stop above the composer (never covers it); off, it may cover the composer (maximize to viewport bottom). **Applies to the legacy floating window only** — hidden in sidebar mode |
-| `windowedOpen` | `false` | **Open in a window**: on, every entry point (artifact button / settings card / floating ball) opens code-server in a browser **new tab** (auto-starts and follows the active workspace); off (default) uses the right-sidebar tab (or the internal floating window on older DSH) |
+| `windowedOpen` | `false` | **Open in a window**: on, every entry point (artifact button / settings card) opens code-server in a browser **new tab** (auto-starts and follows the active workspace); off (default) uses the right-sidebar tab |
+| `keepResident` | `true` | **Resident in background**: on, the host preloads the IDE into a parked surface right after start — switching tabs or collapsing the sidebar never reloads it and the first open needs no cold start; off loads it only when the panel is opened (saves memory) |
+| ~~`reserveComposer`~~ | `true` | **Deprecated in 0.2.3**: it only ever affected the deleted internal floating window. An old value in the settings document is still accepted but ignored (the key is kept so old settings documents keep validating) |
 
-> Card changes take effect immediately via `scope.watch` (the host status API returns `reserveComposer` and
-> `windowedOpen`; the client applies them at once); no dsh restart needed. **After adding new setting keys, restart dsh web before first use**,
+> Card changes take effect immediately via `scope.watch` (the host status API returns `windowedOpen` and
+> `keepResident`; the client applies them at once); no dsh restart needed. **After adding new setting keys, restart dsh web before first use**,
 > so the host re-registers the settings namespace (schema includes the new key); otherwise save/validation of the new key won't work.
 
 The bottom of the card is **Environment check** (click "Check environment" to read the host `status.env`): entry,
@@ -373,9 +393,9 @@ Host/Origin fence and browser auth); in the desktop profile `apps/desktop-host` 
 ## Artifact open buttons
 
 Each produced file (written/edited) in a turn is shown as a chip with a **code-server icon button** next to it
-in the conversation's turn tail; clicking either opens the file in code-server — in the right-sidebar tab on
-DSH >= 0.1.5-alpha.1 (opening/expanding the column and focusing the tab), or in the floating window on older hosts
-(when `windowedOpen` is on, both open a browser tab instead).
+in the conversation's turn tail; clicking either opens the file in code-server — in the right-sidebar tab
+(opening/expanding the column and focusing the tab). When `windowedOpen` is on, both open a browser tab instead;
+if the sidebar cannot be opened (no mounted seat), they also fall back to a browser tab.
 The `dshcs-open-file` extension is installed as a **built-in** extension of code-server (in `lib/vscode/extensions`),
 so users cannot remove it from the extensions panel.
 
@@ -391,8 +411,11 @@ so users cannot remove it from the extensions panel.
   works). Use `serve: loopback` when you need it.
 - **`serve: dsh` shares DSH's origin**, so the iframe is not sandboxed there (same-origin plus `allow-same-origin` is
   escapable by the frame itself); in `loopback` mode the iframe is cross-origin and `sandbox` stays as real protection.
-- **Single instance across sessions**: one shared IDE per host; switching cwd requires a restart (the sidebar tab /
-  floating window handles it and hints).
+- **Single instance across sessions**: one shared IDE per host; switching cwd requires a restart (the sidebar tab
+  handles it and hints).
+- **Older DSH versions are unsupported (since 0.2.3)**: on a DSH without `sidebarRightTabs` / `sidebarRight` the plugin
+  offers nothing but an upgrade notice on the settings page; older-DSH users should stay on `0.2.2`
+  (`dsh plugin --profile web add dsh-code-server-app@0.2.2`).
 - **Sidebar tab switching** (no longer reloads since 0.2.2): DSH's right sidebar renders only the active tab's body, and
   a React unmount moves the iframe away; the plugin keeps it as a singleton resident surface and shuttles it between the
   dock slot and a document-level park container with `Element.moveBefore()` (a state-preserving atomic move), so

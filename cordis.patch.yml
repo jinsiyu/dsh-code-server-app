@@ -30,6 +30,8 @@
         locale: ''
         # 启动就绪探测超时(ms)。
         readyTimeoutMs: 60000
-        # 注:窗口行为(是否保留输入框上方空间)由"设置 → 插件 → Code Server"
-        # 卡片控制,持久化于官方 settings 域(命名空间 code-server,键 reserveComposer,
-        # 默认 true);此处不需配置,卡片修改即时生效。
+        # 注:窗口化打开(新标签页)与后台常驻(切标签不重载)由"设置 → 插件 → Code Server"
+        # 卡片控制,持久化于官方 settings 域(命名空间 code-server,键 windowedOpen / keepResident,
+        # 默认 false / true);此处不需配置,卡片修改即时生效。
+        # 另:0.2.3 起不再兼容旧版 DSH(无 sidebarRightTabs/sidebarRight 服务的版本),
+        # 旧版上只在设置页给一条升级提示,不提供任何入口,也不预启动 IDE。
