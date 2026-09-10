@@ -1,19 +1,20 @@
-// scripts/vendor-repacks.mjs — 打包期把「pnpm 拒绝安装」的包重打包成可安装的预编译包。
+// scripts/vendor-repacks.mjs — 打包期把 code-server 本体与「pnpm 拒绝安装」的原生包全部打成可安装的预编译包。
 //
 // 为什么:pnpm 认为「含安装脚本」或「含 binding.gyp / .hooks」的包需要构建,必须由宿主
-// pnpm-workspace.yaml 的 allowBuilds 批准,否则 dsh plugin add 直接 exit 1。VS Code 内部
-// 依赖里有一批这样的包(含原生模块),既不能在 profile 里声明为依赖,也不能靠 pnpm 装。
+// pnpm-workspace.yaml 的 allowBuilds 批准,否则 dsh plugin add 直接 exit 1。code-server 本体、
+// argon2 与 VS Code 内部依赖里的一批原生包都属于这一类。
 //
-// 做法(实测可行,见下):
-//   1. 从一棵**已完整安装**的 code-server 树出发,算出 needsRepack 闭包(带构建信号,以及依赖链
-//      上命中它们的包 —— 含 optionalDependencies,例如 @vscode/proxy-agent → @vscode/windows-ca-certs);
-//   2. 每个命中包重新打包成 @<scope>/dshcs-<名字>:
-//        - 删掉全部 scripts / files 字段、binding.gyp、.hooks、.npmignore(全量打包,保住 build/*.node);
-//        - 依赖里命中重打包集的,改成 npm: 别名;
-//        - 含「非 prebuilds 的 .node」的包视为平台专属 → 名字带 -<platform>-<arch>,并写入 os/cpu;
-//   3. 生成平台聚合包 @<scope>/dsh-code-server-runtime-<platform>-<arch>,dependencies 用 npm: 别名
-//      把重打包包装回**原始名字**(node-pty / @vscode/sqlite3 / …),这样 VS Code 的 require 不用改;
-//   4. 把「纯 JS 直装集」写进插件 package.json 的 dependencies,把两个平台聚合包写进 optionalDependencies。
+// 产物(全部由本脚本统一生成,再由 scripts/publish-repacks.mjs 统一发布):
+//   ① @<scope>/dshcs-code-server@<code-server 版本>          平台无关:vendor/code-server 的树
+//      (out/ + lib/vscode + 自带运行时依赖),**去掉 node_modules/argon2**;
+//   ② @<scope>/dshcs-argon2-<platform>-<arch>@<argon2 版本>   平台专属:argon2 + 该架构编译好的 .node
+//      (与其它原生包同一套规则:删 scripts/files/binding.gyp、删 prebuilds 统一走 build/Release);
+//   ③ @<scope>/dshcs-<名字>[-<platform>-<arch>]@<版本>        VS Code 内部依赖里需要构建的包
+//      (node-pty / @vscode/sqlite3 / kerberos / koffi / ssh2 / …),
+//      依赖链上命中它们的包也一并重打包(含 optionalDependencies,如 @vscode/proxy-agent → windows-ca-certs);
+//   ④ @<scope>/dsh-code-server-runtime-<platform>-<arch>@<插件版本>  平台聚合包:
+//      dependencies 用 npm: 别名把 ②③ 装回**原始名字**(argon2 / node-pty / @vscode/sqlite3 / …),
+//      这样 code-server 与 VS Code 的 require 不用改,插件只需按 os/cpu 声明 ①(常规依赖)+ ④(可选依赖)。
 //
 // 结果:pnpm install 不再遇到任何带构建信号的包 → 无需 allowBuilds、无需「安装环境」步骤。
 //
@@ -48,6 +49,10 @@ const argValue = (n) => { const a = argValues(n); return a.length > 0 ? a[a.leng
 const FROM = argValue('--from');
 const SCOPE = argValue('--scope') ?? '@jinsiyu';
 const DO_PACK = process.argv.includes('--pack');
+// --reuse:复用 repack/build 里已有的原生包(不重新 analyze/交叉编译),只重建
+//          code-server 本体包、argon2 平台包、平台聚合包与插件 package.json。
+//          适用于「原生包没变、只调整打包结构」的场景(本机已无可分析的完整源树时也用它)。
+const REUSE = process.argv.includes('--reuse');
 const TARGETS = argValues('--target');
 // Copilot 整树排除:620MB、依赖链里还有带脚本的包,且 code-server 里用不到。
 const EXCLUDE = [/^@github\//, /^@vscode\/copilot-api$/];
@@ -309,22 +314,233 @@ function prepareSourceTree() {
   return tree;
 }
 
+/** PE machine(0x8664=x64 / 0xaa64=arm64),用于交叉编译后的静态校验。 */
+function peMachine(file) {
+  try {
+    const b = readFileSync(file);
+    if (b[0] !== 0x4d || b[1] !== 0x5a) return null;
+    const off = b.readUInt32LE(0x3c);
+    if (b.toString('ascii', off, off + 4) !== 'PE\u0000\u0000') return null;
+    return `0x${b.readUInt16LE(off + 4).toString(16)}`;
+  } catch { return null; }
+}
+
+function nodeGypCli() {
+  const cli = join(process.env.APPDATA ?? '', 'npm', 'node_modules', 'node-gyp', 'bin', 'node-gyp.js');
+  if (!existsSync(cli)) throw new Error('找不到 node-gyp(需全局安装 node-gyp)');
+  return cli;
+}
+
+/** ① code-server 本体(平台无关):vendor/code-server → repack/build/code-server/。
+ *  去掉平台专属的 node_modules/argon2 —— 它由 @<scope>/dshcs-argon2-<platform>-<arch> 按架构提供。 */
+function buildCodeServerPackage() {
+  const vendorTree = join(pkgRoot, 'vendor', 'code-server');
+  if (!existsSync(join(vendorTree, 'out', 'node', 'entry.js'))) {
+    throw new Error('缺少 vendor/code-server;先运行 `node scripts/vendor-code-server.mjs`');
+  }
+  const version = readJson(join(vendorTree, 'package.json'))?.version;
+  if (typeof version !== 'string') throw new Error('读不到 code-server 版本');
+  const dir = join(OUT, 'build', 'code-server');
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  console.log(`[repack] code-server 本体(平台无关)→ ${relative(pkgRoot, join(dir, 'code-server'))}(argon2 由平台包提供)`);
+  cpSync(vendorTree, join(dir, 'code-server'), {
+    recursive: true,
+    dereference: false,
+    maxRetries: 6,
+    retryDelay: 250,
+  });
+  // 删掉平台专属的 argon2(整目录,避免嵌套解析遮蔽 <profile>/node_modules/argon2)
+  rmSync(join(dir, 'code-server', 'node_modules', 'argon2'), { recursive: true, force: true });
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({
+    name: `${SCOPE}/dshcs-code-server`,
+    version,
+    description: `code-server ${version} (out/ + lib/vscode + its runtime dependencies), repacked so pnpm installs it `
+      + `without any build script. The platform-specific argon2 binary is provided by ${SCOPE}/dshcs-argon2-<platform>-<arch>.`,
+    files: ['code-server'],
+    license: 'MIT',
+    repository: readJson(join(pkgRoot, 'package.json'))?.repository ?? undefined,
+  }, null, 2) + '\n', 'utf8');
+  const name = `${SCOPE}/dshcs-code-server`;
+  return { dir, name, version, file: tgzName(name, version) };
+}
+
+/** ② argon2 平台二进制包(每个目标一个):@<scope>/dshcs-argon2-<target>@<argon2 版本>。
+ *  与其它原生包同一套规则:删 scripts/files/binding.gyp,保留 build/Release 里的 .node;
+ *  prebuilds/ 一律删掉(统一走 build/Release,避免 node-gyp-build 在 win32-x64 选到上游 .glibc 命名文件)。 */
+function buildArgon2Package(target) {
+  const [platform, arch] = target.split('-');
+  const src = join(pkgRoot, 'vendor', 'code-server', 'node_modules', 'argon2');
+  if (!existsSync(join(src, 'package.json'))) throw new Error('缺少 vendor/code-server/node_modules/argon2');
+  const version = readJson(join(src, 'package.json')).version;
+  const dir = join(OUT, 'build', `argon2-${target}`);
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dirname(dir), { recursive: true });
+  cpSync(src, dir, { recursive: true, maxRetries: 6, retryDelay: 250 }); // dest 不存在 → 内容平铺到 dir
+  rmSync(join(dir, 'build'), { recursive: true, force: true }); // 重新编译,避免带走 host 架构产物
+
+  console.log(`[repack] argon2 ${target}: node-gyp rebuild --arch=${arch} …`);
+  const res = spawnSync(process.execPath, [nodeGypCli(), 'rebuild', `--arch=${arch}`], { cwd: dir, stdio: 'inherit' });
+  if ((res.status ?? 1) !== 0) throw new Error(`argon2 ${target} 编译失败 (${res.status})`);
+  // 编译完成后才剥掉构建信号:删 prebuilds(统一走 build/Release)、binding.gyp、中间产物
+  rmSync(join(dir, 'prebuilds'), { recursive: true, force: true });
+  rmSync(join(dir, 'binding.gyp'), { force: true });
+  rmSync(join(dir, '.npmignore'), { force: true });
+  rmSync(join(dir, 'build', 'gyp'), { recursive: true, force: true }); // 中间产物,别进包
+  const bin = join(dir, 'build', 'Release', 'argon2.node');
+  if (!existsSync(bin)) throw new Error(`argon2 ${target} 缺 build/Release/argon2.node`);
+  const want = arch === 'x64' ? '0x8664' : arch === 'arm64' ? '0xaa64' : null;
+  const machine = peMachine(bin);
+  if (want !== null && machine !== want) throw new Error(`argon2 ${target} PE machine=${machine},期望 ${want}`);
+
+  const manifest = readJson(join(dir, 'package.json'));
+  delete manifest.scripts;
+  delete manifest.files;
+  manifest.name = `${SCOPE}/dshcs-argon2-${target}`;
+  manifest.version = version;
+  manifest.os = [platform];
+  manifest.cpu = [arch];
+  writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+  console.log(`  ✓ argon2 ${target} → ${machine} (${manifest.name}@${version})`);
+  return { dir, name: manifest.name, version, file: tgzName(manifest.name, version) };
+}
+
+/** 从已安装的 profile 的 node_modules 还原 host 平台映射(别名目录名 = 原始包名,清单名 = 重打包名)。
+ *  聚合包清单丢失时的兜底(例如上次构建中途失败)。 */
+function hostMapFromProfile() {
+  const dshHome = process.env.DSH_HOME || join(process.env.USERPROFILE ?? process.env.HOME ?? '', '.dsh');
+  const profiles = join(dshHome, 'profiles');
+  if (!existsSync(profiles)) return null;
+  let best = null;
+  let bestProfile = null;
+  for (const name of readdirSync(profiles)) {
+    const nm = join(profiles, name, 'node_modules');
+    if (!existsSync(nm)) continue;
+    const map = new Map();
+    const visit = (dir, prefix) => {
+      let entries; try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const ent of entries) {
+        if (!ent.isDirectory() || ent.name === '.bin' || ent.name === '.pnpm') continue;
+        const full = join(dir, ent.name);
+        if (ent.name.startsWith('@')) { visit(full, prefix + ent.name + '/'); continue; }
+        const m = readJson(join(full, 'package.json'));
+        if (m === null || typeof m.name !== 'string') continue;
+        if (!/^@[^/]+\/dshcs-/.test(m.name) || /dshcs-code-server/.test(m.name)) continue;
+        map.set(`${prefix}${ent.name}`, { pkgName: m.name, version: m.version });
+      }
+    };
+    visit(nm, '');
+    if (map.size > 0 && (best === null || map.size > best.size)) { best = map; bestProfile = name; }
+  }
+  if (best !== null) {
+    console.log(`[repack] --reuse:从 profile ${bestProfile} 的别名还原 ${best.size} 个映射`);
+  }
+  return best;
+}
+
+/** --reuse:从现有 repack/build + 聚合包清单还原「重打包集」,不重新分析源树。
+ *  @returns {{repack: Map<string,{pkg:{version:string},platformSpecific:boolean}>, declare:{name:string,version:string}[], reusedItems:{dir:string,file:string}[]}} */
+function reuseExisting(targets, hostKey) {
+  const buildRoot = join(OUT, 'build');
+  if (!existsSync(buildRoot)) throw new Error('--reuse 需要 repack/build 已存在(先跑一次完整流程)');
+  const byTarget = new Map();
+  for (const target of targets) {
+    const agg = readJson(join(OUT, 'aggregator', target, 'package.json'));
+    if (agg === null) continue;
+    const map = new Map();
+    for (const [orig, spec] of Object.entries(agg.dependencies ?? {})) {
+      if (orig === 'argon2') continue; // argon2 由本脚本重建
+      const hit = /^npm:(.+)@([^@]+)$/.exec(spec);
+      if (hit === null) throw new Error(`无法解析聚合包依赖 ${orig}: ${spec}`);
+      map.set(orig, { pkgName: hit[1], version: hit[2] });
+    }
+    byTarget.set(target, map);
+  }
+  if (byTarget.size === 0) {
+    const base = hostMapFromProfile();
+    if (base === null) {
+      throw new Error('--reuse 需要 repack/aggregator/*/package.json 或一个已安装的 profile 用于还原映射');
+    }
+    byTarget.set(hostKey, base);
+  } else {
+    // 与已安装 profile 的别名取并集:聚合包清单可能在上一次失败的重建里丢过条目
+    const hostTarget = byTarget.has(hostKey) ? hostKey : targets[0];
+    const base = hostMapFromProfile();
+    if (base !== null) {
+      const merged = new Map(byTarget.get(hostTarget));
+      let added = 0;
+      for (const [orig, info] of base) {
+        if (!merged.has(orig)) { merged.set(orig, info); added += 1; }
+      }
+      if (added > 0) console.log(`[repack] --reuse:聚合包清单缺 ${added} 个条目 → 已用 profile 别名补齐`);
+      byTarget.set(hostTarget, merged);
+    }
+  }
+  const known = byTarget.get(hostKey) ?? byTarget.get(targets[0]);
+  // 其余目标:按后缀替换推导(平台专属包名只在结尾的 -<platform>-<arch> 上不同)
+  const knownTarget = byTarget.has(hostKey) ? hostKey : targets[0];
+  for (const target of targets) {
+    if (byTarget.has(target)) continue;
+    const map = new Map();
+    for (const [orig, info] of known) {
+      const pkgName = info.pkgName.endsWith(`-${knownTarget}`)
+        ? `${info.pkgName.slice(0, -knownTarget.length)}${target}`
+        : info.pkgName;
+      map.set(orig, { pkgName, version: info.version });
+    }
+    byTarget.set(target, map);
+  }
+  const hostSet = byTarget.get(knownTarget);
+  const repack = new Map();
+  for (const [orig, info] of hostSet) {
+    repack.set(orig, { pkg: { version: info.version }, platformSpecific: info.pkgName.endsWith(`-${knownTarget}`) });
+  }
+  // 已有原生包目录 → plan 项;顺带清掉将被重建的 code-server / argon2 目录
+  const reusedItems = [];
+  for (const ent of readdirSync(buildRoot)) {
+    if (/^code-server/.test(ent) || /^argon2-/.test(ent)) {
+      rmSync(join(buildRoot, ent), { recursive: true, force: true });
+      continue;
+    }
+    const m = readJson(join(buildRoot, ent, 'package.json'));
+    if (m === null) continue;
+    reusedItems.push({ dir: join(buildRoot, ent), file: tgzName(m.name, m.version) });
+  }
+  // 纯 JS 直装集:插件现有 dependencies 里非 @jinsiyu 的项
+  const pluginPkg = readJson(join(pkgRoot, 'package.json'));
+  const declare = Object.entries(pluginPkg.dependencies ?? {})
+    .filter(([name]) => !/^@jinsiyu\//.test(name))
+    .map(([name, version]) => ({ name, version }));
+  rmSync(join(OUT, 'aggregator'), { recursive: true, force: true });
+  console.log(`[repack] --reuse:复用 ${reusedItems.length} 个已打包目录、${repack.size} 个重打包条目、${declare.length} 个纯 JS 直装依赖`);
+  return { repack, declare, reusedItems };
+}
+
 function main() {
-  const autoSource = FROM === null;
-  const sourceTree = autoSource ? prepareSourceTree() : FROM;
   const hostKey = `${process.platform}-${process.arch}`;
   const targets = TARGETS.length > 0 ? TARGETS : [hostKey];
   const pluginVersion = readJson(join(pkgRoot, 'package.json'))?.version ?? '0.0.0';
 
-  const { repack, declare } = analyze(sourceTree);
+  let repack;
+  let declare;
+  let reusedItems = [];
+  let autoSourceTree = null;
+  if (REUSE) {
+    ({ repack, declare, reusedItems } = reuseExisting(targets, hostKey));
+  } else {
+    const autoSource = FROM === null;
+    const sourceTree = autoSource ? prepareSourceTree() : FROM;
+    if (autoSource) autoSourceTree = sourceTree;
+    ({ repack, declare } = analyze(sourceTree));
+    rmSync(OUT, { recursive: true, force: true });
+  }
   console.log(`\n重打包集(${repack.size}):`);
   for (const [name, r] of [...repack].sort()) {
     console.log(`  ${name}@${r.pkg.version} ${r.platformSpecific ? '[平台专属]' : '[全平台]'}`);
   }
   console.log(`\n直装集(${declare.length}): ${declare.map((d) => d.name).join(', ')}\n`);
 
-  rmSync(OUT, { recursive: true, force: true });
-  mkdirSync(OUT, { recursive: true });
+  mkdirSync(join(OUT, 'build'), { recursive: true });
 
   // 每个目标的包名映射
   const byTarget = new Map();
@@ -370,13 +586,27 @@ function main() {
   };
 
   const plan = [];
-  for (const [name, r] of repack) {
-    if (r.platformSpecific) continue; // 平台专属的按目标处理
-    const dir = writeRepack(r.dir, hostMap.get(name), flat(name));
-    plan.push({ dir, file: tgzName(hostMap.get(name).pkgName, r.pkg.version) });
-  }
-  // 2) 平台专属包:host 用现成树,其它目标用交叉安装树
+  // 0) 已打包的原生包(--reuse 模式)
+  for (const item of reusedItems) plan.push(item);
+  // 1) code-server 本体(平台无关,1 个包)+ argon2 平台二进制包(每目标 1 个,与其它原生包同一套规则)
+  const codeServerPkg = buildCodeServerPackage();
+  plan.push({ dir: codeServerPkg.dir, file: codeServerPkg.file });
+  const argon2ByTarget = new Map();
   for (const target of targets) {
+    const pkg = buildArgon2Package(target);
+    argon2ByTarget.set(target, pkg);
+    plan.push({ dir: pkg.dir, file: pkg.file });
+  }
+  // 2) 全平台重打包包(从 host 树;--reuse 时用已打包目录)
+  if (!REUSE) {
+    for (const [name, r] of repack) {
+      if (r.platformSpecific) continue; // 平台专属的按目标处理
+      const dir = writeRepack(r.dir, hostMap.get(name), flat(name));
+      plan.push({ dir, file: tgzName(hostMap.get(name).pkgName, r.pkg.version) });
+    }
+  }
+  // 3) 平台专属包:host 用现成树,其它目标用交叉安装树(--reuse 时用已打包目录)
+  if (!REUSE) for (const target of targets) {
     const map = byTarget.get(target);
     const specs = [...repack].filter(([, r]) => r.platformSpecific).map(([name, r]) => ({ name, version: r.pkg.version }));
     let crossTree = null;
@@ -394,7 +624,7 @@ function main() {
     }
     if (crossTree !== null) rmSync(crossTree, { recursive: true, force: true });
   }
-  // 3) 聚合包(每平台一个):dependencies 用 npm: 别名把重打包包装回原名
+  // 3) 聚合包(每平台一个):dependencies 用 npm: 别名把重打包包装回原名(含 argon2)
   for (const target of targets) {
     const map = byTarget.get(target);
     const aggName = `${SCOPE}/dsh-code-server-runtime-${target}`;
@@ -402,10 +632,13 @@ function main() {
     mkdirSync(aggDir, { recursive: true });
     const deps = {};
     for (const [name] of repack) deps[name] = `npm:${map.get(name).pkgName}@${map.get(name).version}`;
+    // argon2:code-server 本体包不带原生二进制,由这里按平台装回原名 "argon2"
+    const argon2 = argon2ByTarget.get(target);
+    if (argon2 !== undefined) deps.argon2 = `npm:${argon2.name}@${argon2.version}`;
     writeFileSync(join(aggDir, 'package.json'), JSON.stringify({
       name: aggName,
       version: pluginVersion,
-      description: `Prebuilt native modules for code-server on ${target} (node-pty, @vscode/sqlite3, kerberos, …), `
+      description: `Prebuilt native modules for code-server on ${target} (argon2, node-pty, @vscode/sqlite3, kerberos, …), `
         + 'so that installing the VS Code inner dependencies needs no build approval or C++ toolchain.',
       os: [target.split('-')[0]],
       cpu: [target.split('-')[1]],
@@ -419,14 +652,19 @@ function main() {
   writeFileSync(join(OUT, 'pack-plan.json'), JSON.stringify(plan, null, 2) + '\n', 'utf8');
   console.log(`[repack] 生成 ${plan.length} 个待打包目录 → repack/ (计划:repack/pack-plan.json)`);
 
-  // 4) 改写插件 package.json 的依赖
+  // 4) 改写插件 package.json 的依赖:纯 JS 直装集 + code-server 本体包(平台无关);
+  //    平台专属的(16 个原生包 + argon2)通过聚合包按 os/cpu 自动选。
   const pkgFile = join(pkgRoot, 'package.json');
   const pluginPkg = readJson(pkgFile);
-  pluginPkg.dependencies = Object.fromEntries(declare.map((d) => [d.name, d.version]).sort(([a], [b]) => a.localeCompare(b)));
+  pluginPkg.dependencies = Object.fromEntries([
+    [codeServerPkg.name, codeServerPkg.version],
+    ...declare.map((d) => [d.name, d.version]),
+  ].sort(([a], [b]) => a.localeCompare(b)));
   pluginPkg.optionalDependencies = Object.fromEntries(targets
     .map((t) => [`${SCOPE}/dsh-code-server-runtime-${t}`, `^${pluginVersion}`]));
   writeFileSync(pkgFile, JSON.stringify(pluginPkg, null, 2) + '\n', 'utf8');
-  console.log(`[repack] 已写入 package.json:dependencies ${declare.length} 个(纯 JS),optionalDependencies ${targets.length} 个平台聚合包`);
+  console.log(`[repack] 已写入 package.json:dependencies ${pluginPkg.dependencies ? Object.keys(pluginPkg.dependencies).length : 0} 个`
+    + `(code-server 本体 + 纯 JS),optionalDependencies ${targets.length} 个平台聚合包`);
 
   // 5) 可选:直接打包
   if (DO_PACK) {
@@ -440,8 +678,8 @@ function main() {
     console.log('[repack] 未加 --pack;在普通终端里执行 `node scripts/vendor-repacks.mjs --pack` 生成 tarball');
   }
 
-  if (autoSource) {
-    rmSync(sourceTree, { recursive: true, force: true });
+  if (autoSourceTree !== null) {
+    rmSync(autoSourceTree, { recursive: true, force: true });
     console.log('[repack] 已清理自动准备的源树');
   }
 }

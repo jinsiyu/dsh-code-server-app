@@ -6,13 +6,14 @@
 //
 // 用法:
 //   node scripts/publish-repacks.mjs --dry-run          # 只打印将要发布的包
-//   node scripts/publish-repacks.mjs                    # 发布全部
+//   node scripts/publish-repacks.mjs                    # 发布全部(默认 dist-tag = next)
 //   node scripts/publish-repacks.mjs --only node-pty    # 只发布名字包含该子串的包
-//   node scripts/publish-repacks.mjs --tag beta         # 指定 dist-tag
+//   node scripts/publish-repacks.mjs --tag latest       # 明确推到 latest(仅确认无误后)
 //   node scripts/publish-repacks.mjs --otp 123456       # 账号开启 2FA 时传一次性口令
 //   node scripts/publish-repacks.mjs --limit 5 --otp …  # 一批最多 5 个(口令约 30 秒过期,可重跑续发)
 //   node scripts/publish-repacks.mjs --no-skip-published  # 不跳过已存在版本(默认跳过)
 //
+// 标签政策:默认发 `next`,不碰 `latest`;`latest` 只由 `scripts/promote.mjs` 在用户确认后推进。
 // 发布顺序:先发重打包的原生包,再发聚合包(聚合包依赖它们)。
 // 已发布的同名版本会被跳过(npm 不允许覆盖同版本),因此可安全重跑。
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -34,7 +35,10 @@ const ONLY = (() => {
 })();
 const TAG = (() => {
   const i = argv.indexOf('--tag');
-  return i >= 0 && argv[i + 1] !== undefined ? argv[i + 1] : null;
+  if (i >= 0 && argv[i + 1] !== undefined) return argv[i + 1];
+  // 默认发到 `next`:子包被依赖以精确/插入符版本引用,dist-tag 不影响解析;
+  // 这样一次发布不会把 `latest` 指向可能有 bug 的版本(插件本体同理,见 publish-plugin.mjs)。
+  return 'next';
 })();
 // 账号开启 2FA(auth-and-writes)时,每次写操作都要一次性口令;口令约 30 秒过期,
 // 因此 26 个包通常需要分几次(每次传新口令),或用能绕过 2FA 的 granular token。

@@ -11,8 +11,8 @@
 > - **需要微软专有扩展时**:从 Marketplace 网页下载 `.vsix`,用 `code-server --install-extension <文件>`(或放入 `--extensions-dir`)手动安装,即可在插件列表使用。
 
 静态 profile 插件(npm 包形态,host + client bundle),把 [code-server](https://github.com/coder/code-server)
-**以平台专属子包的形式随插件依赖安装**(打包期产物 `vendor/code-server` → `@jinsiyu/dshcs-code-server-<平台>-<架构>`,
-无安装脚本、无 postinstall),插件目录外就地运行;
+**作为平台无关的依赖包随插件安装**(打包期产物 `vendor/code-server` → `@jinsiyu/dshcs-code-server`,无安装脚本、无 postinstall),
+二进制部分(argon2 + 16 个原生模块)由 `@jinsiyu/dshcs-*-win32-<架构>` 平台包经聚合包按架构自动选中;
 VS Code 内部依赖与预编译原生模块**全部由包管理器随插件一起装好** —— 无需全局 npm 安装、无需配置 `bin`、
 无需改 profile 配置、无需第二条安装命令。
 
@@ -68,23 +68,41 @@ cd C:\Users\User\Desktop\dsh-code-server-app
 pnpm install             # 开发依赖(esbuild + motion);allowBuilds 已显式声明 → 不执行任何 postinstall
 pnpm run build:client    # src/factory.js → lib/client.js(不入库,必须先构建)
 pnpm run vendor:check    # 可选:查看内置 code-server 版本 vs npm 最新版
-pnpm run vendor:code-server                      # ① 生成 vendor/code-server(code-server 本体 + 自身依赖)
-pnpm run repack:code-server -- --target win32-arm64,win32-x64 --pack   # ② 打成平台专属子包(含 argon2 原生)
-node scripts/vendor-repacks.mjs --target win32-arm64,win32-x64 --pack   # ③ 生成/重打包 VS Code 原生包
-pnpm run publish:repacks                         # ④ 发布全部 @jinsiyu/* 子包(需 npm 登录)
-pnpm pack                                        # ⑤ → dsh-code-server-app-<version>.tgz(约 105KB)
-npm publish dsh-code-server-app-<version>.tgz --access public   # ⑥ 发布插件本体(同一次验证的 tarball)
+pnpm run vendor:code-server                      # ① 生成 vendor/code-server(上游 code-server 树)
+pnpm run repack:build -- --target win32-arm64,win32-x64 --pack   # ② 统一脚本产出全部子包(见下表)
+pnpm run publish:repacks                         # ③ 发布全部 @jinsiyu/* 子包(默认 dist-tag = next)
+pnpm pack                                        # ④ → dsh-code-server-app-<version>.tgz(约 107KB)
+pnpm run publish:plugin                          # ⑤ 发布插件本体(默认 dist-tag = next)
+# 用户重启 dsh web 确认无误后,再把 latest 推进到该版本:
+pnpm run promote -- <version>
 ```
+
+> **dist-tag 政策(必须遵守)**:发布一律发到 **`next`**,**不动 `latest`**;
+> `latest` 只保留「最近一个确认无 bug 的版本」,由 `pnpm run promote -- <version>`
+> (= `npm dist-tag add dsh-code-server-app@<version> latest`)在**用户重启 dsh web 确认无误后**才推进。
+> 这样 `dsh plugin add dsh-code-server-app`(不带版本)和任何按 latest 安装的流程都不会拿到未验证的版本。
+> 子包(`@jinsiyu/dshcs-*`、聚合包)被依赖以精确/插入符版本引用,dist-tag 不影响解析,但同样默认发 `next`。
+> 查看当前标签:`npm dist-tag ls dsh-code-server-app`。
+
+`repack:build`(`scripts/vendor-repacks.mjs`)是**唯一的子包产出脚本**,一次生成:
+
+| 子包 | 内容 | os/cpu |
+|---|---|---|
+| `@jinsiyu/dshcs-code-server@<code-server 版本>` | code-server 树(`out/` + `lib/vscode` + 自带 136 个运行时依赖),**不含任何本机二进制** | 平台无关 |
+| `@jinsiyu/dshcs-argon2-win32-arm64` / `-x64` | argon2 模块 + 该架构编译好的 `.node`(arm64 0xaa64 / x64 0x8664) | win32-<arch> |
+| `@jinsiyu/dshcs-<名字>[-win32-<arch>]` ×24 | VS Code 内部依赖里需要构建的原生包(node-pty / @vscode/sqlite3 / kerberos / koffi / ssh2 / …) | 平台专属带 os/cpu |
+| `@jinsiyu/dsh-code-server-runtime-win32-<arch>` | 平台聚合包:`dependencies` 用 `npm:` 别名把上面 16 个原生包 + **argon2** 装回原始名字 | win32-<arch> |
 
 | 目标 | 命令 |
 |---|---|
-| **打 npm 最新版 code-server** | `pnpm run vendor:latest`(= `--force`):从 registry 取 `code-server@latest` 快照到 `vendor/code-server`;之后**必须**重跑 `repack:code-server`(重发子包)与 `vendor-repacks.mjs`(内部依赖版本会变) |
+| **打 npm 最新版 code-server** | `pnpm run vendor:latest`(= `--force`):从 registry 取 `code-server@latest` 快照到 `vendor/code-server`;之后**必须**重跑 `repack:build` 并重发全部子包 |
 | **指定版本** | `pnpm run vendor:code-server -- --version 4.136.2` |
 | **从已装好的树快照** | `pnpm run vendor:code-server -- --from <code-server 目录>`(秒级) |
-| **重打 code-server 子包** | `pnpm run repack:code-server -- --target win32-arm64,win32-x64 --pack`(x64 会现编 argon2 并校验 PE) |
-| **重建预编译原生包** | `node scripts/vendor-repacks.mjs [--from <已完整安装的树>] --target win32-arm64,win32-x64 --pack`(不给 `--from` 会自己 npm install 解包 + 编译,耗时) |
+| **完整重打子包** | `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack`(不给 `--from` 会自动 npm install 解包 + 编译,耗时) |
+| **只重打 code-server/argon2 包** | `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64 --pack`(复用 `repack/build` 里已有的原生包,不重新分析源树) |
 | **发布子包** | `pnpm run publish:repacks`(`--dry-run` 预览;`--only <子串>` 过滤;`--otp <code>` / `--limit N` 应对 2FA) |
-| **发布插件本体** | `npm publish dsh-code-server-app-<version>.tgz --access public`(发布**已验证过的那份 tarball**,不会重新打包) |
+| **发布插件本体** | `pnpm run publish:plugin`(发布**已验证过的那份 tarball**,不会重新打包;默认 dist-tag = `next`) |
+| **推进 latest** | `pnpm run promote -- <version>`(用户重启确认无误后;`--dry-run` 先看当前标签) |
 | **只报告版本** | `pnpm run vendor:check` |
 
 > `pnpm pack` 的 `prepack` 会自动跑一次 `vendor-code-server` 脚本;`vendor/code-server` 已存在时它是
@@ -95,27 +113,27 @@ npm publish dsh-code-server-app-<version>.tgz --access public   # ⑥ 发布插�
 
 ```powershell
 # 包内无 postinstall → 无需 pnpm approve-builds / allowBuilds;一条命令装完
-dsh plugin --profile web add dsh-code-server-app@0.1.37
+dsh plugin --profile web add dsh-code-server-app@0.1.43
 # 本地 tarball 同理:
-dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.37.tgz
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.43.tgz
 ```
 
-装完即用,**没有第二步、没有「安装环境」、不弹安装指引**。0.1.37 起主包只有 **~105KB**(插件自身代码),
+装完即用,**没有第二步、没有「安装环境」、不弹安装指引**。0.1.40 起主包只有 **~107KB**(插件自身代码),
 其余全部是依赖:
 
-- **code-server 本体**(含 `lib/vscode` 196.9MB + 它自带的 136 个运行时依赖)打成**平台专属子包**
-  `@jinsiyu/dshcs-code-server-<platform>-<arch>@<code-server 版本>`(os/cpu 限定,
-  挂在插件 `optionalDependencies`)→ pnpm 按架构自动选中,运行根在
-  `<profile>\node_modules\@jinsiyu\dshcs-code-server-win32-arm64\code-server`;
-- VS Code 内部依赖里**纯 JS 的部分**(35 个:xterm / katex / typescript / ws / tar …)写在插件
+- **code-server 本体**(含 `lib/vscode` 196.9MB + 它自带的 136 个运行时依赖)是**一个平台无关的包**
+  `@jinsiyu/dshcs-code-server@<code-server 版本>`,写进插件 `dependencies`,运行根在
+  `<profile>\node_modules\@jinsiyu\dshcs-code-server\code-server`;
+- VS Code 内部依赖里**纯 JS 的部分**(35 个:xterm / katex / typescript / ws / tar …)也写在插件
   `dependencies`,由 pnpm 装到 profile 的 `node_modules`(hoisted);
-- **需要编译的原生包**(node-pty / @vscode/sqlite3 / kerberos / koffi / ssh2 / cpu-features /
-  @parcel/watcher / @vscode/windows-* …共 16 个)由 `@jinsiyu/dshcs-*` 预编译包提供,
-  经**平台聚合包** `@jinsiyu/dsh-code-server-runtime-<platform>-<arch>` 用 `npm:` 别名装回**原始名字**;
+- **二进制部分**全部由 `@jinsiyu/dshcs-*` 平台包提供(每个平台各一份,os/cpu 限定):
+  `@jinsiyu/dshcs-argon2-win32-<arch>` 与 16 个原生包,经**平台聚合包**
+  `@jinsiyu/dsh-code-server-runtime-win32-<arch>` 用 `npm:` 别名装回**原始名字**
+  (`argon2` / `node-pty` / `@vscode/sqlite3` / …),聚合包挂在插件 `optionalDependencies` → pnpm 按架构自动选;
 - 因此依赖图里**没有任何带 pre/install/postinstall 或 binding.gyp 的包** →
   不需要 profile 的 `allowBuilds`、不执行任何构建、**使用者机器不需要 C++ 工具链**;
-- **升级插件不再重下 code-server**:子包版本按 code-server 版本缓存,pnpm 会直接复用;
-  只有 code-server 版本变化时才重新下载那 ~58MB。
+- **升级插件不再重下 code-server**:本体包版本按 code-server 版本缓存,pnpm 直接复用;
+  只有 code-server 版本变化时才重新下载那 ~60MB,argon2 平台包只有 ~1.5MB。
 
 ### 安装机制(为什么这样设计)
 
@@ -127,38 +145,52 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
   `sh ./postinstall.sh`:Windows 无 sh,且它只认 npm/yarn 的 user-agent)拿到树 → 补齐 argon2 native
   (win32-arm64 上游无预编译;可复用本机已有 `argon2.node`,见 `DSHCS_ARGON2_BINARY`)→
   剥掉残留安装脚本 → 快照到 `vendor/code-server/`;
-- 随后 `scripts/vendor-code-server-pkg.mjs` 把它打成**平台子包**:树放在包内子目录 `code-server/`
+- 随后同一脚本把 `vendor/code-server` 打成**平台无关的本体包**:树放在包内子目录 `code-server/`
   (npm/pnpm 打包**永远排除包根目录的 node_modules**,放在被 `files` 覆盖的子目录里才会随包发布),
-  子包**不写 `dependencies`**(那 136 个依赖已经作为文件打包在 `code-server/node_modules` 里,
-  写成 dependencies 会让 pnpm 再装一份);`os`/`cpu` 限定 + 各自编译好的 argon2(arm64 0xaa64 / x64 0x8664);
-- **需要编译的包**由 `scripts/vendor-repacks.mjs` 重打包成 `@jinsiyu/dshcs-*`:
+  包**不写 `dependencies`**(那 136 个依赖已经作为文件打包在 `code-server/node_modules` 里,
+  写成 dependencies 会让 pnpm 再装一份),并把 `node_modules/argon2` 整个删掉;
+- **argon2** 单独打成两个平台包(`@jinsiyu/dshcs-argon2-win32-arm64` / `-x64`):与其它原生包同一套规则
+  (删 `scripts`/`files`/`binding.gyp`,删 `prebuilds/` 统一走 `build/Release`),各自用
+  `node-gyp rebuild --arch=<arch>` 现编并校验 PE machine(0xaa64 / 0x8664);
+- **需要编译的包**同样由该脚本重打包成 `@jinsiyu/dshcs-*`:
   复制已编译的包目录 → **删除 `scripts` / `files` / `binding.gyp` / `.hooks` / `.npmignore`**
   (保留编译好的 `.node` 与全部运行时文件)→ 依赖里的同集包改成 `npm:` 别名 → 平台专属的加
   `os`/`cpu` 与 `-<platform>-<arch>` 后缀;
-- **平台聚合包**把重打包包按原始名字装回去(如 `"node-pty": "npm:@jinsiyu/dshcs-node-pty@1.2.0-beta.15"`),
-  于是 VS Code 内部代码 `require('node-pty')` 不用改;聚合包本身 `os`/`cpu` 限定,
+- **平台聚合包**把重打包包与 argon2 按原始名字装回去(如 `"node-pty": "npm:@jinsiyu/dshcs-node-pty@1.2.0-beta.15"`、
+  `"argon2": "npm:@jinsiyu/dshcs-argon2-win32-arm64@0.44.0"`),于是 code-server 与 VS Code 的
+  `require('argon2')` / `require('node-pty')` 都不用改;聚合包本身 `os`/`cpu` 限定,
   插件 `optionalDependencies` 同时声明 win32-arm64 与 win32-x64 两份 → 一条命令自动选对;
-- **解析路径**:host 用 `require.resolve('@jinsiyu/dshcs-code-server-<平台>-<架构>/package.json')`
-  找到运行根(子目录 `code-server/`),入口 `code-server/out/node/entry.js`;
-  VS Code 内部依赖从该运行根向上查找:`code-server/node_modules` → 子包 `node_modules` →
-  `<profile>/node_modules`(hoisted 布局),与运行时完全一致。包内 `vendor/code-server` 仅作
-  开发期/兼容回退。
+- **解析路径**:host 用 `require.resolve('@jinsiyu/dshcs-code-server/package.json')` 找到运行根
+  (包内子目录 `code-server/`),入口 `code-server/out/node/entry.js`;VS Code 内部依赖从该运行根向上查找
+  (`code-server/node_modules` → 包 `node_modules` → `<profile>/node_modules`)。
+- **运行时布局自愈**(`lib/native.js` 的 `ensureRuntimeLayout()`,激活时与每次启动 code-server 前幂等执行):
+  host 会在 code-server 树里补两类 **junction**(Windows junction / POSIX 目录软链):
+  1. `ensureAliasLinks()`:把聚合包带回的原生别名补到 `<code-server树>/node_modules`
+     —— pnpm 会把 `os`/`cpu` 限定的包**嵌套装在聚合包自己的 node_modules 下**,而 VS Code 的
+     `lib/vscode/out/server-main.js` 用 **ESM import**(ESM 不认 `NODE_PATH`),缺了就直接 500;
+  2. `ensureInnerModuleLinks()`:把 VS Code 的**内部依赖目录** `lib/vscode/node_modules` 与
+     `lib/vscode/extensions/node_modules` 按两个 `package.json` 的 `dependencies` 补回老布局
+     —— 老模型里它们是 npm 装在树里的真实目录,新模型拍平在 profile 根;**用显式路径拼依赖的代码**
+     (如内置 TS 扩展找 `<ext>/../node_modules/typescript/lib/tsserver.js`)否则会报
+     「VS Code's tsserver was deleted by another application…」(1.136.1 实测)。
+  链接都指向包管理器装出来的真实包,树被重装后的断链会被自动清理重建;`envCheck` 按
+  「code-server 运行根 + 聚合包目录」双锚点解析,并用 `NODE_PATH` 兜底 CJS。
 
-> **体积提示**:插件 tarball 约 **105KB**;`@jinsiyu/dshcs-code-server-win32-*` 子包各约 **58–60MB**
-> (解包 ~249MB);内部依赖与预编译原生包约 250MB。全部合计安装下载约 310MB。
+> **体积提示**:插件 tarball 约 **107KB**;`@jinsiyu/dshcs-code-server` 约 **60.5MB**(解包 ~242MB);
+> 两个 argon2 平台包各约 **1.5MB**;16 个原生包合计约 250MB。全部合计安装下载约 315MB。
 > `vendor/` 与 `repack/` 都不入 git(见 `.gitignore`)。
 
-> **从 ≤ 0.1.36 升级**:插件包内的 `vendor/code-server/` 已移出到平台子包,主包瘦身到 ~105KB;
-> 升级命令不变(一条 `dsh plugin --profile web add dsh-code-server-app@<版本>`),
-> 旧的 `vendor/` 会随旧版本包目录一起被 pnpm 清掉。
+> **从 ≤ 0.1.39 升级**:code-server 从「平台专属子包」改成「**一个平台无关本体包 + 两个 argon2 平台包**」,
+> 二进制部分全部并入统一的原生包脚本管理;升级命令不变(一条
+> `dsh plugin --profile web add dsh-code-server-app@<版本>`),旧的 `dshcs-code-server-win32-*` 子包会被 pnpm 清掉。
 
 > **从 ≤ 0.1.35 升级**:旧版的安装根 `<profile>\.code-server-app`(含约 1.4GB 内部依赖)与
 > 「安装环境」步骤都不再需要 —— 新版本会检测到它并打一条日志提示可安全删除:
 > `Remove-Item -Recurse -Force <profile>\.code-server-app`。profile 的 `pnpm-workspace.yaml` 里
 > 若还留着 `dsh-code-server-app: false` 之类的旧条目,也可以删掉(新版不再需要任何构建许可)。
 
-> **卸载**:`dsh plugin --profile web remove dsh-code-server-app` 即可;code-server 子包与原生包
-> 是独立依赖,若要彻底清干净可再 `dsh plugin --profile web remove @jinsiyu/dshcs-code-server-win32-arm64`
+> **卸载**:`dsh plugin --profile web remove dsh-code-server-app` 即可;本体包、argon2 与原生包
+> 是独立依赖,若要彻底清干净可再 `dsh plugin --profile web remove @jinsiyu/dshcs-code-server`
 > (或直接在 profile 里 `pnpm remove`);若还残留旧安装根,再手动删除 `<profile>\.code-server-app`。
 
 > 安装/依赖变化后请**重启 `dsh web`**(静态插件行与 host 探测路径在启动时加载)。
@@ -211,17 +243,18 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
   也可 `pnpm run vendor:code-server -- --version 4.136.2` 或设 `DSHCS_CODE_SERVER_VERSION`。
   已有 `vendor/code-server` 时,不带 `--force`/`--version` 不会升级(日常 `pnpm pack` 是 no-op)。
 - **先查再升**:`pnpm run vendor:check` 打印「内置版本 / npm latest」。
-- **换版本后要重发两类子包**(内部依赖版本会跟着 code-server 变):
-  1. `pnpm run repack:code-server -- --target win32-arm64,win32-x64 --pack` → 新版本号的 code-server 平台子包;
-  2. `node scripts/vendor-repacks.mjs --target win32-arm64,win32-x64 --pack` → 预编译原生包(并把新的
-     「纯 JS 直装集」写进插件 `dependencies`、更新两个聚合包版本);
-  3. `pnpm run publish:repacks` → 发布;然后 bump 插件版本 → `pnpm pack` → 发布插件。
+- **换版本后重新出子包并发布**(全部由同一个脚本):
+  1. `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack` → 新的本体包
+     (`@jinsiyu/dshcs-code-server@<新版本>`)、新的 argon2 平台包、以及按新内部依赖重建的原生包
+     (脚本会把新的「纯 JS 直装集」写进插件 `dependencies`、更新两个聚合包版本);
+  2. `pnpm run publish:repacks` → 发布;然后 bump 插件版本 → `pnpm pack` → 发布插件。
 - **不再有运行期自动升级**:不会在启动时联网取 latest;版本完全由内置产物决定。
 - 本机当前内置:`code-server@4.136.2`(with Code 1.136.1)。
 
 ### 兼容旧安装位
 
-host 探测顺序:`@jinsiyu/dshcs-code-server-<平台>-<架构>/code-server`(**0.1.37+ 正式布局**)> 插件包内
+host 探测顺序:`@jinsiyu/dshcs-code-server/code-server`(**0.1.40+ 正式布局**)>
+`@jinsiyu/dshcs-code-server-<平台>-<架构>/code-server`(0.1.37 平台专属子包)> 插件包内
 `vendor/code-server`(0.1.36 及更早 / 开发期)> 旧版安装根
 `<profile>\.code-server-app\node_modules\code-server`(兼容 0.1.35 及更早)> 插件包内
 `node_modules/code-server`(开发期)> PATH/配置 `bin`。旧安装根只在启动日志里提示可删除,不再被写入。
@@ -248,7 +281,7 @@ host 探测顺序:`@jinsiyu/dshcs-code-server-<平台>-<架构>/code-server`(**0
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `bin` | `code-server`(占位) | 启动优先级:本配置显式 `bin` > 平台子包 `@jinsiyu/dshcs-code-server-<平台>-<架构>/code-server/out/node/entry.js` > 包内 `vendor/code-server` > 旧安装根 `.code-server-app` > 插件包内 `node_modules` > PATH 中的 `code-server`。都不存在时启动报错并给出排查提示 |
+| `bin` | `code-server`(占位) | 启动优先级:本配置显式 `bin` > 本体包 `@jinsiyu/dshcs-code-server/code-server/out/node/entry.js` > 旧平台子包 `@jinsiyu/dshcs-code-server-<平台>-<架构>` > 包内 `vendor/code-server` > 旧安装根 `.code-server-app` > 插件包内 `node_modules` > PATH 中的 `code-server`。都不存在时启动报错并给出排查提示 |
 | `host` | `127.0.0.1` | 绑定地址;`auth: none` 仅允许回环(localhost/127.0.0.1/::1) |
 | `port` | `8090` | 端口;被占用时启动失败并给出诊断(不自动换端口) |
 | `auth` | `none` | `none` \| `password`;非回环 host 自动要求 password |
