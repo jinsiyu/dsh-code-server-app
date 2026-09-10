@@ -46,9 +46,9 @@
 - 侧栏标签内即 code-server 页面(iframe),跟随当前会话工作区;面板可折叠/分屏/浮动/全屏(由 DSH 右侧栏提供)。
 - **IDE 常驻(0.2.2 起,默认开)**:切到别的标签/收起侧栏再回来**不再重载** code-server——
   未保存的编辑缓冲区、终端、调试会话都留在原处(见下方「为什么切标签不再重载」)。
-- 设置卡片三行:「**认领范围**」「窗口化打开(新标签页)」「后台常驻(切标签不重载)」。
-  `reserveComposer`(保留输入框上方空间)只对已删除的浮窗有意义,0.2.3 起**废弃**:设置文件里的旧值仍被接受但被忽略。
-- `windowedOpen` 优先级最高:开启时**设置卡按钮 / guide 入口框**一律新开浏览器标签页(官方的文件点击不受它影响——那条链由 DSH 自己发起到右侧栏)。
+- 设置卡片只有**两个设置**:「**认领范围**」与「**后台常驻(切标签不重载)**」;另有一行「入口」(在右侧栏打开)与两段只读信息(依赖安装、环境检测)。
+  旧版的 `windowedOpen`(窗口化打开)、`reserveComposer` 已在 0.2.6 移除:旧设置文档里残留的这两个键不会报错,只是被忽略(不再出现在 schema 里)。
+  需要在新标签页用 IDE 时,直接访问回环地址 `http://127.0.0.1:<port>/`(`serve: dsh` 时为 DSH 的 `/code-server/`)。
 
 ## 文件打开(0.2.5 起走官方入口)
 
@@ -127,7 +127,7 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 | **`loopback`(默认)** | 插件自己起一个回环端口(`host:port`),右侧栏 iframe 跨源直连;进程可被 adopt(DSH host 重启后接管) | 无 |
 | **`dsh`** | IDE 挂到 **DSH 自己的 HTTP 端口**上的 `/code-server/*`(HTTP prefix 路由)+ `/code-server/<quality>-<commit>`(WS 精确路由),转发到 launcher 的**命名管道**;**没有额外端口**;每条请求(含 WS 握手)先过 `ctx.connection.requestRejection()` —— 与 `/api` 同一套 Host/Origin fence + 浏览器 cookie 认证 | DSH 提供 `webServer` 服务(web profile);desktop 无此服务 → 自动回退 loopback |
 
-- 在 `cordis.patch.yml` 的 `config.serve` 或「设置 → 插件 → Code Server → 服务方式」切换(下次启动生效)。
+- 在 `cordis.patch.yml` 的 `config.serve`(或设置文档里的 `code-server.serve`)切换,下次启动生效 —— **设置卡片不提供这一行**(卡片只有认领范围/后台常驻两个设置)。
 - `dsh` 模式的实际收益:单一 URL/单一端口(远程访问 DSH 即可用 IDE)、不再暴露额外回环端口、认证与 DSH 同级。
 - `dsh` 模式的两点**已知取舍**:
   1. iframe 与 DSH **同源** → 该模式下不再挂 `sandbox`(同源 + `allow-same-origin` 可被 frame 自行摘除,属"看起来有防护");
@@ -381,16 +381,17 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `fileOpenScope` | `session` | **认领范围**(0.2.5):`session` = 只认领会话作用域的文件地址(`dsh-resource://file/session/…`,即官方产物/交付/正文提及);`all` = 连无会话的绝对路径(`…/file/absolute/…`)也认领。未认领的地址由 DSH 自带预览兜底 |
-| `windowedOpen` | `false` | **窗口化打开**:开启后设置卡按钮 / guide 入口框在浏览器**新标签页**打开 code-server(自动启动并跟随当前工作区目录);关闭(默认)使用右侧栏标签。官方的文件点击不受它影响(那条链由 DSH 自己发起到右侧栏) |
 | `keepResident` | `true` | **后台常驻**:开启后宿主启动即把 IDE 预加载到"停放区",切标签/收起侧栏不重载、首次打开免等待;关闭则只在打开面板时加载(省内存) |
-| ~~`reserveComposer`~~ | `true` | **0.2.3 起废弃**:只对已删除的内部浮动窗口有意义。设置文件里的旧值仍被接受但被忽略(键保留,避免旧设置文档校验失败) |
+
+(0.2.6 起卡片只留上面两个设置;`windowedOpen` 与 `reserveComposer` 已移除 —— 旧设置文档里残留的键既不报错也不生效。
+`serve` 仍是设置命名空间里的键(便于用设置文档切换),但**没有卡片行**,见「服务方式」。)
 
 卡片底部是**环境检测**(点「检测环境」读取 host `status.env`):
 树版本 / `productPath` / server 入口、VS Code 内部依赖、**预编译原生包**(平台聚合包名 + 已解析模块数)。
 0.1.36 起没有「安装环境」按钮 —— 依赖由包管理器安装,卡片里只显示结果。
 
-> 卡片改动经 `scope.watch` 实时生效(host 端 status API 同步返回 `windowedOpen` 与
-> `keepResident`,客户端立即生效);无需重启 dsh。**新增设置键后首次使用前需重启 dsh web**,
+> 卡片改动经 `scope.watch` 实时生效(host 端 status API 同步返回 `keepResident` 与
+> `fileOpenScope`,客户端立即生效);无需重启 dsh。**新增设置键后首次使用前需重启 dsh web**,
 > 让 host 重新注册设置命名空间(schema 含新键),否则新键的保存与校验不生效。
 
 ## 配置(cordis.patch.yml 的 `config`,均有默认值)
@@ -466,6 +467,18 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
   - 也可以选择 **等满 24 小时**再在插件管理里正常安装;web profile 不受影响(它的 `pnpm-workspace.yaml` 是 `minimumReleaseAge: false`)。
   - 本插件的依赖闭包里含平台原生子包(`@jinsiyu/dsh-code-server-runtime-win32-*`),它们与插件本身**同批发布**,
     因此每次新版本在桌面端都会受这条策略约束。
+- **桌面端的客户端 bundle 会被 Electron 缓存,重启应用不保证换新**(2026-09 实测,0.2.5 踩到):
+  - 现象:profile 里 `lib/client.js` 已是新版本,但渲染器仍跑旧代码——`%APPDATA%\@deepseek-ai\dsh-desktop\Code Cache\js`
+    里只有旧版本独有的字符串(如 `dshcs-artifacts`),新版本独有的字符串(如 `fileOpenScope`)一个都没有;
+    `Cache\` 里也存着一份引用 `dsh-code-server-app` 的旧响应体。官方插件同理(缓存里那份 `ui-deliverables`
+    连当前的 `data-presented-files-row` 都没有)。
+  - 诊断手法(字节级,注意别用按控制台编码读文件的 `Select-String`,中文标记会假阴性):
+    在 `Code Cache\js` 里搜本版本独有的**ASCII** 标记(我们用 `fileOpenScope`),命中即说明新 bundle 真的被编译过。
+  - 修法:完全关闭应用后删 `Cache`、`Code Cache`、`GPUCache` 三个目录再启动(只清缓存,不动 profile/会话/设置):
+    ```powershell
+    Remove-Item -Recurse -Force "$env:APPDATA\@deepseek-ai\dsh-desktop\Cache","$env:APPDATA\@deepseek-ai\dsh-desktop\Code Cache","$env:APPDATA\@deepseek-ai\dsh-desktop\GPUCache"
+    ```
+  - 影响面:不只本插件——**任何**客户端插件升级后都可能继续跑旧代码;发布后请按上面的标记法确认渲染器真的换了 bundle。
 
 ## 已知限制
 

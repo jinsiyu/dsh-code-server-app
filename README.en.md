@@ -32,9 +32,9 @@ A static profile plugin (npm package with host + client bundle) that ships the *
   - upgrading DSH needs **no reinstall** — refresh the page and the card turns back into the full settings card.
 - The sidebar tab hosts the code-server page (iframe) and follows the current session workspace; the panel can be collapsed/split/floated/fullscreened by DSH's right sidebar.
 - **Resident IDE (0.2.2, on by default)**: switching to another tab or collapsing the sidebar and coming back **no longer reloads** code-server — unsaved editor buffers, terminals and debug sessions all stay put (see "Why switching tabs no longer reloads" below).
-- The settings card now has three rows: "**Claim scope**", "Open in a window (new tab)" and "Resident in background".
-  `reserveComposer` (reserve space above the composer) only ever mattered for the deleted floating window: it is **deprecated** in 0.2.3 — an old value in the settings document is still accepted but ignored.
-- `windowedOpen` has the highest priority: when on, the **settings-card button / guide entry box** always open a browser tab (DSH's own file clicks are unaffected — that chain is started by DSH itself and targets the right sidebar).
+- The settings card has exactly **two settings**: "**Claim scope**" and "Resident in background"; plus one "Entry" action row and two read-only info sections (dependency install, environment check).
+  The old `windowedOpen` (open in a window) and `reserveComposer` were **removed in 0.2.6**: leftover keys in an old settings document neither fail nor apply (they are no longer part of the schema).
+  To use the IDE in a browser tab, visit the loopback address `http://127.0.0.1:<port>/` (or DSH's `/code-server/` under `serve: dsh`).
 
 ## Opening files (official entry points since 0.2.5)
 
@@ -371,12 +371,14 @@ persisted via the official settings domain (`settingsScope`, namespace `code-ser
 | Key | Default | Description |
 |---|---|---|
 | `fileOpenScope` | `session` | **Claim scope** (0.2.5): `session` claims only session-scoped file addresses (`dsh-resource://file/session/…` — DSH's produced files, declared deliveries, prose mentions); `all` also claims session-less `…/file/absolute/…`. Unclaimed addresses fall back to DSH's built-in preview |
-| `windowedOpen` | `false` | **Open in a window**: on, the settings-card button / guide entry box opens code-server in a browser **new tab** (auto-starts and follows the active workspace); off (default) uses the right-sidebar tab. DSH's own file clicks are unaffected (that chain is started by DSH itself and targets the right sidebar) |
 | `keepResident` | `true` | **Resident in background**: on, the host preloads the IDE into a parked surface right after start — switching tabs or collapsing the sidebar never reloads it and the first open needs no cold start; off loads it only when the panel is opened (saves memory) |
-| ~~`reserveComposer`~~ | `true` | **Deprecated in 0.2.3**: it only ever affected the deleted internal floating window. An old value in the settings document is still accepted but ignored (the key is kept so old settings documents keep validating) |
 
-> Card changes take effect immediately via `scope.watch` (the host status API returns `windowedOpen` and
-> `keepResident`; the client applies them at once); no dsh restart needed. **After adding new setting keys, restart dsh web before first use**,
+(Since 0.2.6 the card keeps only those two settings; `windowedOpen` and `reserveComposer` are gone — leftover keys in an old
+settings document neither fail nor apply. `serve` remains a key in the settings namespace (usable from a settings document) but
+has **no card row** — see "Serving mode".)
+
+> Card changes take effect immediately via `scope.watch` (the host status API returns `keepResident` and
+> `fileOpenScope`; the client applies them at once); no dsh restart needed. **After adding new setting keys, restart dsh web before first use**,
 > so the host re-registers the settings namespace (schema includes the new key); otherwise save/validation of the new key won't work.
 
 The bottom of the card is **Environment check** (click "Check environment" to read the host `status.env`): entry,
@@ -463,15 +465,34 @@ Host/Origin fence and browser auth); in the desktop profile `apps/desktop-host` 
     `pnpm-workspace.yaml` sets `minimumReleaseAge: false`.
   - this plugin's closure contains platform native sub-packages (`@jinsiyu/dsh-code-server-runtime-win32-*`) published together with
     the plugin itself, so every new version hits that policy on desktop.
+- **Desktop client bundles are cached by Electron; restarting the app does not guarantee a new one** (measured 2026-09, hit while shipping 0.2.5):
+  - symptom: `lib/client.js` in the profile is the new version, yet the renderer keeps running the old code —
+    `%APPDATA%\@deepseek-ai\dsh-desktop\Code Cache\js` only contains strings unique to the old version (e.g. `dshcs-artifacts`)
+    and none unique to the new one (`fileOpenScope`), and `Cache\` still holds an old response body referencing
+    `dsh-code-server-app`. The same applies to first-party plugins (the cached `ui-deliverables` even lacks the current
+    `data-presented-files-row` marker);
+  - diagnosis (byte level — do **not** use `Select-String`, which reads files with the console encoding and gives false
+    negatives on non-ASCII markers): search `Code Cache\js` for an **ASCII** marker unique to the new version
+    (ours is `fileOpenScope`); a hit proves the new bundle really was compiled;
+  - fix: fully close the app, delete the `Cache`, `Code Cache` and `GPUCache` directories, then start it (cache only —
+    profiles, sessions and settings are untouched):
+    ```powershell
+    Remove-Item -Recurse -Force "$env:APPDATA\@deepseek-ai\dsh-desktop\Cache","$env:APPDATA\@deepseek-ai\dsh-desktop\Code Cache","$env:APPDATA\@deepseek-ai\dsh-desktop\GPUCache"
+    ```
+  - scope: this is not specific to this plugin — **any** client plugin may keep running old code after an upgrade;
+    after a release, confirm with the marker trick above that the renderer actually swapped bundles.
 
-## Artifact open buttons
+## File-open plumbing (what the plugin itself still does)
 
-Each produced file (written/edited) in a turn is shown as a chip with a **code-server icon button** next to it
-in the conversation's turn tail; clicking either opens the file in code-server — in the right-sidebar tab
-(opening/expanding the column and focusing the tab). When `windowedOpen` is on, both open a browser tab instead;
-if the sidebar cannot be opened (no mounted seat), they also fall back to a browser tab.
-The `dshcs-open-file` extension is installed as a **built-in** extension of code-server (in `lib/vscode/extensions`),
-so users cannot remove it from the extensions panel.
+DSH's own chips and preview buttons are what users click (see "Opening files" above); this plugin adds no row of its own.
+What remains on the plugin side:
+
+- the tab body parses `navigation.address` and posts the absolute path (plus an optional `line`) to
+  `/api/code-server/open-file`, which writes a signal file;
+- the bundled `dshcs-open-file` extension polls that file and calls `showTextDocument` — VS Code Web has no official
+  "open this file from outside" API, so this is the only way to aim the workbench at a file. It is installed as a
+  **built-in** extension (in `lib/vscode/extensions`), so users cannot remove it from the extensions panel, and the
+  installer re-syncs it whenever its content changes.
 
 ## Known limitations
 

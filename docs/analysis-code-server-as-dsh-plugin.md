@@ -544,3 +544,61 @@ GET /          → 200 text/html len=4222
   `canOpen` 接受 session 地址、默认拒绝 absolute 地址、拒绝页面地址;`title` 对文件地址给文件名、对页面地址给 `Code Server`;
   guide 入口仍在;**不再注册 `conversation.chat.turnTail`**。
 - **E2**:host 快照 `fileOpenScope:'all'` → `canOpen` 也接受 absolute 地址。
+
+## 13. 0.2.6:设置瘦身、注释体检与死代码清理
+
+### 13.1 设置瘦身(只留两个)
+
+| 键 | 处置 | 依据 |
+|---|---|---|
+| `keepResident` | 保留(卡片行「后台常驻」) | 决定是否预热停放面 |
+| `fileOpenScope` | 保留(卡片行「认领范围」) | 决定认领哪些文件地址 |
+| `windowedOpen` | **删除**(schema + host 变量/watch/snapshot + 客户端草稿/保存/重置 + 整行 UI + 唯一使用者 `openExternalTab`) | 0.2.5 起官方文件点击链由 DSH 自己发起,"新标签页打开"只剩设置卡与 guide 入口两个入口,收益不抵一个设置项 |
+| `reserveComposer` | **删除**(自 0.2.3 起已是只读的废弃键) | 只服务已删除的内部浮窗 |
+| `serve` | 保留在 schema、**无卡片行** | 仍可用设置文档切换(删掉会让这样配置的用户静默回退 loopback) |
+
+- **旧设置文档安全性(已核实)**:`settings.resolve()` 直接以 schema 调用合并后的值
+  (`packages/settings/settings/src/index.ts:748`),而 schemastery 的 object 在非 strict 下把未知键
+  `merge` 进结果(`vendor/schemastery/src/index.ts:752-762`)→ 文档里残留的 `windowedOpen`/`reserveComposer`
+  既不报错也不生效,无需迁移代码。
+- 行为变化(已写入 README):不再有"在浏览器新标签页打开"的入口;需要时直接访问回环地址
+  (`serve: dsh` 时为 DSH 的 `/code-server/`)。
+
+### 13.2 注释体检
+
+删掉版本考古与重复叙述,并把最长的文件头压缩(动作与结果):
+
+| 文件 | 头/最长块 | 处置 |
+|---|---|---|
+| `lib/index.js` | 41 行头 | 压到 13 行;**修正过时断言**——原文写"auth=none 仅允许回环 host;非回环强制 password",实现是 0.2.0 起不再支持口令(`index.js` 里对 `auth: 'password'` 只告警并按 none 运行) |
+| `src/factory.js` | 29 行头 | 压到 12 行;删 `priority:-9` 劫持、0.2.3/0.2.5 考古;`sidebarBridge` 注释由"产物按钮/设置卡"改为"设置卡/guide 入口";能力探测与 turnTail 两处历史注释各压一行 |
+| `src/surface.js` | 23 行头 | 压到 11 行(保留两条实测事实);`dockInto` 注释删"浮窗里的占位 div" |
+| `src/address.js` | 143 行/58 行注释 | 头压到 8 行;10 个函数的 JSDoc 收敛为单行(保留地址语法摘要) |
+| `lib/launcher.mjs` | 21 行头 | 压到 12 行(保留用法与就绪信号) |
+| `lib/native.js` | 写"只做两件事"却列三条 | 改为"三件事" |
+| `scripts/vendor-repacks.mjs` | 26 行头 | 压到 15 行(删 argon2 括注与"结果:"段) |
+| `scripts/build-client.mjs` | 含版本考古 | 删"0.2.3 删除浮窗后不再内嵌 motion",补上 `./address.js` |
+
+### 13.3 死代码清理(逐项证据 = 全仓引用计数)
+
+| 符号 | 位置 | 证据 | 动作 |
+|---|---|---|---|
+| `openExternalTab` | `src/factory.js` | 唯一调用者(产物行)已删 | 删 |
+| `bundledRuntimeEntry` | `lib/index.js` | 零引用 | 删(连带其唯一使用者 `codeServerEntry` 的 import) |
+| `wasRunning` | `lib/index.js` `stop()` | 计算后从未使用 | 删该行 |
+| `isVscodeOnlyTree` | `lib/vendor.js` | 仅历史文档提到 | 删 |
+| `codeServerTarget` | `lib/vendor.js` | 零引用 | 删 |
+| `codeServerEntry` | `lib/vendor.js` | 删除 `bundledRuntimeEntry` 后零引用 | 删 |
+| `SCOPE_ALL` / `isAbsoluteFilePath` | `src/address.js` | 仅文件内使用 | 取消导出(常量/函数保留) |
+| `.dshcs-hint` 重复定义 | `src/factory.js`(主 CSS 与 CARD_CSS) | 同名选择器两处定义,后者覆盖前者 | 卡片那份改为 `.dshcs-card .dshcs-hint`,不再全局覆盖 |
+
+复核后**不是**死代码(未删):`.dshcs-cbtn*`(拼接字符串使用)、`.dshcs-frame`/`.dshcs-park`(`src/surface.js` 使用)、
+`surface.js` 的调试导出(`nudgeRepaint`/`setNudgeEnabled`/`setParkStrategy`/`getParkStrategy`/`destroySurface`,对应 README 的 `window.__dshcsSurface`)、
+`index.js` 的 `handleSetup` 兼容路由与 `auth: 'password'` 告警。
+
+### 13.4 回归
+
+`.spike/spike-legacy-ui.mjs` 场景 B 增断言:卡片含「认领范围」「后台常驻」、**不含**「窗口化打开」;
+认领范围下拉的选项恰为 `session`/`all`;客户端产物里 `windowedOpen|reserveComposer` 归零。
+(测试桩升级:元素树遍历现在会显式调用函数组件以求值 —— 桩不渲染组件,`csSelect` 这类纯组件的内部结构
+此前看不见。)
