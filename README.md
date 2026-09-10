@@ -407,6 +407,22 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
   桌面端同样自带 `dsh-client-ui-sidebar-right`(见 desktop 构建 seed 包列表),因此 0.2.3 的
   "只支持带右侧栏的 DSH" 对 desktop 不构成降级;唯一差别是 desktop 无 `webServer`,`serve: dsh` 会自动回退 loopback。
 - 安装到 desktop profile:`dsh plugin --profile desktop add dsh-code-server-app@<版本>`(或桌面端插件管理窗)。
+- **桌面端安装的 24 小时供应链策略(实测,2026-09)**:
+  - CLI 路径不可用:`dsh plugin --profile desktop …` 会被拒绝(*"profile "desktop" is managed exclusively by the Electron application"*),
+    桌面端只能走应用内的包事务(`pnpm add <spec> --save-exact`)。
+  - 该事务用的 pnpm(应用自带 **11.7.0**,DeepSeek 打过补丁)在 `add` 前会做**锁文件供应链校验**:
+    "Verifying lockfile against supply-chain policies (717 entries)",默认要求**发布满 24 小时**,
+    否则 `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`。
+  - **`minimumReleaseAgeExclude` 名单对该校验无效**(沙盒复现:`pnpm config get` 能读到名单、裸包名/精确版本都不放行),
+    能放行的只有把 `minimumReleaseAge: 0` 写进 `pnpm-workspace.yaml`;但那个键**不在应用容忍的 policy 段里**
+    (`project-manager.ts` 只忽略 `minimumReleaseAgeExclude:` / `trustPolicyExclude:`),
+    写进去会让应用报 *"core package mapping does not match desktop-packages.json"* —— **不要持久化这个键**。
+  - 结论:桌面端要装**刚发布**(<24h)的版本,只能 **(a) 等满 24 小时** 再在插件管理里安装,
+    或 **(b) 用应用自己的引导参数手工装**(`add <spec> --save-exact --trust-lockfile`,并把包名追加进
+    profile `package.json` 的 `dsh.profile.bundles`,否则不会被加载)。
+    web profile 不受影响:它的 `pnpm-workspace.yaml` 里是 `minimumReleaseAge: false`。
+  - 本插件的依赖闭包里含平台原生子包(`@jinsiyu/dsh-code-server-runtime-win32-*`),它们与插件本身**同批发布**,
+    因此每次新版本在桌面端都会受这条策略约束。
 
 ## 已知限制
 
