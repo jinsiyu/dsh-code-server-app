@@ -1,20 +1,20 @@
-// scripts/vendor-repacks.mjs — 打包期把 code-server 本体与「pnpm 拒绝安装」的原生包全部打成可安装的预编译包。
+// scripts/vendor-repacks.mjs — 打包期把「VS Code 树」与「pnpm 拒绝安装」的原生包全部打成可安装的预编译包。
 //
 // 为什么:pnpm 认为「含安装脚本」或「含 binding.gyp / .hooks」的包需要构建,必须由宿主
-// pnpm-workspace.yaml 的 allowBuilds 批准,否则 dsh plugin add 直接 exit 1。code-server 本体、
-// argon2 与 VS Code 内部依赖里的一批原生包都属于这一类。
+// pnpm-workspace.yaml 的 allowBuilds 批准,否则 dsh plugin add 直接 exit 1。VS Code 内部依赖里
+// 的一批原生包都属于这一类;树本身则因为 npm 打包永远排除**包根** node_modules 而必须重打包。
 //
 // 产物(全部由本脚本统一生成,再由 scripts/publish-repacks.mjs 统一发布):
-//   ① @<scope>/dshcs-code-server@<code-server 版本>          平台无关:vendor/code-server 的树
-//      (out/ + lib/vscode + 自带运行时依赖),**去掉 node_modules/argon2**;
-//   ② @<scope>/dshcs-argon2-<platform>-<arch>@<argon2 版本>   平台专属:argon2 + 该架构编译好的 .node
-//      (与其它原生包同一套规则:删 scripts/files/binding.gyp、删 prebuilds 统一走 build/Release);
-//   ③ @<scope>/dshcs-<名字>[-<platform>-<arch>]@<版本>        VS Code 内部依赖里需要构建的包
+//   ① @<scope>/dshcs-vscode-server@<code-server 版本>        平台无关:vendor/vscode 的树
+//      (lib/vscode + out/browser + src/browser);**不含** code-server 的 out/node 与其 136 个依赖
+//      —— 那层由插件自带的 lib/launcher.mjs 取代(见 docs/analysis-code-server-as-dsh-plugin.md);
+//   ② @<scope>/dshcs-<名字>[-<platform>-<arch>]@<版本>        VS Code 内部依赖里需要构建的包
 //      (node-pty / @vscode/sqlite3 / kerberos / koffi / ssh2 / …),
 //      依赖链上命中它们的包也一并重打包(含 optionalDependencies,如 @vscode/proxy-agent → windows-ca-certs);
-//   ④ @<scope>/dsh-code-server-runtime-<platform>-<arch>@<插件版本>  平台聚合包:
-//      dependencies 用 npm: 别名把 ②③ 装回**原始名字**(argon2 / node-pty / @vscode/sqlite3 / …),
-//      这样 code-server 与 VS Code 的 require 不用改,插件只需按 os/cpu 声明 ①(常规依赖)+ ④(可选依赖)。
+//   ③ @<scope>/dsh-code-server-runtime-<platform>-<arch>@<插件版本>  平台聚合包:
+//      dependencies 用 npm: 别名把 ② 装回**原始名字**(node-pty / @vscode/sqlite3 / …),
+//      这样 VS Code 的 require/import 不用改,插件只需按 os/cpu 声明 ①(常规依赖)+ ③(可选依赖)。
+//   (argon2 已随 code-server 服务层一起移除:auth=none 不再需要口令哈希。)
 //
 // 结果:pnpm install 不再遇到任何带构建信号的包 → 无需 allowBuilds、无需「安装环境」步骤。
 //
@@ -50,7 +50,7 @@ const FROM = argValue('--from');
 const SCOPE = argValue('--scope') ?? '@jinsiyu';
 const DO_PACK = process.argv.includes('--pack');
 // --reuse:复用 repack/build 里已有的原生包(不重新 analyze/交叉编译),只重建
-//          code-server 本体包、argon2 平台包、平台聚合包与插件 package.json。
+//          VS Code 树包、平台聚合包与插件 package.json。
 //          适用于「原生包没变、只调整打包结构」的场景(本机已无可分析的完整源树时也用它)。
 const REUSE = process.argv.includes('--reuse');
 const TARGETS = argValues('--target');
@@ -277,12 +277,13 @@ function prepareCrossTree(specs, target) {
  *  1) npm install code-server@<内置版本> --ignore-scripts(只解包);
  *  2) 在 lib/vscode 与 lib/vscode/extensions 里 npm install --ignore-scripts(解包内部依赖,约 1GB);
  *  3) 缺 Spectre 库时先降级 gyp,再 npm rebuild(编译本机原生包)。
+ *  注意:只有 lib/vscode 的依赖会被 analyze 用到 —— code-server 自己的 136 个依赖已随服务层移除。
  *  @returns {string} 源树根 */
 function prepareSourceTree() {
-  const vendorVersion = readJson(join(pkgRoot, 'vendor', 'VENDOR.json'))?.codeServerVersion
+  const vendorVersion = readJson(join(pkgRoot, 'vendor', 'vscode', 'package.json'))?.version
     ?? readJson(join(pkgRoot, 'vendor', 'code-server', 'package.json'))?.version;
   if (typeof vendorVersion !== 'string' || vendorVersion === '') {
-    throw new Error('缺少 vendor/code-server;先运行 `node scripts/vendor-code-server.mjs`');
+    throw new Error('缺少 vendor/vscode;先运行 `node scripts/vendor-vscode-server.mjs`');
   }
   const tmp = join(pkgRoot, '.vendor-tmp', `repack-src-${process.pid}`);
   rmSync(tmp, { recursive: true, force: true });
@@ -325,84 +326,46 @@ function peMachine(file) {
   } catch { return null; }
 }
 
-function nodeGypCli() {
-  const cli = join(process.env.APPDATA ?? '', 'npm', 'node_modules', 'node-gyp', 'bin', 'node-gyp.js');
-  if (!existsSync(cli)) throw new Error('找不到 node-gyp(需全局安装 node-gyp)');
-  return cli;
-}
-
-/** ① code-server 本体(平台无关):vendor/code-server → repack/build/code-server/。
- *  去掉平台专属的 node_modules/argon2 —— 它由 @<scope>/dshcs-argon2-<platform>-<arch> 按架构提供。 */
-function buildCodeServerPackage() {
-  const vendorTree = join(pkgRoot, 'vendor', 'code-server');
-  if (!existsSync(join(vendorTree, 'out', 'node', 'entry.js'))) {
-    throw new Error('缺少 vendor/code-server;先运行 `node scripts/vendor-code-server.mjs`');
+/** ① VS Code 树(平台无关):vendor/vscode → repack/build/vscode/vscode/。
+ *  排除 VS Code 的「内部依赖目录」(lib/vscode/node_modules、lib/vscode/extensions/node_modules)
+ *  —— 它们由包管理器安装 + 平台聚合包按架构提供,树里只留 lib/vscode 本体与静态资源。
+ *  不含 code-server 的 out/node 与服务层依赖(已由 lib/launcher.mjs 取代)。 */
+function buildVscodeServerPackage() {
+  const vendorTree = join(pkgRoot, 'vendor', 'vscode');
+  if (!existsSync(join(vendorTree, 'lib', 'vscode', 'out', 'server-main.js'))) {
+    throw new Error('缺少 vendor/vscode;先运行 `node scripts/vendor-vscode-server.mjs`');
   }
   const version = readJson(join(vendorTree, 'package.json'))?.version;
-  if (typeof version !== 'string') throw new Error('读不到 code-server 版本');
-  const dir = join(OUT, 'build', 'code-server');
+  if (typeof version !== 'string') throw new Error('读不到树版本(vendor/vscode/package.json)');
+  const dir = join(OUT, 'build', 'vscode');
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
-  console.log(`[repack] code-server 本体(平台无关)→ ${relative(pkgRoot, join(dir, 'code-server'))}(argon2 由平台包提供)`);
-  cpSync(vendorTree, join(dir, 'code-server'), {
+  const inner = [
+    join('lib', 'vscode', 'node_modules'),
+    join('lib', 'vscode', 'extensions', 'node_modules'),
+  ].map((p) => p.replaceAll('\\', '/'));
+  console.log(`[repack] VS Code 树(平台无关)→ ${relative(pkgRoot, join(dir, 'vscode'))}`);
+  cpSync(vendorTree, join(dir, 'vscode'), {
     recursive: true,
     dereference: false,
     maxRetries: 6,
     retryDelay: 250,
+    filter: (source) => {
+      const rel = source.slice(vendorTree.length + 1).replaceAll('\\', '/');
+      return !inner.some((p) => rel === p || rel.startsWith(`${p}/`));
+    },
   });
-  // 删掉平台专属的 argon2(整目录,避免嵌套解析遮蔽 <profile>/node_modules/argon2)
-  rmSync(join(dir, 'code-server', 'node_modules', 'argon2'), { recursive: true, force: true });
+  const name = `${SCOPE}/dshcs-vscode-server`;
   writeFileSync(join(dir, 'package.json'), JSON.stringify({
-    name: `${SCOPE}/dshcs-code-server`,
+    name,
     version,
-    description: `code-server ${version} (out/ + lib/vscode + its runtime dependencies), repacked so pnpm installs it `
-      + `without any build script. The platform-specific argon2 binary is provided by ${SCOPE}/dshcs-argon2-<platform>-<arch>.`,
-    files: ['code-server'],
+    description: `The VS Code server tree from code-server ${version} (lib/vscode + browser assets), repacked so pnpm `
+      + 'installs it without any build script. The code-server Node layer is replaced by the plugin launcher.',
+    files: ['vscode'],
     license: 'MIT',
     repository: readJson(join(pkgRoot, 'package.json'))?.repository ?? undefined,
   }, null, 2) + '\n', 'utf8');
-  const name = `${SCOPE}/dshcs-code-server`;
   return { dir, name, version, file: tgzName(name, version) };
-}
-
-/** ② argon2 平台二进制包(每个目标一个):@<scope>/dshcs-argon2-<target>@<argon2 版本>。
- *  与其它原生包同一套规则:删 scripts/files/binding.gyp,保留 build/Release 里的 .node;
- *  prebuilds/ 一律删掉(统一走 build/Release,避免 node-gyp-build 在 win32-x64 选到上游 .glibc 命名文件)。 */
-function buildArgon2Package(target) {
-  const [platform, arch] = target.split('-');
-  const src = join(pkgRoot, 'vendor', 'code-server', 'node_modules', 'argon2');
-  if (!existsSync(join(src, 'package.json'))) throw new Error('缺少 vendor/code-server/node_modules/argon2');
-  const version = readJson(join(src, 'package.json')).version;
-  const dir = join(OUT, 'build', `argon2-${target}`);
-  rmSync(dir, { recursive: true, force: true });
-  mkdirSync(dirname(dir), { recursive: true });
-  cpSync(src, dir, { recursive: true, maxRetries: 6, retryDelay: 250 }); // dest 不存在 → 内容平铺到 dir
-  rmSync(join(dir, 'build'), { recursive: true, force: true }); // 重新编译,避免带走 host 架构产物
-
-  console.log(`[repack] argon2 ${target}: node-gyp rebuild --arch=${arch} …`);
-  const res = spawnSync(process.execPath, [nodeGypCli(), 'rebuild', `--arch=${arch}`], { cwd: dir, stdio: 'inherit' });
-  if ((res.status ?? 1) !== 0) throw new Error(`argon2 ${target} 编译失败 (${res.status})`);
-  // 编译完成后才剥掉构建信号:删 prebuilds(统一走 build/Release)、binding.gyp、中间产物
-  rmSync(join(dir, 'prebuilds'), { recursive: true, force: true });
-  rmSync(join(dir, 'binding.gyp'), { force: true });
-  rmSync(join(dir, '.npmignore'), { force: true });
-  rmSync(join(dir, 'build', 'gyp'), { recursive: true, force: true }); // 中间产物,别进包
-  const bin = join(dir, 'build', 'Release', 'argon2.node');
-  if (!existsSync(bin)) throw new Error(`argon2 ${target} 缺 build/Release/argon2.node`);
-  const want = arch === 'x64' ? '0x8664' : arch === 'arm64' ? '0xaa64' : null;
-  const machine = peMachine(bin);
-  if (want !== null && machine !== want) throw new Error(`argon2 ${target} PE machine=${machine},期望 ${want}`);
-
-  const manifest = readJson(join(dir, 'package.json'));
-  delete manifest.scripts;
-  delete manifest.files;
-  manifest.name = `${SCOPE}/dshcs-argon2-${target}`;
-  manifest.version = version;
-  manifest.os = [platform];
-  manifest.cpu = [arch];
-  writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
-  console.log(`  ✓ argon2 ${target} → ${machine} (${manifest.name}@${version})`);
-  return { dir, name: manifest.name, version, file: tgzName(manifest.name, version) };
 }
 
 /** 从已安装的 profile 的 node_modules 还原 host 平台映射(别名目录名 = 原始包名,清单名 = 重打包名)。
@@ -425,7 +388,9 @@ function hostMapFromProfile() {
         if (ent.name.startsWith('@')) { visit(full, prefix + ent.name + '/'); continue; }
         const m = readJson(join(full, 'package.json'));
         if (m === null || typeof m.name !== 'string') continue;
-        if (!/^@[^/]+\/dshcs-/.test(m.name) || /dshcs-code-server/.test(m.name)) continue;
+        // argon2 已随 code-server 服务层移除:旧 profile 的别名表里可能仍有它
+        if (ent.name === 'argon2' || /dshcs-argon2/.test(m.name)) continue;
+        if (!/^@[^/]+\/dshcs-/.test(m.name) || /dshcs-(code-server|vscode-server)/.test(m.name)) continue;
         map.set(`${prefix}${ent.name}`, { pkgName: m.name, version: m.version });
       }
     };
@@ -449,7 +414,8 @@ function reuseExisting(targets, hostKey) {
     if (agg === null) continue;
     const map = new Map();
     for (const [orig, spec] of Object.entries(agg.dependencies ?? {})) {
-      if (orig === 'argon2') continue; // argon2 由本脚本重建
+      // 旧的聚合包清单里可能仍带 argon2(已随 code-server 服务层移除)
+      if (orig === 'argon2') continue;
       const hit = /^npm:(.+)@([^@]+)$/.exec(spec);
       if (hit === null) throw new Error(`无法解析聚合包依赖 ${orig}: ${spec}`);
       map.set(orig, { pkgName: hit[1], version: hit[2] });
@@ -495,10 +461,10 @@ function reuseExisting(targets, hostKey) {
   for (const [orig, info] of hostSet) {
     repack.set(orig, { pkg: { version: info.version }, platformSpecific: info.pkgName.endsWith(`-${knownTarget}`) });
   }
-  // 已有原生包目录 → plan 项;顺带清掉将被重建的 code-server / argon2 目录
+  // 已有原生包目录 → plan 项;顺带清掉将被重建的树目录(旧 code-server / argon2 目录一并清理)
   const reusedItems = [];
   for (const ent of readdirSync(buildRoot)) {
-    if (/^code-server/.test(ent) || /^argon2-/.test(ent)) {
+    if (ent === 'vscode' || /^code-server/.test(ent) || /^argon2-/.test(ent)) {
       rmSync(join(buildRoot, ent), { recursive: true, force: true });
       continue;
     }
@@ -573,6 +539,21 @@ function main() {
       const [platform, arch] = pkg.pkgName.match(/-(win32|darwin|linux)-(arm64|x64)$/).slice(1);
       m.os = [platform];
       m.cpu = [arch];
+      if (platform === 'win32') {
+        // 交叉编译产物静态校验:.node 的 PE machine 必须是目标架构(0x8664=x64 / 0xaa64=arm64)
+        const want = arch === 'x64' ? '0x8664' : '0xaa64';
+        const files = nodeFilesOf(dir);
+        const wrong = files
+          .map((file) => [file, peMachine(file)])
+          .filter(([, machine]) => machine !== null && machine !== want);
+        if (files.length > 0 && wrong.length === files.length) {
+          throw new Error(`${pkg.pkgName}: 所有 .node 架构都不是 ${want}`
+            + `(${wrong.map(([file, machine]) => `${relative(dir, file)}=${machine}`).join(', ')})`);
+        }
+        if (wrong.length > 0) {
+          console.warn(`  ⚠ ${pkg.pkgName}: ${wrong.length} 个 .node 架构不符(期望 ${want})`);
+        }
+      }
     }
     for (const fld of ['dependencies', 'optionalDependencies']) {
       if (!m[fld]) continue;
@@ -588,15 +569,9 @@ function main() {
   const plan = [];
   // 0) 已打包的原生包(--reuse 模式)
   for (const item of reusedItems) plan.push(item);
-  // 1) code-server 本体(平台无关,1 个包)+ argon2 平台二进制包(每目标 1 个,与其它原生包同一套规则)
-  const codeServerPkg = buildCodeServerPackage();
-  plan.push({ dir: codeServerPkg.dir, file: codeServerPkg.file });
-  const argon2ByTarget = new Map();
-  for (const target of targets) {
-    const pkg = buildArgon2Package(target);
-    argon2ByTarget.set(target, pkg);
-    plan.push({ dir: pkg.dir, file: pkg.file });
-  }
+  // 1) VS Code 树(平台无关,1 个包)
+  const vscodePkg = buildVscodeServerPackage();
+  plan.push({ dir: vscodePkg.dir, file: vscodePkg.file });
   // 2) 全平台重打包包(从 host 树;--reuse 时用已打包目录)
   if (!REUSE) {
     for (const [name, r] of repack) {
@@ -624,7 +599,7 @@ function main() {
     }
     if (crossTree !== null) rmSync(crossTree, { recursive: true, force: true });
   }
-  // 3) 聚合包(每平台一个):dependencies 用 npm: 别名把重打包包装回原名(含 argon2)
+  // 3) 聚合包(每平台一个):dependencies 用 npm: 别名把重打包包装回原名
   for (const target of targets) {
     const map = byTarget.get(target);
     const aggName = `${SCOPE}/dsh-code-server-runtime-${target}`;
@@ -632,13 +607,11 @@ function main() {
     mkdirSync(aggDir, { recursive: true });
     const deps = {};
     for (const [name] of repack) deps[name] = `npm:${map.get(name).pkgName}@${map.get(name).version}`;
-    // argon2:code-server 本体包不带原生二进制,由这里按平台装回原名 "argon2"
-    const argon2 = argon2ByTarget.get(target);
-    if (argon2 !== undefined) deps.argon2 = `npm:${argon2.name}@${argon2.version}`;
     writeFileSync(join(aggDir, 'package.json'), JSON.stringify({
       name: aggName,
       version: pluginVersion,
-      description: `Prebuilt native modules for code-server on ${target} (argon2, node-pty, @vscode/sqlite3, kerberos, …), `
+      description: `Prebuilt native modules for the VS Code server tree on ${target} `
+        + '(node-pty, @vscode/sqlite3, kerberos, @vscode/spdlog, …), '
         + 'so that installing the VS Code inner dependencies needs no build approval or C++ toolchain.',
       os: [target.split('-')[0]],
       cpu: [target.split('-')[1]],
@@ -652,19 +625,19 @@ function main() {
   writeFileSync(join(OUT, 'pack-plan.json'), JSON.stringify(plan, null, 2) + '\n', 'utf8');
   console.log(`[repack] 生成 ${plan.length} 个待打包目录 → repack/ (计划:repack/pack-plan.json)`);
 
-  // 4) 改写插件 package.json 的依赖:纯 JS 直装集 + code-server 本体包(平台无关);
-  //    平台专属的(16 个原生包 + argon2)通过聚合包按 os/cpu 自动选。
+  // 4) 改写插件 package.json 的依赖:纯 JS 直装集 + VS Code 树包(平台无关);
+  //    平台专属的(原生包)通过聚合包按 os/cpu 自动选。
   const pkgFile = join(pkgRoot, 'package.json');
   const pluginPkg = readJson(pkgFile);
   pluginPkg.dependencies = Object.fromEntries([
-    [codeServerPkg.name, codeServerPkg.version],
+    [vscodePkg.name, vscodePkg.version],
     ...declare.map((d) => [d.name, d.version]),
   ].sort(([a], [b]) => a.localeCompare(b)));
   pluginPkg.optionalDependencies = Object.fromEntries(targets
     .map((t) => [`${SCOPE}/dsh-code-server-runtime-${t}`, `^${pluginVersion}`]));
   writeFileSync(pkgFile, JSON.stringify(pluginPkg, null, 2) + '\n', 'utf8');
   console.log(`[repack] 已写入 package.json:dependencies ${pluginPkg.dependencies ? Object.keys(pluginPkg.dependencies).length : 0} 个`
-    + `(code-server 本体 + 纯 JS),optionalDependencies ${targets.length} 个平台聚合包`);
+    + `(VS Code 树 + 纯 JS),optionalDependencies ${targets.length} 个平台聚合包`);
 
   // 5) 可选:直接打包
   if (DO_PACK) {

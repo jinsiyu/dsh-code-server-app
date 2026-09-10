@@ -5,16 +5,20 @@ node_modules/
 .pnpm-store-local/
 pnpm-lock.yaml
 
-# 打包期内置产物:由 `pnpm run vendor:code-server` 生成(见 scripts/vendor-code-server.mjs),
-# 不入 git,但**必须**随 npm 包发布(package.json 的 files 已包含 vendor/code-server)。
+# 打包期内置产物:由 `pnpm run vendor:vscode` 生成(见 scripts/vendor-vscode-server.mjs),
+# 不入 git,但**必须**随 npm 包发布(package.json 的 files 含 vendor/VENDOR.json;
+# VS Code 树本体由 @jinsiyu/dshcs-vscode-server 提供)。
 vendor/
 # 预编译原生包的重打包工作区(生成物):scripts/vendor-repacks.mjs → repack/{build,aggregator,tgz}
 repack/
 .vendor-tmp/
 .npm-cache/
 
-# 本地临时验证脚本与工程(.tmp-*)
+# 本地临时验证脚本与工程(.tmp-*)与一次性验证 harness(spike-*)
 .tmp-*
+spike-*.mjs
+# 验证过程的中间产物:日志、证据、测试用 user-data(scripts/*.mjs 产出)
+.spike/
 
 # client bundle 构建产物:由 src/factory.js 经 `pnpm run build:client` 生成,
 # 仓库只跟踪源码与构建脚本(scripts/build-client.mjs)。
@@ -43,3 +47,6 @@ verify-*.mjs
 
 # DSH 会话数据(插件运行期产物,不纳入仓库)
 .mnemon/
+
+# 本地验证用的 file: 包(scripts/spike-build-local-pkgs.mjs 产出;发布 0.2.0 后可删)
+local-pkgs/
