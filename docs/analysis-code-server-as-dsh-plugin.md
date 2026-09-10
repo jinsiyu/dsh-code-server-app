@@ -419,3 +419,62 @@ GET /          → 200 text/html len=4222
 
 > 教训(写给下一次):客户端插件的服务获取不要只依赖一种形态(属性 vs `get()`),
 > 注册失败不要静默,超时判定要可逆 —— 三者叠加才会产生"UI 看起来正常、功能却整段没生效"这种最难查的故障。
+
+## 11. 桌面端安装:24h 供应链策略(0.2.4 实测,含沙盒复现)
+
+用户两次在 dsh-desktop 的插件管理里安装/更新都失败:
+
+```
+[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] 3 lockfile entries failed verification:
+  @jinsiyu/dsh-code-server-runtime-win32-arm64@0.2.0 published 2026-09-10T08:29:43Z, within the cutoff (…)
+  @jinsiyu/dsh-code-server-runtime-win32-x64@0.2.0   published 2026-09-10T08:29:48Z
+  dsh-code-server-app@0.2.3                            published 2026-09-10T14:05:51Z
+```
+
+### 11.1 复现方法(可复用)
+
+把 `~/.dsh/profiles/desktop` 的 `package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml` 复制到 `%TEMP%` 沙盒
+(必要时把 `desktop-packages/` 做成 junction,因为 `file:` 依赖指向它),用**应用自带**的 runtime 跑同一条命令:
+
+```powershell
+& "<app>\resources\runtime\node\node.exe" "<app>\resources\runtime\pnpm\bin\pnpm.mjs" `
+  "--config.registry=https://registry.npmjs.org/" "--config.store-dir=$tmp\store" `
+  "--config.enable-global-virtual-store=false" "--config.userconfig=$tmp\cfg\npmrc" `
+  add dsh-code-server-app@0.2.4 --save-exact        # cwd 必须是沙盒目录(pnpm 用 cwd 当项目根)
+```
+
+### 11.2 结论:两个阶段行为不同(这是把它装上的关键)
+
+| 阶段 | 是否读 `minimumReleaseAgeExclude` | 证据 |
+|---|---|---|
+| **校验已有锁文件**(`pnpm add` 最开始那步) | **不读**。精确版本、裸包名都试过,依旧违规 | 沙盒复现;`pnpm config get minimumReleaseAgeExclude` 能列出名单 |
+| **解析**(没有锁文件可校验时) | **读**,而且 pnpm 会自己往 `pnpm-workspace.yaml` 追加条目 | 安装日志打印 *"Added 3 entries to minimumReleaseAgeExclude in pnpm-workspace.yaml"* |
+
+- 这条 24h 是该 pnpm 构建(应用自带 **11.7.0**,DeepSeek 打过补丁)的默认;`SECURITY_POLICY_CFG_KEYS` 里的键
+  (`minimumReleaseAge` / `…Exclude` / `trustLockfile` / `trustPolicy…`)**只从 workspace manifest 读**,
+  写进应用那份 npmrc 无效(实测)。
+- 把 `minimumReleaseAge: 0` 写进 manifest 的确能让校验通过(42 ms),但 `apps/desktop/src/project-manager.ts:297`
+  只忽略 `minimumReleaseAgeExclude:` / `trustPolicyExclude:` 两个 policy 段,且每次 `mutate()` 前都会
+  `verifyDesktopCorePackageSet(active)`,写这个键会让应用抛 *"core package mapping does not match desktop-packages.json"*
+  —— **不能持久化**。
+- CLI 路径本就不通:`dsh plugin --profile desktop …` 被拒绝(profile 由 Electron 独占);
+  web profile 不受影响(它的 `pnpm-workspace.yaml` 是 `minimumReleaseAge: false`)。
+- 应用的 `mutate()` 事务:先校验 active → `copyMetadata` 到 `staging/<uuid>/profile` → 在 staging 里
+  `pnpm add <spec> --save-exact`(**就是这里被卡**)→ `hooks.healthCheck(staging)` → `activate()` 换入。
+
+### 11.3 实际采用的安装步骤(成功,0.2.4)
+
+1. 备份 active profile 的 `package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml`。
+2. 在 profile 里 `pnpm clean --lockfile` —— **注意它会连 `node_modules` 一起删**(输出 "Removing node_modules"),
+   profile 因此进入待重装状态;这一步是为了让事务/安装从"没有锁文件"的起点开始,从而走解析阶段。
+3. 用应用自带 runtime 在 profile 目录执行
+   `add dsh-code-server-app@0.2.4 --save-exact --trust-lockfile`
+   (store/cache/state/config/home 都在 `~/.dsh/desktop/pnpm/**`;直接用 profile 自己的 store 才不会
+   `ERR_PNPM_UNEXPECTED_STORE` / `…UNEXPECTED_VIRTUAL_STORE`)。624 包,1 分 18 秒。
+4. 校验:依赖版本、`dsh.profile.bundles`、锁文件条目、以及 `lib/{index.js,client.js,launcher.mjs}`
+   与发布 tarball **sha256 逐一相同**;应用启动用的
+   `install --offline --frozen-lockfile --trust-lockfile` 可正常通过。
+5. 重启应用,用户确认正常;随后 `promote 0.2.4` → `latest`。
+
+> 备选路径:等满 24 小时再在插件管理里正常安装。因为平台原生子包与插件同批发布,
+> **每次新版本在桌面端都会撞这条策略** —— 要么等一天,要么按上面第 2–3 步从干净起点装。

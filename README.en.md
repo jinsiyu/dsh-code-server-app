@@ -396,22 +396,33 @@ Host/Origin fence and browser auth); in the desktop profile `apps/desktop-host` 
   iframe to the local `http://127.0.0.1:<port>`; the desktop renderer uses `webSecurity: true` with no CSP, so the cross-origin iframe loads).
   The desktop build ships `dsh-client-ui-sidebar-right` in its seed package set as well, so the 0.2.3 "right-sidebar DSH only" rule is
   not a regression for desktop; the only difference is the missing `webServer`, where `serve: dsh` falls back to loopback.
-- Install into the desktop profile with `dsh plugin --profile desktop add dsh-code-server-app@<version>` (or the desktop plugin manager).
-- **Desktop installs face a 24-hour supply-chain policy (measured, 2026-09)**:
+- Install into the desktop profile through the **desktop plugin manager** (not the CLI, see below).
+- **Desktop installs face a 24-hour supply-chain policy (measured 2026-09-10; this is how 0.2.4 got installed)**:
   - the CLI path is unavailable: `dsh plugin --profile desktop …` is rejected (*"profile "desktop" is managed exclusively by the
-    Electron application"*), so desktop installs only go through the app's package transaction (`pnpm add <spec> --save-exact`);
+    Electron application"*), so desktop installs only go through the app's package transaction (`pnpm add <spec> --save-exact`,
+    executed in `~/.dsh/desktop/staging/<uuid>/profile` before activation);
   - that transaction's pnpm (the app bundles **11.7.0**, patched by DeepSeek) runs a **lockfile supply-chain verification** before
     `add` ("Verifying lockfile against supply-chain policies (717 entries)") which requires packages to be **at least 24 h old**,
     otherwise `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`;
-  - **the `minimumReleaseAgeExclude` list does not affect that verification** (reproduced in a sandbox: `pnpm config get` shows the
-    list is read, yet exact versions and bare package names are both still rejected). Only `minimumReleaseAge: 0` in
-    `pnpm-workspace.yaml` clears it — and that key is **not** one of the policy sections the app tolerates
-    (`project-manager.ts` ignores only `minimumReleaseAgeExclude:` / `trustPolicyExclude:`), so persisting it makes the app fail with
-    *"core package mapping does not match desktop-packages.json"* — **do not persist that key**;
-  - therefore a **just-published** (<24 h) version can only be installed on desktop by **(a) waiting out the 24 h** and using the
-    plugin manager, or **(b) installing by hand with the app's own boot flag** (`add <spec> --save-exact --trust-lockfile`, plus
-    appending the package name to `dsh.profile.bundles` in the profile's `package.json`, otherwise it is never loaded).
-    The web profile is unaffected: its `pnpm-workspace.yaml` sets `minimumReleaseAge: false`.
+  - **the two stages behave differently (measured)**:
+    - verifying an **existing lockfile**: `minimumReleaseAgeExclude` is *not* honoured (exact versions and bare package names
+      were both tried);
+    - **resolution** (no lockfile to verify, e.g. after `pnpm clean --lockfile`): the list *is* honoured, and pnpm even appends
+      entries itself (the install log prints *"Added N entries to minimumReleaseAgeExclude…"*);
+  - so the working recipe for a **just-published** (<24 h) version on desktop is to start from a clean, lockfile-free profile:
+    1. `pnpm clean --lockfile` (**note: it also deletes `node_modules`**, leaving the profile to be reinstalled);
+    2. with the app's bundled runtime, run `add <spec> --save-exact --trust-lockfile` in the profile directory
+       (runtime/store/config live under `~/.dsh/desktop/pnpm/{store,cache,state,config,home}`,
+       `--config.userconfig=…/config/npmrc`, otherwise pnpm fails with `ERR_PNPM_UNEXPECTED_STORE` /
+       `…UNEXPECTED_VIRTUAL_STORE`);
+    3. the app's boot command (`install --offline --frozen-lockfile --trust-lockfile`) then passes (lockfile matches
+       package.json, packages are in the store); if the plugin name is already in `dsh.profile.bundles` nothing else is needed.
+  - do **not** try to bypass it with `minimumReleaseAge: 0`: it does clear the check, but that key is **not** one of the policy
+    sections the app tolerates (`project-manager.ts` ignores only `minimumReleaseAgeExclude:` / `trustPolicyExclude:` and validates
+    the manifest before every `mutate()`), so persisting it makes the app fail with
+    *"core package mapping does not match desktop-packages.json"*.
+  - Alternatively **wait out the 24 h** and install normally from the plugin manager. The web profile is unaffected: its
+    `pnpm-workspace.yaml` sets `minimumReleaseAge: false`.
   - this plugin's closure contains platform native sub-packages (`@jinsiyu/dsh-code-server-runtime-win32-*`) published together with
     the plugin itself, so every new version hits that policy on desktop.
 
