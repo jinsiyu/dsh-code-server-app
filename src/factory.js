@@ -39,7 +39,7 @@ let React = require('react')
     // ---------- 模块级共享 store:同步 status/busy + UI 载体状态 ----------
     var listeners = new Set()
     // sidebarUi:'unknown'(未探测)| 'modern'(右侧栏服务就绪)| 'legacy'(旧版 DSH,只提示)
-    var state = { status: null, busy: false, sidebarActive: false, sidebarUi: 'unknown' }
+    var state = { status: null, busy: false, sidebarActive: false, sidebarUi: 'unknown', sidebarRegisterFailed: false }
     function setState(patch) {
       state = Object.assign({}, state, patch)
       listeners.forEach(function (fn) { fn() })
@@ -260,7 +260,11 @@ let React = require('react')
     var CS_KIND = 'code-server'
     var CS_TAB_ID = 'dsh-code-server-app'
     /** 旧版判定等待窗口:服务可能晚于本插件就绪,超过这个时间仍无服务即认定旧版 DSH。 */
-    var LEGACY_PROBE_TIMEOUT_MS = 2500
+    var LEGACY_NOTICE_MS = 2500
+    /** 更久的宽限:到这里仍无服务才通知 host 停止预启动/回收实例(避免误杀慢启动的宿主)。 */
+    var LEGACY_REPORT_MS = 10000
+    /** 服务已在注册表、但 ctx.inject 迟迟不回调时的兜底注册延迟。 */
+    var SYNC_FALLBACK_MS = 1500
     // 产物按钮/设置卡调用侧栏的桥接;legacy(旧版 DSH)时保持 null。
     var sidebarBridge = { openTab: null }
 
@@ -328,11 +332,30 @@ let React = require('react')
       )
     }
 
-    /** 注册右侧栏 tab 类型 + body,并接上入口桥接(仅当两个服务都已就绪时被调用)。 */
+    /** 取服务:先按 ctx 属性(注入上下文的常规形态),再回退 `ctx.get(name)`。
+     *  实测踩坑:某些上下文(desktop)只保证 `get()` 可见,属性访问可能是 undefined ——
+     *  只读属性会让注册被静默跳过(界面表现为"卡片正常但侧栏没有入口")。 */
+    function serviceOf(sctx, name) {
+      if (sctx == null) return null
+      var direct = sctx[name]
+      if (direct != null) return direct
+      if (typeof sctx.get === 'function') {
+        var viaGet = sctx.get(name)
+        if (viaGet != null) return viaGet
+      }
+      return null
+    }
+
+    /** 注册右侧栏 tab 类型 + body,并接上入口桥接。返回是否注册成功(失败会显式报错,不静默)。 */
     function registerSidebarTab(sctx) {
-      var tabs = sctx.sidebarRightTabs
-      var controller = sctx.sidebarRight
-      if (tabs == null || controller == null) return
+      var tabs = serviceOf(sctx, 'sidebarRightTabs')
+      var controller = serviceOf(sctx, 'sidebarRight')
+      if (tabs == null || controller == null) {
+        console.error('[code-server] 右侧栏服务上下文不可见(sidebarRightTabs='
+          + (tabs != null) + ', sidebarRight=' + (controller != null) + '):跳过侧栏注册')
+        return false
+      }
+      var slots = serviceOf(sctx, 'slots')
       sctx.effect(function () {
         return tabs.register({
           id: CS_TAB_ID,
@@ -349,11 +372,16 @@ let React = require('react')
           }],
         })
       }, 'code-server: sidebar tab type')
-      sctx.effect(function () {
-        return sctx.slots.inject('sidebar.right.pane.tab', function () {
-          return sctx.slots.register({ name: 'sidebar.right.pane.tab', key: CS_TAB_ID }, CodeServerBody)
-        })
-      }, 'code-server: sidebar tab body')
+      if (slots != null) {
+        sctx.effect(function () {
+          return slots.inject('sidebar.right.pane.tab', function () {
+            return slots.register({ name: 'sidebar.right.pane.tab', key: CS_TAB_ID }, CodeServerBody)
+          })
+        }, 'code-server: sidebar tab body')
+      } else {
+        console.error('[code-server] slots 服务不可见:侧栏标签 body 未注册')
+        return false
+      }
       sidebarBridge.openTab = function (params) {
         try {
           controller.openTab(CS_KIND, params != null ? { params: params } : undefined)
@@ -371,8 +399,8 @@ let React = require('react')
           setState({ sidebarActive: false, sidebarUi: 'unknown' })
         }
       }, 'code-server: sidebar mode reset')
-      setState({ sidebarActive: true })
       console.log('[code-server] right-sidebar tab registered (kind=' + CS_KIND + ')')
+      return true
     }
 
     // ---------- 设置卡片(参照 auto-open-web 的自绘卡片模式) ----------
@@ -669,7 +697,9 @@ let React = require('react')
             )
           ),
           React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 6 } },
-            '当前:右侧栏标签。从右侧栏「开始」页的 Code Server 入口框、产物旁按钮或上面的按钮打开。')
+            liveStore != null && liveStore.sidebarRegisterFailed === true
+              ? '⚠ 已探测到右侧栏服务,但标签注册失败(控制台有 [code-server] 报错);IDE 仍可通过"窗口化打开(新标签页)"使用。'
+              : '当前:右侧栏标签。从右侧栏「开始」页的 Code Server 入口框、产物旁按钮或上面的按钮打开。')
         ),
         React.createElement('div', { className: 'dshcs-field' },
           React.createElement('div', { className: 'dshcs-fieldHead' },
@@ -846,9 +876,25 @@ let React = require('react')
 
       // ---- 能力探测:只有带右侧栏服务(DSH ≥ 0.1.5-alpha.1)才注册可用 UI ----
       // 旧的“悬浮球 + 内部浮动窗口”回退已在 0.2.3 删除:探测不到服务时除设置页提示外什么都不注册。
-      function onModernUi(sctx) {
-        registerSidebarTab(sctx)
-        setState({ sidebarActive: true, sidebarUi: 'modern' })
+      var modernSettled = false
+
+      function onModernUi(sctx, via) {
+        if (modernSettled) return
+        modernSettled = true
+        clearTimers()
+        var registered = false
+        try {
+          registered = registerSidebarTab(sctx)
+        } catch (e) {
+          console.error('[code-server] sidebar tab registration failed:',
+            e != null && e.message != null ? e.message : String(e))
+        }
+        if (state.sidebarUi === 'legacy') {
+          // 自愈:旧版判定之后服务才出现(慢启动的宿主)→ 撤销判定,并让 host 恢复预启动逻辑
+          console.log('[code-server] 右侧栏服务晚到(经 ' + via + '):撤销旧版 DSH 判定')
+          api('/code-server/ui-mode', { sidebar: true }).catch(function () { /* 仅优化 */ })
+        }
+        setState({ sidebarActive: registered, sidebarUi: 'modern', sidebarRegisterFailed: registered !== true })
         // 常驻预热:不渲染任何东西,宿主 running 时把 IDE 加载到停放区
         slots.inject('shell.overlay', () => slots.register(
           { name: 'shell.overlay', id: 'code-server', order: 70, label: 'Code Server' },
@@ -868,61 +914,68 @@ let React = require('react')
         } catch (e) {
           console.warn('[code-server] turnTail register failed:', e != null && e.message != null ? e.message : String(e))
         }
-        console.log('[code-server] client registered: right-sidebar tab + turnTail artifacts + resident preload + settings card')
+        console.log('[code-server] client registered via ' + via + ': sidebar tab=' + registered
+          + ' + turnTail artifacts + resident preload + settings card')
       }
 
-      function onLegacyDsh() {
+      function onLegacyDsh(reportToHost) {
         setState({ sidebarActive: false, sidebarUi: 'legacy' })
         console.warn('[code-server] 未探测到右侧栏服务(sidebarRightTabs/sidebarRight):'
           + ' 本插件自 0.2.3 起不再兼容旧版 DSH —— 除「设置 → 插件 → Code Server」的提示外不提供任何入口,'
           + '也不预热 IDE。请升级 DSH。')
-        // 上报 host:让它别为一个用不了的 UI 自动预启动/继续运行 IDE
-        api('/code-server/ui-mode', { sidebar: false }).catch(function () { /* 只是优化,失败不影响提示 */ })
+        if (reportToHost === true) {
+          // 上报 host:让它别为一个用不了的 UI 自动预启动/继续运行 IDE
+          api('/code-server/ui-mode', { sidebar: false }).catch(function () { /* 只是优化,失败不影响提示 */ })
+        }
       }
 
-      var ready = typeof ctx.get === 'function'
-        ? (ctx.get('sidebarRightTabs') !== undefined && ctx.get('sidebarRight') !== undefined)
-        : false
-      if (ready) {
-        try {
-          onModernUi(ctx)
-        } catch (e) {
-          console.error('[code-server] sidebar tab registration failed:',
-            e != null && e.message != null ? e.message : String(e))
-        }
-        return
+      var noticeTimer = null
+      var reportTimer = null
+      var syncTimer = null
+      function clearTimers() {
+        if (noticeTimer !== null) { clearTimeout(noticeTimer); noticeTimer = null }
+        if (reportTimer !== null) { clearTimeout(reportTimer); reportTimer = null }
+        if (syncTimer !== null) { clearTimeout(syncTimer); syncTimer = null }
       }
-      // 服务可能晚于本插件就绪 → ctx.inject 等待;超时仍未就绪则判定旧版 DSH(只给设置页提示)
-      var settled = false
-      var timer = setTimeout(function () {
-        if (settled) return
-        settled = true
-        onLegacyDsh()
-      }, LEGACY_PROBE_TIMEOUT_MS)
+
+      // 统一经 ctx.inject 拿服务上下文(服务已就绪时也会回调,只是可能晚一个 tick)
+      var injectAccepted = false
       try {
         if (typeof ctx.inject === 'function') {
-          ctx.inject(['sidebarRightTabs', 'sidebarRight'], function (sctx) {
-            if (settled) return
-            settled = true
-            clearTimeout(timer)
-            try {
-              onModernUi(sctx)
-            } catch (e) {
-              console.error('[code-server] sidebar tab registration failed:',
-                e != null && e.message != null ? e.message : String(e))
-            }
-          })
-        } else {
-          clearTimeout(timer)
-          settled = true
-          onLegacyDsh()
+          injectAccepted = true
+          ctx.inject(['sidebarRightTabs', 'sidebarRight'], function (sctx) { onModernUi(sctx, 'inject') })
         }
       } catch (e) {
-        clearTimeout(timer)
-        settled = true
         console.warn('[code-server] sidebar inject failed:', e != null && e.message != null ? e.message : String(e))
-        onLegacyDsh()
       }
+
+      // 同步探测:只看"服务是否已在注册表里",用于决定要不要启动旧版判定/兜底注册
+      var syncReady = typeof ctx.get === 'function'
+        && ctx.get('sidebarRightTabs') !== undefined && ctx.get('sidebarRight') !== undefined
+
+      if (syncReady) {
+        // 服务已在,但 inject 可能迟迟不回调(上下文差异)→ 1.5s 后用同步服务兜底注册,
+        // 避免"卡片正常、侧栏却没有入口"这种静默失败。
+        syncTimer = setTimeout(function () {
+          if (modernSettled) return
+          console.warn('[code-server] ctx.inject 未在 1.5s 内回调,改用同步服务注册侧栏')
+          onModernUi(ctx, 'sync-fallback')
+        }, SYNC_FALLBACK_MS)
+        return
+      }
+      if (injectAccepted !== true) {
+        onLegacyDsh(true)
+        return
+      }
+      // 服务晚到:先只给提示(可逆),更久仍无服务才通知 host 回收/停止预启动
+      noticeTimer = setTimeout(function () {
+        if (modernSettled) return
+        onLegacyDsh(false)
+      }, LEGACY_NOTICE_MS)
+      reportTimer = setTimeout(function () {
+        if (modernSettled) return
+        onLegacyDsh(true)
+      }, LEGACY_REPORT_MS)
     }
 
     const inject = ['slots', 'settingsScope']
