@@ -4,26 +4,30 @@
     - id: code-server
       name: dsh-code-server-app
       config:
-        # code-server 启动方式,优先级:
-        #   1. 本配置的 bin(显式指定,如绝对路径/可执行名/entry.js)
-        #   2. 插件依赖安装(node_modules/code-server/out/node/entry.js,
-        #      package.json dependencies;npm install 随插件安装)
-        #   3. PATH 中的 code-server
-        # 找不到时报错并在 UI 给出安装指引,不会静默失败。
-        # bin: code-server
-        # 绑定地址:仅允许回环与显式授权地址;非回环时强制 password 认证。
+        # VS Code 树的启动由插件自带的 lib/launcher.mjs 完成(0.2.0 起不再运行 code-server
+        # 的 Node 服务层)。正常情况下无需配置 bin;它只是逃生舱:指向外部 code-server
+        # 可执行文件 / out/node/entry.js 时,插件退回旧模型(不经 launcher)。
+        # bin: ''
+        #
+        # ---- 服务方式(serve) ----
+        # loopback(默认):插件自己起一个回环端口(host:port),右侧栏 iframe 跨源直连。
+        # dsh          :把 IDE 挂到 DSH 自己的 HTTP 端口上(/code-server/*),复用 DSH 的
+        #                Host/Origin + cookie 防护(requestRejection),没有额外端口;
+        #                需要 DSH 提供 webServer 服务,缺失(如 desktop)时自动回退 loopback。
+        # 也可在「设置 → 插件 → Code Server」卡片里切换(下次启动生效)。
+        serve: loopback
+        # loopback 模式的绑定地址:仅允许回环(auth=none 已不再支持口令认证)。
         host: 127.0.0.1
-        # 端口;被占用时启动失败并给出诊断(不自动换端口)。
+        # loopback 模式的端口;被占用时启动失败并给出诊断(不自动换端口)。
         port: 8090
-        # 认证模式:none | password。
-        # - none:仅限 loopback(默认)。
-        # - password:host 非回环时自动启用;也可显式配置 token。
+        # 认证:0.2.0 起固定为 none —— 口令认证依赖的 argon2 已随 code-server 服务层移除。
+        # 需要对外访问请用 serve: dsh(由 DSH 统一防护)。
         auth: none
-        # password 模式的一次性 token;留空则启动时生成并写入 UI 状态/日志。
-        passwordToken: ''
-        # code-server 数据目录(隔离用户数据,不污染真实 VS Code 设置)。
+        # VS Code 数据目录(隔离用户数据,不污染真实 VS Code 设置)。
         userDataDir: ''
         extensionsDir: ''
+        # 界面语言(留空 = 跟随浏览器);如 zh-cn。
+        locale: ''
         # 启动就绪探测超时(ms)。
         readyTimeoutMs: 60000
         # 注:窗口行为(是否保留输入框上方空间)由"设置 → 插件 → Code Server"

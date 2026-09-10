@@ -1,7 +1,7 @@
 {
   "name": "dsh-code-server-app",
-  "version": "0.1.43",
-  "description": "Integrate code-server (VS Code in the browser) into DSH Web and Desktop: right-sidebar tab (DSH >= 0.1.5-alpha.1) with a floating-ball fallback for older hosts, over the Connection /api channel (ctx.connection.fetch; no webServer dependency) with host-side process lifecycle.",
+  "version": "0.2.0",
+  "description": "VS Code (from a code-server release) inside DSH Web and Desktop: right-sidebar tab with a floating-ball fallback, driven by the plugin's own launcher over the in-process VS Code server (lib/launcher.mjs). Two serving modes: loopback port (default) or same-origin mount on DSH's own webServer (/code-server, protected by ctx.connection.requestRejection). No code-server Node layer, no argon2, no C++ toolchain.",
   "homepage": "https://github.com/jinsiyu/dsh-code-server-app",
   "repository": {
     "type": "git",
@@ -40,11 +40,14 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "lib/launcher.mjs",
+    "lib/serve-dsh.mjs",
     "lib/vendor.js",
     "lib/native.js",
     "assets/favicon.ico",
     "assets/favicon.svg",
     "assets/extensions/dshcs-open-file",
+    "scripts/vendor-vscode-server.mjs",
     "scripts/vendor-code-server.mjs",
     "scripts/vendor-repacks.mjs",
     "vendor/VENDOR.json",
@@ -54,14 +57,15 @@
     "README.en.md"
   ],
   "scripts": {
+    "vendor:vscode": "node scripts/vendor-vscode-server.mjs",
+    "vendor:latest": "node scripts/vendor-vscode-server.mjs --force",
+    "vendor:check": "node scripts/vendor-vscode-server.mjs --check",
     "vendor:code-server": "node scripts/vendor-code-server.mjs",
-    "vendor:latest": "node scripts/vendor-code-server.mjs --force",
-    "vendor:check": "node scripts/vendor-code-server.mjs --check",
     "repack:build": "node scripts/vendor-repacks.mjs",
     "publish:repacks": "node scripts/publish-repacks.mjs",
     "publish:plugin": "node scripts/publish-plugin.mjs",
     "promote": "node scripts/promote.mjs",
-    "prepack": "node scripts/vendor-code-server.mjs",
+    "prepack": "node scripts/vendor-vscode-server.mjs",
     "build:client": "node scripts/build-client.mjs"
   },
   "devDependencies": {
@@ -70,7 +74,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@jinsiyu/dshcs-code-server": "4.136.2",
+    "@jinsiyu/dshcs-vscode-server": "4.136.2",
     "@microsoft/1ds-core-js": "3.2.13",
     "@microsoft/1ds-post-js": "3.2.13",
     "@vscode/iconv-lite-umd": "0.7.1",
@@ -108,7 +112,7 @@
     "zod": "4.4.3"
   },
   "optionalDependencies": {
-    "@jinsiyu/dsh-code-server-runtime-win32-arm64": "^0.1.38",
-    "@jinsiyu/dsh-code-server-runtime-win32-x64": "^0.1.38"
+    "@jinsiyu/dsh-code-server-runtime-win32-arm64": "^0.2.0",
+    "@jinsiyu/dsh-code-server-runtime-win32-x64": "^0.2.0"
   }
 }

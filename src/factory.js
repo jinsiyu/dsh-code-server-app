@@ -131,16 +131,23 @@ let React = require('react')
       var running = status != null && status.ok === true && status.running === true
       var starting = status != null && status.status === 'starting'
       var errored = status != null && status.ok === false
-      // allow 属性 = Permissions Policy(Chrome 授予剪贴板读写,否则终端无法粘贴)
+      // serve=dsh 时 iframe 与 DSH 同源:此时再挂 sandbox(含 allow-same-origin)= 可被 frame 自己摘掉,
+      // 属于"看起来有防护";故同源模式不挂 sandbox,只保留 allow(Permissions Policy 授予剪贴板读写)。
+      // serve=loopback 时 iframe 跨源(127.0.0.1:<port>),sandbox 是真防护,维持原样。
+      var sameOrigin = status != null && status.serve === 'dsh'
+      var attrs = {
+        key: reloadTick,
+        className: 'dshcs-frame',
+        src: '',
+        title: 'code-server',
+        allow: 'clipboard-read; clipboard-write',
+      }
+      if (!sameOrigin) {
+        attrs.sandbox = 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock allow-clipboard-read allow-clipboard-write'
+      }
       var frame = function (src) {
-        return React.createElement('iframe', {
-          key: reloadTick,
-          className: 'dshcs-frame',
-          src: src,
-          title: 'code-server',
-          sandbox: 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock allow-clipboard-read allow-clipboard-write',
-          allow: 'clipboard-read; clipboard-write',
-        })
+        // 用 Object.assign 保持 attrs 复用;src 为空(about:blank)时不设该属性
+        return React.createElement('iframe', Object.assign({}, attrs, { src: src }))
       }
       if (running && pageUrl !== null) return frame(pageUrl)
       if (starting) {
@@ -153,15 +160,18 @@ let React = require('react')
       var errText = errored && status != null && status.error
         ? status.error
         : 'code-server 未运行'
+      var modeHint = sameOrigin
+        ? '当前以 DSH 同源路径 ' + ((status != null && status.url) || '/code-server/') + ' 提供(无独立端口)。'
+        : '当前以独立回环端口提供(端口 ' + (status != null && status.port != null ? status.port : '8090') + ' 被占用时请释放或修改 port 配置)。'
       return React.createElement('div', { className: 'dshcs-empty' },
         React.createElement('div', { className: 'dshcs-emptybox' },
           React.createElement('div', null, errored ? 'code-server 启动失败' : 'code-server 未运行'),
           React.createElement('pre', { className: 'dshcs-error' }, errText),
           React.createElement('p', { className: 'dshcs-hint' },
-            'code-server 随插件包内置、就地运行(无需全局安装、无需联网安装、无「安装环境」步骤);' +
-            'VS Code 内部依赖与预编译原生模块由包管理器在安装插件时一并装好(无需 C++ 工具链)。' +
-            '若此处长期未运行,请到 设置 → 插件 → Code Server 点「检测环境」查看原因;' +
-            '端口 ' + (status != null ? status.port : '8090') + ' 被占用时请释放或修改 port 配置。')
+            'VS Code 树随插件包内置、就地运行(无需全局安装、无需联网安装、无「安装环境」步骤);' +
+            '内部依赖与预编译原生模块由包管理器在安装插件时一并装好(无需 C++ 工具链)。' +
+            '若此处长期未运行,请到 设置 → 插件 → Code Server 点「检测环境」查看原因。' +
+            modeHint)
         ))
     }
 
@@ -1218,20 +1228,20 @@ let React = require('react')
                 ? React.createElement('span', null, '检测失败: ' + envInfo.error)
                 : React.createElement('span', null,
                     '状态: ' + (envInfo.ok === true ? '✅ 就绪' : '❌ 不通过') +
-                    (envInfo.codeServer != null ? ' · code-server: ' + envInfo.codeServer : '') +
+                    (envInfo.treeVersion != null ? ' · VS Code 树: ' + envInfo.treeVersion : '') +
                     (envInfo.upToDate === false && envInfo.vendored != null ? '(内置 ' + envInfo.vendored + ') ' : '') +
+                    (envInfo.productPath != null ? ' · 客户端路径: ' + envInfo.productPath : '') +
                     (envInfo.entry != null ? ' · 入口: ' + envInfo.entry : ' · 入口缺失') +
-                    ' · native: ' + (envInfo.native === true ? '✅' : '❌') +
                     ' · VS Code 内部依赖: ' + (envInfo.vscodeInner === true ? '✅' : '❌') +
                     ' · 预编译原生包: ' + (envInfo.nativeRuntime != null && envInfo.nativeRuntime.packages > 0
                       ? '✅ ' + envInfo.nativeRuntime.name + '@' + (envInfo.nativeRuntime.version != null ? envInfo.nativeRuntime.version : '?')
                         + '(' + envInfo.nativeRuntime.packages + ' 包)'
                       : '❌ 未安装(' + (envInfo.nativeRuntime != null && envInfo.nativeRuntime.name != null ? envInfo.nativeRuntime.name : '平台聚合包') + ')'))
             )
-          : React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 6 } }, '点击"检测环境"查看 code-server 状态(依赖由包管理器安装,无需安装步骤)')
+          : React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 6 } }, '点击"检测环境"查看 VS Code 树状态(依赖由包管理器安装,无需安装步骤)')
         ,
         React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 10, color: 'var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary))' } },
-          '运行位置: ' + (envInfo != null && envInfo.entry != null ? envInfo.entry : '<插件目录>\\vendor\\code-server\\out\\node\\entry.js') +
+          '运行位置: ' + (envInfo != null && envInfo.tree != null ? envInfo.tree : '<插件目录>\\vendor\\vscode') +
           '\n卸载: dsh plugin --profile web remove dsh-code-server-app'
         )
       )
