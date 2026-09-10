@@ -16,7 +16,7 @@ A static profile plugin (npm package with host + client bundle) that ships the *
 
 | DSH version | Carrier | Entry points |
 |---|---|---|
-| **>= 0.1.5-alpha.1** (has `sidebarRight` / `sidebarRightTabs`) | **Right-sidebar tab** (kind `code-server`, chip `Code Server`) | ① the **Code Server box** on the sidebar's guide ("开始") page; ② the icon button beside each turn's artifacts; ③ Settings → Plugins → Code Server → **"Open in right sidebar"** |
+| **>= 0.1.5-alpha.1** (has `sidebarRight` / `sidebarRightTabs`) | **Right-sidebar tab** (kind `code-server`, chip `Code Server`), which also **claims file addresses** (see below) | ① DSH's own **produced-file chips / presented-file card previews / inline file names in prose** (since 0.2.5, via the official `openFile` → file address → this tab); ② the **Code Server box** on the sidebar's guide ("开始") page; ③ Settings → Plugins → Code Server → **"Open in right sidebar"** |
 | older (no sidebar service) | **Unsupported**: nothing but one notice on the settings page | none (Settings → Plugins → Code Server shows an upgrade notice) |
 
 - Detection: first a synchronous `ctx.get('sidebarRightTabs') / ctx.get('sidebarRight')` probe; because the services may come up after this plugin, `ctx.inject(['sidebarRightTabs','sidebarRight'], …)` is awaited and a **2.5 s timeout marks the DSH as legacy** (no version comparison, and the plugin's own activation is never blocked).
@@ -27,14 +27,51 @@ A static profile plugin (npm package with host + client bundle) that ships the *
   - services arriving late automatically revoke the legacy verdict, register the sidebar, and report `{sidebar:true}` so the host re-enables;
   - a failed registration is no longer silent: it logs an error and the card's entry row says "right-sidebar services were found but the tab could not be registered".
 - **0.2.3 dropped legacy-DSH compatibility**: the floating ball and the internal floating window are **deleted**. When the DSH is detected as legacy the plugin
-  - registers only the settings card (an upgrade notice) — no ball, no floating window, no artifact buttons, no IDE preload;
+  - registers only the settings card (an upgrade notice) — no ball, no floating window, **no file-address claim**, no IDE preload;
   - reports `/api/code-server/ui-mode { sidebar:false }` to the host (after the 10 s grace above); the host then **recycles an instance it auto-prestarted** and stops prestarting (a user-started/adopted instance is never touched), and `{sidebar:true}` reverses that if the services show up later;
   - upgrading DSH needs **no reinstall** — refresh the page and the card turns back into the full settings card.
 - The sidebar tab hosts the code-server page (iframe) and follows the current session workspace; the panel can be collapsed/split/floated/fullscreened by DSH's right sidebar.
 - **Resident IDE (0.2.2, on by default)**: switching to another tab or collapsing the sidebar and coming back **no longer reloads** code-server — unsaved editor buffers, terminals and debug sessions all stay put (see "Why switching tabs no longer reloads" below).
-- The settings card now has just two rows: "Open in a window (new tab)" and "Resident in background".
+- The settings card now has three rows: "**Claim scope**", "Open in a window (new tab)" and "Resident in background".
   `reserveComposer` (reserve space above the composer) only ever mattered for the deleted floating window: it is **deprecated** in 0.2.3 — an old value in the settings document is still accepted but ignored.
-- `windowedOpen` has the highest priority: when on, entry buttons always open a browser tab.
+- `windowedOpen` has the highest priority: when on, the **settings-card button / guide entry box** always open a browser tab (DSH's own file clicks are unaffected — that chain is started by DSH itself and targets the right sidebar).
+
+## Opening files (official entry points since 0.2.5)
+
+DSH names files with **resource addresses**; `openFile` only hands the address to the right sidebar, which decides who draws it:
+
+```
+DSH's produced-file chip / presented-file card preview / inline prose mention
+      → openFile(path, { line? })                      (provided by ui-chat)
+      → dsh-resource://file/session/<sessionId>/<path> (or …/file/absolute/<path>)
+      → ctx.sidebarRight.openResource(address)
+      → claimed by the tab type whose patterns match (band extension(3) > builtin(2) > fallback(1),
+        then the longest matching pattern, then registration order)
+```
+
+This plugin registers:
+
+| Field | Value | Effect |
+|---|---|---|
+| `patterns` | `['dsh-resource://file/**']` | claims file addresses (a pattern containing `:` is matched against the **whole address**) |
+| `priority` | `'extension'` | beats the built-in plain-text preview, which sits in `fallback` on purpose — DSH's own comment calls that band "the position VS Code's text editor holds among its editors", i.e. one any more specific type should beat |
+| `canOpen` | see below | vetoes by the "claim scope" setting; unclaimed addresses fall back to DSH's built-in preview |
+| `title` | last address segment (= file name) | the tab chip shows the file name; a page tab (`sidebar://code-server`) still reads `Code Server` |
+
+- **Claim scope** (switchable in the settings card, `fileOpenScope`):
+  - `session` (default) — claim only `dsh-resource://file/session/…` (everything a session produces: deliverables, declared deliveries, prose mentions, tool views);
+  - `all` — also claim session-less `dsh-resource://file/absolute/…` addresses.
+- **How the tab body locates the file**: it parses `useTabInfo().tab.navigation.address`
+  (`src/address.js`, same grammar as DSH's `parseFileAddress`), expands a workspace-relative path with that
+  session's cwd, and posts the absolute path (plus optional `line`) to the host's
+  `/api/code-server/open-file`; the bundled extension (`dshcs-open-file`) then calls `showTextDocument`
+  (positioned at the line when given).
+- **One address = one tab** (DSH semantics: `contentId` *is* the address): three files mean three chips, but they
+  share the single resident workbench — switching tabs just re-aims the workbench at the corresponding file.
+- **Why the bundled extension stays**: VS Code Web has no official "open this file from outside" API (the only
+  entry is `?folder=`, which picks the workspace), so aiming the workbench at a file has to be done by an
+  extension inside the tree. The host writes a signal file, the extension polls it and calls
+  `showTextDocument`, keeping the signal for retry when no window is connected yet.
 
 ## Why switching tabs no longer reloads (resident IDE)
 
@@ -108,7 +145,7 @@ state preserved (no full reload). Full evidence and probe scripts: `docs/analysi
 > background. Upgrade DSH to a version with the right sidebar (>= 0.1.5-alpha.1): Code Server then appears as a
 > right-sidebar tab, this page shows the full settings again, and no reinstall is needed — a page refresh is enough.
 
-- **No other UI**: no `shell.overlay` registration (floating ball), no artifact buttons, no resident preload.
+- **No other UI**: no `shell.overlay` registration (floating ball), no file-address claim, no resident preload.
 - **Host side**: the client posts `/api/code-server/ui-mode { sidebar:false }`; the host then ① stops auto-prestarting
   the IDE (`maybePrestart` returns immediately) and ② **recycles** an instance it had just auto-prestarted (unless it
   was adopted), so no unusable IDE process or port is left behind. A user-started/adopted instance is never stopped.
@@ -333,7 +370,8 @@ persisted via the official settings domain (`settingsScope`, namespace `code-ser
 
 | Key | Default | Description |
 |---|---|---|
-| `windowedOpen` | `false` | **Open in a window**: on, every entry point (artifact button / settings card) opens code-server in a browser **new tab** (auto-starts and follows the active workspace); off (default) uses the right-sidebar tab |
+| `fileOpenScope` | `session` | **Claim scope** (0.2.5): `session` claims only session-scoped file addresses (`dsh-resource://file/session/…` — DSH's produced files, declared deliveries, prose mentions); `all` also claims session-less `…/file/absolute/…`. Unclaimed addresses fall back to DSH's built-in preview |
+| `windowedOpen` | `false` | **Open in a window**: on, the settings-card button / guide entry box opens code-server in a browser **new tab** (auto-starts and follows the active workspace); off (default) uses the right-sidebar tab. DSH's own file clicks are unaffected (that chain is started by DSH itself and targets the right sidebar) |
 | `keepResident` | `true` | **Resident in background**: on, the host preloads the IDE into a parked surface right after start — switching tabs or collapsing the sidebar never reloads it and the first open needs no cold start; off loads it only when the panel is opened (saves memory) |
 | ~~`reserveComposer`~~ | `true` | **Deprecated in 0.2.3**: it only ever affected the deleted internal floating window. An old value in the settings document is still accepted but ignored (the key is kept so old settings documents keep validating) |
 
@@ -392,7 +430,7 @@ Host/Origin fence and browser auth); in the desktop profile `apps/desktop-host` 
 
 - The host half is `inject = ['connection', 'settings']` (**no `webServer`**) — the desktop profile disables webserver/web-runtime
   and the plugin still works: `/api/*` requests travel Electron `dsh-app://` protocol handler → IPC framed pipe → `createSharedFetchHandler('/api')`.
-- The right-sidebar tab, guide entry box, artifact button, and settings card behave the same as in web (code-server remains an
+- The right-sidebar tab, guide entry box, file-address claim, and settings card behave the same as in web (code-server remains an
   iframe to the local `http://127.0.0.1:<port>`; the desktop renderer uses `webSecurity: true` with no CSP, so the cross-origin iframe loads).
   The desktop build ships `dsh-client-ui-sidebar-right` in its seed package set as well, so the 0.2.3 "right-sidebar DSH only" rule is
   not a regression for desktop; the only difference is the missing `webServer`, where `serve: dsh` falls back to loopback.

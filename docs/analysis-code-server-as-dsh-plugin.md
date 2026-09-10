@@ -478,3 +478,69 @@ GET /          → 200 text/html len=4222
 
 > 备选路径:等满 24 小时再在插件管理里正常安装。因为平台原生子包与插件同批发布,
 > **每次新版本在桌面端都会撞这条策略** —— 要么等一天,要么按上面第 2–3 步从干净起点装。
+
+## 12. 0.2.5:改走官方文件交付与"地址认领"
+
+### 12.1 官方新版文件交付栈(源码证据)
+
+| 层 | 位置 | 事实 |
+|---|---|---|
+| 工具 | `packages/fs/tool-present/src/index.ts` | 一等公民工具 `present`,`files: [{path, description?}]`(默认上限 8),要求文件**已存在且是常规文件**;成功后 `session.append('deliverables/presented', {turn, callId, files})`(事件已登记进 `packages/core/session/src/known-event-types.ts`)。工具描述明确:*"在回复里提到路径不能替代这个调用"* |
+| 回合数据 | `packages/client/ui-deliverables/src/client/turn-deliverables.ts` | `owner.turn.data.get('deliverables')` = `{ produced: {seq,path}[], presented?: PresentedPath[] }`;`produced` 来自本回合成功的 `write`/`edit`/可变 `str_replace_editor` 调用(不是正文),`PresentedPath = PresentedFile & {seq,index}`(授权坐标)。公开导出 `producedForClosing` / `selectProducedFiles` / `presentedForClosing` / `producedFileMentions` |
+| 渲染 | 同上 `client/index.ts`、`Deliverables.tsx`、`ProducedFiles.tsx`、`PresentRow.tsx` | 三处:① 回合尾行 `conversation.chat.turnTail`(`select: selectDeliverables`)→ `ProducedFiles`(chips,≤6 + "还有 N 个")与 `PresentedFileCard`(预览 + 原生 open/reveal,>4 折叠);② `present` 工具调用行 `tool.call.toolview` key `'present'`;③ 正文内联提及服务 `ctx.provide('chatFileMentions', …)` |
+| 打开(DSH 内) | `packages/client/ui-chat/src/client/apply.ts` | `openFile(path, {line?})` → 生成 `dsh-resource://file/session/<id>/<path>` → `ctx.sidebarRight.openResource(address)`。注释原话:**"哪个 tab 类型认领这个地址由右侧栏决定,不是这个调用点的决定"** |
+| 打开(交给操作系统) | `packages/client/ui-deliverables/src/present-open.ts` | `POST /api/present.open?sessionId&seq&index&action=open\|reveal`(host 按坐标回读 `deliverables/presented` 做**授权** → `workspaceFiles.stat` → `fs.resolve` 校验 host 路径 → `sessionController.openWorkspacePath`),可用性 `GET /api/present.host` |
+| 地址语法 | `packages/util/workspace-path/src/file-address.ts` | `dsh-resource://file/session/<sessionId>/<path>`(path 相对工作区或绝对,段做 component 编码、`:` 保持字面量)与 `dsh-resource://file/absolute/<path>`;查询串/片段忽略;页面 tab 的地址是 `sidebar://<kind>`(`ui-sidebar-right/src/client/contract/seed.ts`) |
+
+### 12.2 认领机制(右侧栏 tab 注册表)
+
+`ui-sidebar-right/src/client/tab-registry.ts`:
+
+- `patterns`:**含 `:` 的 pattern 按整址 glob**(`dsh-resource://file/**`),不含则按 URI 路径 glob(`*.md` 任意深度);
+- 排名:`band`(`extension` 3 > `builtin` 2 > `fallback` 1)→ 命中 pattern 长度 → 注册顺序;`canOpen(address)` 可否决;
+- `openResource(address, {kind})` 指定 kind 时忽略 glob、只问 `canOpen`;`claim()` 找不到认领者会抛错(视为接线错误);
+- 官方纯文本预览(`ui-sidebar-documentpreview`,`kind:'text'`)的注册是
+  `patterns:['dsh-resource://file/**'] + priority:'fallback' + canOpen: parseFileAddress(address)?.scope==='session'`,
+  其文件头注释写明:*这是 VS Code 文本编辑器在编辑器中的位次,任何更具体的类型都应当击败它* —— **官方明确留位**。
+
+### 12.3 我们改了什么(0.2.5)
+
+- `src/address.js`(新):`parseFileAddress`(与官方同语义,不依赖其包)/ `basenameOfAddress` / `resolveFilePath` /
+  `claimsAddress`;纯字符串处理,便于离线单测。
+- 注册:`patterns:['dsh-resource://file/**']`、`priority:'extension'`、
+  `canOpen: address => claimsAddress(parseFileAddress(address), fileOpenScope())`、
+  `title(address)`:页面地址 → `Code Server`,文件地址 → 文件名(末段解码)。
+- body:从 `useTabInfo().tab.navigation.address` 解析会话与路径,优先用地址里的 `sessionId` 对齐工作区;
+  相对路径按该会话 cwd 展开,连同可选 `navigation.params.line` 交给 `/api/code-server/open-file`。
+- **删除** 0.2.4 及更早的耦合:不再注册 `conversation.chat.turnTail`(曾用 `priority:-9` 顶掉官方产物行)、
+  删掉自绘产物列表(`TurnArtifacts`/`selectProduced`/`producePathList`/`OpenFileGlyph` 及其 CSS)。
+- host:`Config.fileOpenScope`(`session` 默认 | `all`)+ `scope.watch` + `snapshot().fileOpenScope`;
+  `/api/code-server/open-file` 接受可选 `line`(1 基,原样写进信号文件)。
+- 扩展 `dshcs-open-file` 升到 0.0.2:支持 `{file, line}`(`showTextDocument` + `Range` 定位);
+  安装器从"缺失才拷"改为**内容有变化即同步**(否则插件升级后已装的旧副本永远不会更新)。
+
+### 12.4 仍然保留的机制,以及为什么
+
+- **信号文件 + 树内扩展**:VS Code Web 没有"从外部打开某个文件"的官方 API(唯一入口是 `?folder=` 选工作区),
+  所以"让 workbench 定位到某文件"只能由树内扩展完成。host 写信号、扩展每 800ms 轮询并 `showTextDocument`,
+  失败保留重试(实例尚未就绪也不丢)。
+- **`/api/present.open` 没被用**:它是"交给操作系统默认应用/文件管理器",不是"在 DSH 内打开";
+  我们要的是后者,所以不需要它。
+
+### 12.5 行为与取舍
+
+- **一个地址 = 一个 tab**(`contentId` 就是地址,官方语义):打开三个文件会有三个 chip,但共用一个常驻 workbench
+  (我们的 IDE 是单实例),切标签只是让 workbench 重新定位。
+- **认领范围**默认 `session`:只认领会话作用域的地址;`all` 连 `…/file/absolute/…` 也认领。
+  未认领的地址自动落到官方预览(官方那边 `canOpen` 会接住),不会出现"无人认领"的报错。
+- 官方的产物行/交付卡片/正文提及现在都由**官方插件**渲染,我们只提供"文件在哪打开"这一个决定 ——
+  官方 UI 改版时不再影响本插件。
+
+### 12.6 回归
+
+`.spike/spike-legacy-ui.mjs` 共 7 个场景全部 PASS(在既有 A/A2/B/C/D/D2 之外新增):
+
+- **E**:tab 定义含 `patterns:['dsh-resource://file/**']`、`priority:'extension'`;
+  `canOpen` 接受 session 地址、默认拒绝 absolute 地址、拒绝页面地址;`title` 对文件地址给文件名、对页面地址给 `Code Server`;
+  guide 入口仍在;**不再注册 `conversation.chat.turnTail`**。
+- **E2**:host 快照 `fileOpenScope:'all'` → `canOpen` 也接受 absolute 地址。

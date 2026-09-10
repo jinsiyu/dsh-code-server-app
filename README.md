@@ -26,7 +26,7 @@
 
 | DSH 版本 | 载体 | 入口 |
 |---|---|---|
-| **≥ 0.1.5-alpha.1**(有 `sidebarRight` / `sidebarRightTabs` 服务) | **右侧栏标签**(kind=`code-server`,标签名 `Code Server`) | ① 右侧栏「开始」页的 **Code Server 入口框**;② 每轮产物旁的图标按钮;③ 设置 → 插件 → Code Server → **「在右侧栏打开」** |
+| **≥ 0.1.5-alpha.1**(有 `sidebarRight` / `sidebarRightTabs` 服务) | **右侧栏标签**(kind=`code-server`,标签名 `Code Server`),并**认领文件地址**(见下) | ① **DSH 官方的产物 chip / 「交付」卡片预览 / 正文里的文件名**(0.2.5 起,走官方 `openFile` → 文件地址 → 本 tab);② 右侧栏「开始」页的 **Code Server 入口框**;③ 设置 → 插件 → Code Server → **「在右侧栏打开」** |
 | 更早(无右侧栏服务) | **不受支持**:除设置页的一条提示外**不提供任何入口** | 无(设置 → 插件 → Code Server 显示升级提示) |
 
 - 检测方式:先 `ctx.get('sidebarRightTabs') / ctx.get('sidebarRight')` 同步探测;
@@ -39,16 +39,51 @@
   - 服务晚到 → 自动撤销旧版判定、补注册侧栏,并上报 `{sidebar:true}` 让 host 恢复;
   - 注册失败不再静默:控制台报错,设置卡入口行显示"已探测到右侧栏服务,但标签注册失败"。
 - **0.2.3 起不再兼容旧版 DSH**:悬浮球与内部浮动窗口回退**已删除**。判定为旧版时:
-  - 只注册设置卡片,内容是一条升级提示(见下),不注册悬浮球/浮窗/产物按钮,也不预热 IDE;
+  - 只注册设置卡片,内容是一条升级提示(见下),不注册悬浮球/浮窗/**文件地址认领**,也不预热 IDE;
   - 客户端向 host 上报 `/api/code-server/ui-mode { sidebar:false }`(在上面的 10 s 宽限之后),host 据此**回收自动预启动的实例**
     并停止预启动(用户手动启动的实例不受影响);服务随后才出现时会再上报 `{sidebar:true}` 撤销;
   - 升级 DSH 后**无需重装插件**,刷新页面即可,本页会恢复为完整设置卡片。
 - 侧栏标签内即 code-server 页面(iframe),跟随当前会话工作区;面板可折叠/分屏/浮动/全屏(由 DSH 右侧栏提供)。
 - **IDE 常驻(0.2.2 起,默认开)**:切到别的标签/收起侧栏再回来**不再重载** code-server——
   未保存的编辑缓冲区、终端、调试会话都留在原处(见下方「为什么切标签不再重载」)。
-- 设置卡片只剩两行:「窗口化打开(新标签页)」与「后台常驻(切标签不重载)」。
+- 设置卡片三行:「**认领范围**」「窗口化打开(新标签页)」「后台常驻(切标签不重载)」。
   `reserveComposer`(保留输入框上方空间)只对已删除的浮窗有意义,0.2.3 起**废弃**:设置文件里的旧值仍被接受但被忽略。
-- `windowedOpen` 优先级最高:开启时入口按钮一律新开浏览器标签页。
+- `windowedOpen` 优先级最高:开启时**设置卡按钮 / guide 入口框**一律新开浏览器标签页(官方的文件点击不受它影响——那条链由 DSH 自己发起到右侧栏)。
+
+## 文件打开(0.2.5 起走官方入口)
+
+DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏去认领:
+
+```
+官方产物 chip / 「交付」卡片预览 / 正文内联提及
+      → openFile(path, { line? })                     (ui-chat 提供)
+      → dsh-resource://file/session/<sessionId>/<path> (或 …/file/absolute/<path>)
+      → ctx.sidebarRight.openResource(address)
+      → 由注册了匹配 patterns 的 tab 类型认领(优先级 extension(3) > builtin(2) > fallback(1),
+        同带内按 pattern 长度、再按注册顺序)
+```
+
+本插件注册时带上:
+
+| 字段 | 值 | 作用 |
+|---|---|---|
+| `patterns` | `['dsh-resource://file/**']` | 认领文件地址(含 `:` 的 pattern 按**整址** glob 匹配) |
+| `priority` | `'extension'` | 高于官方纯文本预览的 `fallback`——DSH 源码注释写明后者是"VS Code 文本编辑器在编辑器中的位次,任何更具体的类型都应当击败它" |
+| `canOpen` | 见下 | 按「认领范围」设置否决,未认领的地址由官方预览兜底 |
+| `title` | 地址末段(=文件名) | tab chip 显示文件名;页面 tab(`sidebar://code-server`)仍是 `Code Server` |
+
+- **认领范围**(设置卡片可切,`fileOpenScope`):
+  - `session`(默认)= 只认领 `dsh-resource://file/session/…`(会话里的产物、交付、正文提及、工具视图都走这条);
+  - `all` = 连不带会话的 `dsh-resource://file/absolute/…` 也认领("所有文件"模式)。
+- **tab body 怎么定位文件**:从 `useTabInfo().tab.navigation.address` 解析出会话与路径
+  (`src/address.js`,与 DSH `parseFileAddress` 同语义),相对路径按该会话 cwd 展开成绝对路径,
+  再把绝对路径 + 可选 `line` 交给 host 的 `/api/code-server/open-file`;内建扩展
+  (`dshcs-open-file`)在 workbench 里 `showTextDocument`(带行号时定位到该行)。
+- **一个地址 = 一个 tab**(官方语义,`contentId` 就是地址):打开三个文件会有三个 chip,
+  但它们共用同一个常驻 workbench(我们的 IDE 是单实例),切换时只是让 workbench 定位到对应文件。
+- **为什么还留着那个内建扩展**:VS Code Web 没有"从外部打开文件"的官方 API(唯一入口是
+  `?folder=` 指定工作区),所以"让 workbench 定位到某个文件"只能由树内的扩展完成;
+  host 写信号文件、扩展轮询并 `showTextDocument`,失败保留重试(实例尚未就绪时也不会丢)。
 
 ## 为什么切标签不再重载(IDE 常驻)
 
@@ -114,7 +149,7 @@
 > 也不会后台启动 IDE。升级 DSH 到带右侧栏的版本(≥ 0.1.5-alpha.1)后,Code Server 会出现在右侧栏标签里,
 > 本页同时显示完整设置项;升级后无需重装本插件,刷新页面即可。
 
-- **没有任何其他 UI**:不注册 `shell.overlay`(悬浮球)、不注册产物按钮、不做常驻预热。
+- **没有任何其他 UI**:不注册 `shell.overlay`(悬浮球)、不认领文件地址、不做常驻预热。
 - **host 侧**:客户端会 `POST /api/code-server/ui-mode { sidebar:false }`;host 收到后
   ① 不再自动预启动 IDE(`maybePrestart` 直接返回),② 若 IDE 是本插件刚自动预启动且尚未被 adopt,则**回收**该进程,
   避免留下一个用不上的 IDE 与端口。用户手动启动的实例(`adopted`)不会被停。
@@ -345,7 +380,8 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `windowedOpen` | `false` | **窗口化打开**:开启后各入口(产物按钮 / 设置卡)在浏览器**新标签页**打开 code-server(自动启动并跟随当前工作区目录);关闭(默认)使用右侧栏标签 |
+| `fileOpenScope` | `session` | **认领范围**(0.2.5):`session` = 只认领会话作用域的文件地址(`dsh-resource://file/session/…`,即官方产物/交付/正文提及);`all` = 连无会话的绝对路径(`…/file/absolute/…`)也认领。未认领的地址由 DSH 自带预览兜底 |
+| `windowedOpen` | `false` | **窗口化打开**:开启后设置卡按钮 / guide 入口框在浏览器**新标签页**打开 code-server(自动启动并跟随当前工作区目录);关闭(默认)使用右侧栏标签。官方的文件点击不受它影响(那条链由 DSH 自己发起到右侧栏) |
 | `keepResident` | `true` | **后台常驻**:开启后宿主启动即把 IDE 预加载到"停放区",切标签/收起侧栏不重载、首次打开免等待;关闭则只在打开面板时加载(省内存) |
 | ~~`reserveComposer`~~ | `true` | **0.2.3 起废弃**:只对已删除的内部浮动窗口有意义。设置文件里的旧值仍被接受但被忽略(键保留,避免旧设置文档校验失败) |
 
@@ -402,7 +438,7 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
 
 - host 半部 `inject = ['connection', 'settings']`(**不含 `webServer`**)——desktop profile 关掉了 webserver/web-runtime,
   本插件照常工作;`/api/*` 请求由 Electron `dsh-app://` 协议处理器 → IPC 帧管道 → `createSharedFetchHandler('/api')`。
-- 右侧栏标签、guide 入口框、产物按钮、设置卡片在 desktop 下与 web 相同(code-server 仍是本机 `http://127.0.0.1:<port>` 的 iframe;
+- 右侧栏标签、guide 入口框、文件地址认领、设置卡片在 desktop 下与 web 相同(code-server 仍是本机 `http://127.0.0.1:<port>` 的 iframe;
   桌面端 `webSecurity: true` 且页面无 CSP 限制,跨源 iframe 正常加载)。
   桌面端同样自带 `dsh-client-ui-sidebar-right`(见 desktop 构建 seed 包列表),因此 0.2.3 的
   "只支持带右侧栏的 DSH" 对 desktop 不构成降级;唯一差别是 desktop 无 `webServer`,`serve: dsh` 会自动回退 loopback。
