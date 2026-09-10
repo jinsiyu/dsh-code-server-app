@@ -289,19 +289,24 @@ GET /          → 200 text/html len=4222
 | 关闭 Code Server 标签 | `frames:1`、`sameNode:true`、内部探针存活、`parent:"dshcs-park"`、`degraded:false` |
 | 真实点击标签切回 | `docked:true`、`owner:"tab:<id>"`、`src` 不变、同一 iframe 节点、无整页重载 |
 
-### 8.4 新发现的缺陷:长停放后"元素在、画面不重绘"
+### 8.4 观测到一次"元素在、画面不重绘"(触发条件**未复现**,按兜底处理)
 
-- 现象:跨源 iframe 离屏停放一段时间后被移回,`getBoundingClientRect()`、尺寸、`elementFromPoint()` 命中、
-  `visibility/opacity/transform`、`inert` 状态**全部正常**,但面板**一片白**;连续多次切标签也不恢复。
-- 排除项:探针确认 iframe 文档仍在运行(内部计时器继续、`contentWindow.length` 正常);
-  把同一 URL 作为顶层标签打开,workbench 正常渲染 ⇒ 服务端与截图/合成管线都正常,问题只在"被搬回的跨源 iframe"。
-- 无效尝试:`transform: translateZ(0)`、`opacity` 微调、单纯等待。
-- 有效修法:`frame.style.display='none'; void frame.offsetHeight; frame.style.display=<原值>`
+- 现象(真实 GUI,1 次):跨源 iframe 被移回停靠位后,`getBoundingClientRect()`、尺寸、`elementFromPoint()` 命中、
+  `visibility/opacity/transform`、`inert` 状态**全部正常**,但面板**一片白**;连续两张截图(哈希相同)与多次探测都不恢复。
+- 排除项:把同一 URL 作为顶层标签打开,workbench 正常渲染 ⇒ 服务端、认证与截图/合成管线都正常,
+  问题只在"被搬回文档的跨源 iframe"这一层。
+- 无效尝试:`transform: translateZ(0)`、`opacity` 微调、单纯等待(截图字节级相同 ⇒ 确实没有新帧)。
+- 有效恢复:`frame.style.display='none'; void frame.offsetHeight; frame.style.display=<原值>`
   —— **同一个 JS 任务内**完成,不产生可见闪烁;iframe 文档不重载(VS Code 布局、"欢迎"页状态保持)。
-- 落地:每次「停放 → 停靠」补一次 `nudgeRepaint()`,计数进 `surfaceSnapshot().nudgeCount`;
-  `setNudgeEnabled(false)` 可现场做 A/B 对照,`window.__dshcsSurface` 为排障句柄。
-- 未测量的变量:触发所需的停放时长下限(Chrome 对不可见跨源 iframe 的节流窗口)、页面级 `visibilitychange` 的影响。
-  因此该修复按"条件下必然发生"的兜底实现(每次停靠都补),代价是一次强制重排。
+- **触发条件复现实验(阴性)**:独立探针页 `.spike/park-probe.html`(同几何:跨源 iframe → `left:-20000px`
+  + `visibility:hidden` + `contain:strict` 的停放容器),`moveBefore` 停放 **337 s**(超过 Chrome 对不可见跨源
+  iframe 的 ~5 min 节流窗口)后移回,**关闭修复(nudge off)仍正常绘制**;真实 GUI 里 86 s 停放的自动回停靠
+  同样正常绘制。⇒ "长时间离屏停放"**不是**可靠触发条件,该现象未能稳定复现(疑似一次性合成/时序问题)。
+- 结论与取舍:不宣称修好了某个已定位的根因;把它作为**兜底**保留——每次「停放 → 停靠」补一次
+  `nudgeRepaint()`(代价:一次强制重排;实测无重载、无状态丢失、无闪烁),计数进
+  `surfaceSnapshot().nudgeCount`;`setNudgeEnabled(false)` 可用于现场 A/B,`window.__dshcsSurface` 为排障句柄。
+- 仍未测量的变量:页面级 `visibilitychange`(切到别的浏览器标签再回来)、窗口在停放期间被 resize、
+  以及 `sandbox` 属性对跨源 iframe 合成的影响——三者都是当时现场存在、而探针页里不存在的差异。
 
 ### 8.5 宿主半部
 

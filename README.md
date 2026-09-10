@@ -58,10 +58,12 @@
 - **降级不静默**:`moveBefore` 缺失、或宿主已被 React 摘除而抛 `HierarchyRequestError: invalid hierarchy`
   (passive effect cleanup 晚于 DOM 卸载)时,退回 `appendChild`——会重载一次,但**绝不丢帧**;
   状态里 `degraded`/`lastMoveError` 明示,界面据此提示"常驻不可用"。
-- **重绘修复(实测坑)**:跨源 iframe 离屏停放较久后被移回,元素尺寸、命中测试、`visibility` 全部正常,
-  但**画面不再重绘**(面板一片白,多切几次标签也不恢复)。`translateZ(0)`、`opacity` 微调都无效;
-  `display:none → 强制重排 → 还原`(同一个 JS 任务内)可唤醒,且 iframe 文档不重载、内部状态不变、无可见闪烁。
-  因此每次「停放 → 停靠」都补一次 `nudgeRepaint()`(`surfaceSnapshot().nudgeCount` 计数,便于排障)。
+- **重绘兜底(实测坑)**:真实 GUI 里观测到一次"元素在、画面不重绘"——iframe 尺寸、命中测试、`visibility`
+  全部正常,面板却一片白(连续两张截图哈希相同,确认没有新帧);`translateZ(0)`、`opacity` 微调无效,
+  `display:none → 强制重排 → 还原`(同一个 JS 任务内)可恢复,且 iframe 文档不重载、内部状态不变、无可见闪烁。
+  **触发条件未能复现**:探针页里 `moveBefore` 停放 337 s(超过 Chrome 对不可见跨源 iframe 的 ~5 min 节流窗口)
+  后移回、且关掉修复,仍正常绘制。因此把它当**兜底**保留:每次「停放 → 停靠」补一次
+  `nudgeRepaint()`(`surfaceSnapshot().nudgeCount` 计数,`setNudgeEnabled(false)` 可现场 A/B)。
 - **后台预热**:配置 `keepResident`(默认 `true`)时,宿主在插件启动后就把面建好并停在停放区,
   首次点开标签无需冷启动等待;`preload` 不会把正在使用的面拽走。
 - **排障句柄**:控制台可用 `window.__dshcsSurface`(`snapshot()` / `setParkStrategy('offscreen'|'behind')` /

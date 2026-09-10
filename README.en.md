@@ -48,11 +48,14 @@ it into a **singleton resident surface**:
   `HierarchyRequestError: invalid hierarchy` (passive effect cleanup runs after DOM removal), the code falls back to
   `appendChild` — one reload, but the frame is **never lost** — and reports `degraded` / `lastMoveError` so the UI can
   say "residency unavailable".
-- **Repaint fix (measured)**: after a long offscreen park, a moved-back cross-origin iframe had correct size, hit
-  testing and `visibility`, yet **stopped repainting** (a fully white panel that several tab switches did not fix).
+- **Repaint fallback (measured)**: in the real GUI the surface was seen once with correct size, hit testing and
+  `visibility` that simply **stopped repainting** (a fully white panel, byte-identical screenshots proving no new frame).
   `translateZ(0)` and `opacity` nudges did nothing; `display:none → forced reflow → restore` inside a single JS task
-  revives it without reloading the iframe document, without losing internal state and without a visible flash. Every
-  park→dock transition therefore runs one `nudgeRepaint()` (counted as `surfaceSnapshot().nudgeCount` for debugging).
+  restored it without reloading the iframe document, without losing internal state and without a visible flash.
+  **The trigger could not be reproduced**: in a probe page an offscreen `moveBefore` park of 337 s (past Chrome's
+  ~5 min cross-origin throttle window) followed by a dock with the fallback disabled still painted normally. It is
+  therefore kept as a **fallback**: every park→dock transition runs one `nudgeRepaint()` (counted as
+  `surfaceSnapshot().nudgeCount`; `setNudgeEnabled(false)` A/Bs it live).
 - **Warm-up**: with `keepResident` (default `true`) the host builds the surface right after plugin start and leaves it
   parked, so the first tab open needs no cold start; preloading never yanks a surface that is currently docked.
 - **Debug handle**: `window.__dshcsSurface` (`snapshot()`, `setParkStrategy('offscreen'|'behind')`, `dock()`, `park()`,
