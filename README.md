@@ -398,6 +398,8 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
   本插件照常工作;`/api/*` 请求由 Electron `dsh-app://` 协议处理器 → IPC 帧管道 → `createSharedFetchHandler('/api')`。
 - 右侧栏标签、guide 入口框、产物按钮、设置卡片在 desktop 下与 web 相同(code-server 仍是本机 `http://127.0.0.1:<port>` 的 iframe;
   桌面端 `webSecurity: true` 且页面无 CSP 限制,跨源 iframe 正常加载)。
+  桌面端同样自带 `dsh-client-ui-sidebar-right`(见 desktop 构建 seed 包列表),因此 0.2.3 的
+  "只支持带右侧栏的 DSH" 对 desktop 不构成降级;唯一差别是 desktop 无 `webServer`,`serve: dsh` 会自动回退 loopback。
 - 安装到 desktop profile:`dsh plugin --profile desktop add dsh-code-server-app@<版本>`(或桌面端插件管理窗)。
 
 ## 已知限制

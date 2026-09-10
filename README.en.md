@@ -388,6 +388,8 @@ Host/Origin fence and browser auth); in the desktop profile `apps/desktop-host` 
   and the plugin still works: `/api/*` requests travel Electron `dsh-app://` protocol handler → IPC framed pipe → `createSharedFetchHandler('/api')`.
 - The right-sidebar tab, guide entry box, artifact button, and settings card behave the same as in web (code-server remains an
   iframe to the local `http://127.0.0.1:<port>`; the desktop renderer uses `webSecurity: true` with no CSP, so the cross-origin iframe loads).
+  The desktop build ships `dsh-client-ui-sidebar-right` in its seed package set as well, so the 0.2.3 "right-sidebar DSH only" rule is
+  not a regression for desktop; the only difference is the missing `webServer`, where `serve: dsh` falls back to loopback.
 - Install into the desktop profile with `dsh plugin --profile desktop add dsh-code-server-app@<version>` (or the desktop plugin manager).
 
 ## Artifact open buttons
