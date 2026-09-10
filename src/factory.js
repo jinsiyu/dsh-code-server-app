@@ -14,14 +14,27 @@
 // web 与 desktop 路径相同:web 由 webServer 的 /api 前缀承载,desktop 由 IPC 帧管道承载 → 插件不依赖 webServer。
 //
 // UI 载体:仅**右侧栏标签**一种(DSH ≥ 0.1.5-alpha.1 的 sidebarRightTabs / sidebarRight 服务):
-//     - 一段:ctx.sidebarRightTabs.register({ id, kind, priority:'extension', title, guide })
+//     - 一段:ctx.sidebarRightTabs.register({ id, kind, priority, patterns, canOpen, title, guide })
 //       → 右侧栏 guide 页出现入口框(data-sidebar-right-guide-entry="code-server")
+//       → 同时**认领文件地址**(`dsh-resource://file/**`):官方 openFile(产物 chip、
+//         "交付"卡片预览、正文内联提及)与任何第三方 openResource(fileAddress) 都落到本 tab。
 //     - 二段:ctx.slots.register({ name:'sidebar.right.pane.tab', key:id }, CodeServerBody)
-//       → tab 内渲染常驻 code-server iframe;body 经 props.useTabInfo() 取 navigation/visible
+//       → tab 内渲染常驻 code-server iframe;body 经 props.useTabInfo() 取 navigation(address/params/revision)
+//
+// 0.2.5 起文件打开走官方入口:不再顶掉官方 `conversation.chat.turnTail` 产物行(0.2.4 及更早用
+// priority:-9 劫持该链并自绘产物行);body 从 navigation.address 解析文件并让 workbench 定位它。
 //
 // 0.2.3 起**不再兼容旧版 DSH**:不再提供悬浮球与内部浮动窗口回退。
 // 探测不到右侧栏服务时,除「设置 → 插件 → Code Server」的一条提示外,不注册任何 UI,
 // 也不预热/启动 IDE;同时上报 host(/ui-mode),让 host 停掉已自动预启动的实例。
+import {
+  basenameOfAddress,
+  claimsAddress,
+  isPageAddress,
+  parseFileAddress,
+  resolveFilePath,
+  SCOPE_SESSION,
+} from './address.js';
 import {
   dockInto,
   ensureSurface,
@@ -221,19 +234,6 @@ let React = require('react')
 
     // ---------- 样式(主题变量 + 兜底值;只覆盖插件自身结构) ----------
     var CSS =
-      // 产物按钮/列表(每轮产物旁,点击在 code-server 打开)
-      '.dshcs-artbtn{appearance:none;display:inline-grid;place-items:center;width:22px;height:22px;padding:0;border:1px solid var(--dsw-alias-border-l2,#dfe3eb);border-radius:6px;color:var(--dsw-alias-label-secondary,#566174);background:color-mix(in srgb,var(--dsw-alias-bg-base,#fff) 60%,transparent);cursor:pointer;transition:color .12s ease,background .12s ease,border-color .12s ease;vertical-align:middle}' +
-      '.dshcs-artbtn:hover{color:var(--dsw-alias-label-primary,#172033);border-color:color-mix(in srgb,var(--dshcs-accent,#5b6cff) 40%,var(--dsw-alias-border-l2,#dfe3eb));background:color-mix(in srgb,var(--dshcs-accent,#5b6cff) 8%,transparent)}' +
-      '.dshcs-artbtn:active{transform:scale(.94)}' +
-      '.dshcs-artbtn:focus-visible{outline:2px solid color-mix(in srgb,var(--dshcs-accent,#5b6cff) 65%,transparent);outline-offset:1px}' +
-      '.dshcs-artifacts{display:grid;grid-template-columns:max-content minmax(0,1fr);align-items:center;gap:6px 8px;margin-top:16px;font-size:13px;line-height:22px;position:relative}' +
-      '.dshcs-artlabel{color:var(--dsw-alias-label-tertiary,#7d8798);grid-area:1/1}' +
-      '.dshcs-artrow{flex-wrap:nowrap;grid-area:1/2;align-items:center;gap:8px;min-width:0;display:flex;overflow:hidden}' +
-      '.dshcs-artitem{display:inline-flex;align-items:center;gap:4px;flex:none;min-width:0}' +
-      '.dshcs-artfile{text-overflow:ellipsis;white-space:nowrap;background:var(--dsw-alias-interactive-bg-hover);max-width:320px;color:var(--dsw-alias-label-secondary,#566174);font:inherit;cursor:pointer;border:none;border-radius:6px;margin:0;padding:0 8px;overflow:hidden}' +
-      '.dshcs-artfile:hover{color:var(--dsw-alias-label-primary,#172033);text-decoration:underline}' +
-      '.dshcs-artfile:focus-visible{box-shadow:inset 0 0 0 2px var(--dsw-alias-border-l3);outline:none}' +
-      '.dshcs-artmore{white-space:nowrap;color:var(--dsw-alias-label-tertiary,#7d8798);flex:none}' +
       // 常驻 IDE 面:iframe 由 surface.js 持有,借 moveBefore 在停靠位/停放区之间搬
       '.dshcs-frame{display:block;position:absolute;inset:0;z-index:1;width:100%;height:100%;border:0;background:var(--dsw-alias-bg-base,#fff)}' +
       '.dshcs-tabroot{position:relative;display:flex;flex-direction:column;width:100%;height:100%;min-width:0;min-height:0;background:var(--dsw-alias-bg-base,#fff)}' +
@@ -278,19 +278,46 @@ let React = require('react')
       })
     }
 
+    /** 当前认领范围策略(host 快照里的 fileOpenScope;未到达时保守用 session)。 */
+    function fileOpenScope() {
+      var status = state.status
+      return status != null && status.fileOpenScope === 'all' ? 'all' : SCOPE_SESSION
+    }
+
+    /** 会话 cwd 查询(同步;把地址里的相对路径变成绝对路径要用)。 */
+    function sessionCwd(useSessions, sessionId) {
+      try {
+        var list = useSessions(function (s) { return s })
+        if (list != null && sessionId != null && list.byId != null) {
+          var entry = list.byId[sessionId]
+          if (entry != null && typeof entry.cwd === 'string' && entry.cwd !== '') return entry.cwd
+        }
+      } catch (e) { /* 服务缺失时退回 undefined */ }
+      return undefined
+    }
+
     /** 右侧栏 tab 的 body:面板里铺满常驻 IDE 面(iframe 由 surface.js 持有)。
      *  走共享 store 与 CodeServerSurface;挂载即让实例跟随当前会话工作区。
+     *  文件 tab(navigation.address = `dsh-resource://file/…`)会让 workbench 定位到该文件;
+     *  页面 tab(`sidebar://code-server`)只显示工作区 IDE。
      *  0.2.2 起 ui-dockkit 的"切走即卸载 body"不再导致重载:卸载只把面停放到停放区。 */
     function CodeServerBody(props) {
       var info = props.useTabInfo()
       var tab = info.tab
       var store = useStore()
       var status = store.status
-      var cwd = activeWorkspaceCwd(props.useSessions, null)
-      var lastCwdRef = React.useRef(undefined)
-      var [tick, setTick] = React.useState(0)
       var navigation = tab.navigation
       var revision = navigation != null && typeof navigation.revision === 'number' ? navigation.revision : 0
+      // 地址:文件 tab 可能来自会话树里的别的会话,故优先用地址里的 sessionId 对齐工作区
+      var address = navigation != null && typeof navigation.address === 'string' ? navigation.address : ''
+      var parsed = isPageAddress(address) ? null : parseFileAddress(address)
+      var addressedCwd = sessionCwd(props.useSessions, parsed != null ? parsed.sessionId : undefined)
+      var cwd = addressedCwd !== undefined ? addressedCwd : activeWorkspaceCwd(props.useSessions, null)
+      var targetFile = resolveFilePath(parsed, cwd)
+      var line = navigation != null && navigation.params != null && typeof navigation.params.line === 'number'
+        ? navigation.params.line : null
+      var lastCwdRef = React.useRef(undefined)
+      var [tick, setTick] = React.useState(0)
 
       // 工作区跟随:对齐会话 cwd(未运行则启动;运行中切目录由 host 重启),成功后刷新 iframe
       React.useEffect(function () {
@@ -316,14 +343,13 @@ let React = require('react')
         return function () { window.clearInterval(timer) }
       }, [])
 
-      // 再次导航(产物按钮 / 重复点 guide 入口框)带 path → 交给内建扩展打开该文件;
+      // 文件定位:地址变化(或官方 openFile 带来的 line 参数)→ 让内建扩展在 workbench 里打开它。
       // 扩展每 800ms 轮询信号文件且失败保留重试,故实例尚未就绪时也可先写入。
       React.useEffect(function () {
-        var params = navigation != null ? navigation.params : null
-        var file = params != null && typeof params.path === 'string' ? params.path : ''
-        if (file === '') return
-        api('/code-server/open-file', { file: file }).catch(function () { /* 忽略:由用户重试 */ })
-      }, [revision])
+        if (targetFile === null) return
+        api('/code-server/open-file', line === null ? { file: targetFile } : { file: targetFile, line: line })
+          .catch(function () { /* 忽略:由用户重试 */ })
+      }, [revision, targetFile, line])
 
       return React.createElement('div', { className: 'dshcs-tabroot', 'data-code-server-tab': 'body' },
         React.createElement(CodeServerSurface, {
@@ -360,14 +386,25 @@ let React = require('react')
         return tabs.register({
           id: CS_TAB_ID,
           kind: CS_KIND,
-          // 产品外插件 = extension 段(最高;同名 kind 可覆盖 builtin,本插件无冲突)
+          // 产品外插件 = extension 段(rank 3),高于官方的 fallback 段(rank 1):
+          // 官方的纯文本预览(`ui-sidebar-documentpreview`,kind text)故意用 fallback,
+          // 它的注释写明"这是 VS Code 的文本编辑器在编辑器中的位次,任何更具体的类型都应当击败它"。
           priority: 'extension',
-          title: function () { return 'Code Server' },
+          // **认领文件地址**:官方 openFile(产物 chip、"交付"卡片预览、正文内联提及)以及任何
+          // 第三方 openResource(fileAddress) 都会落到本 tab。含 `:` 的 pattern 按整址 glob 匹配。
+          patterns: ['dsh-resource://file/**'],
+          canOpen: function (a) { return claimsAddress(parseFileAddress(a), fileOpenScope()) },
+          // 文件 tab 用文件名当 chip 文本;页面 tab(openTab/openResource 指定 kind)仍是产品名
+          title: function (a) {
+            if (isPageAddress(a) || a === undefined || a === null || a === '') return 'Code Server'
+            var name = basenameOfAddress(a)
+            return name === '' ? 'Code Server' : name
+          },
           // guide 页入口框:点它即以本类型打开一个页面 tab(替换 guide 自身)
           guide: [{
             order: 20,
             title: function () { return 'Code Server' },
-            description: function () { return '在右侧栏标签里运行 VS Code 网页版,跟随当前会话工作区。' },
+            description: function () { return '在右侧栏标签里运行 VS Code 网页版,跟随当前会话工作区;产物/交付文件点击后在此打开。' },
             icon: CodeServerIcon,
           }],
         })
@@ -438,6 +475,9 @@ let React = require('react')
       '.dshcs-check{display:flex;align-items:center;gap:8px;cursor:pointer}' +
       '.dshcs-check input{accent-color:var(--dsw-alias-brand-primary);width:15px;height:15px;margin:0;flex:none}' +
       '.dshcs-check input:disabled{cursor:default}' +
+      '.dshcs-select{display:inline-flex;align-items:center}' +
+      '.dshcs-select select{font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-3,transparent);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px 8px;min-width:220px;cursor:pointer}' +
+      '.dshcs-select select:disabled{opacity:.5;cursor:default}' +
       '.dshcs-badges{align-items:center;gap:8px;display:inline-flex}' +
       '.dshcs-badge{white-space:nowrap;background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-secondary);border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}' +
       '.dshcs-reset{font:inherit;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;padding:0;font-size:12px;line-height:1.5}' +
@@ -479,6 +519,18 @@ let React = require('react')
           onChange: function (event) { props.onChange(event.target.checked) },
         }),
         React.createElement('span', { className: 'dshcs-hint' }, props.children)
+      )
+    }
+    /** 下拉选择(用于两三个离散取值,如"认领范围");观感与 csCheck 一致。 */
+    function csSelect(props) {
+      var options = Array.isArray(props.options) ? props.options : []
+      return React.createElement('label', { className: 'dshcs-select' },
+        React.createElement('select', {
+          value: props.value, disabled: props.disabled === true,
+          onChange: function (event) { props.onChange(event.target.value) },
+        }, options.map(function (opt) {
+          return React.createElement('option', { key: opt.value, value: opt.value }, opt.label)
+        }))
       )
     }
     function csBadges(props) {
@@ -563,6 +615,7 @@ let React = require('react')
       var loaded = {
         windowedOpen: value.windowedOpen === true,
         keepResident: value.keepResident !== false,
+        fileOpenScope: value.fileOpenScope === 'all' ? 'all' : 'session',
       }
       // ---- 旧版 DSH(无右侧栏服务):本页是唯一的提示出口,不显示任何设置项 ----
       if (liveStore != null && liveStore.sidebarUi === 'legacy') {
@@ -586,9 +639,11 @@ let React = require('react')
       }
       var overriddenWin = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'windowedOpen')
       var overriddenKeep = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'keepResident')
+      var overriddenScope = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'fileOpenScope')
       var sidebarActive = liveStore != null && liveStore.sidebarActive === true
       var dirty = draft !== null && (draft.windowedOpen !== loaded.windowedOpen
-        || draft.keepResident !== loaded.keepResident)
+        || draft.keepResident !== loaded.keepResident
+        || draft.fileOpenScope !== loaded.fileOpenScope)
       var saveDisabled = !dirty || saving
       var state = {
         available: true,
@@ -611,6 +666,7 @@ let React = require('react')
             var d = draft !== null ? draft : loaded
             await props.scope.set('windowedOpen', d.windowedOpen === true)
             await props.scope.set('keepResident', d.keepResident === true)
+            await props.scope.set('fileOpenScope', d.fileOpenScope === 'all' ? 'all' : 'session')
             setDraft(null)
             syncStatusToStore()
           } catch (e) {
@@ -627,9 +683,11 @@ let React = require('react')
           if (typeof props.scope.unset === 'function') {
             await props.scope.unset('windowedOpen')
             await props.scope.unset('keepResident')
+            await props.scope.unset('fileOpenScope')
           } else {
             await props.scope.set('windowedOpen', value.windowedOpen === true)
             await props.scope.set('keepResident', value.keepResident === undefined || value.keepResident === null ? true : value.keepResident)
+            await props.scope.set('fileOpenScope', value.fileOpenScope === 'all' ? 'all' : 'session')
           }
           setDraft(null)
           syncStatusToStore()
@@ -699,7 +757,32 @@ let React = require('react')
           React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 6 } },
             liveStore != null && liveStore.sidebarRegisterFailed === true
               ? '⚠ 已探测到右侧栏服务,但标签注册失败(控制台有 [code-server] 报错);IDE 仍可通过"窗口化打开(新标签页)"使用。'
-              : '当前:右侧栏标签。从右侧栏「开始」页的 Code Server 入口框、产物旁按钮或上面的按钮打开。')
+              : '当前:右侧栏标签,并**认领文件地址**——DSH 官方的产物 chip、"交付"卡片预览、正文里的文件名点击都会在 Code Server 里打开。')
+        ),
+        React.createElement('div', { className: 'dshcs-field' },
+          React.createElement('div', { className: 'dshcs-fieldHead' },
+            React.createElement('span', { className: 'dshcs-fieldLabel' }, '认领范围(哪些文件交给 Code Server)'),
+            overriddenScope === true
+              ? React.createElement(csBadges, {
+                  overridden: true, disabled: snapshot.writable !== true,
+                  overriddenLabel: '已覆盖', resetLabel: '恢复默认',
+                  onReset: function () { doReset() },
+                })
+              : null
+          ),
+          React.createElement(csSelect, {
+            value: draft !== null ? draft.fileOpenScope : loaded.fileOpenScope,
+            disabled: snapshot.writable !== true,
+            options: [
+              { value: 'session', label: '仅会话内文件(推荐)' },
+              { value: 'all', label: '所有文件(含工作区外的绝对路径)' },
+            ],
+            onChange: function (v) { setDraft(function (prev) { return Object.assign({}, prev !== null ? prev : loaded, { fileOpenScope: v === 'all' ? 'all' : 'session' }) }); setFailed(false) },
+          }),
+          React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 4 } },
+            '会话内文件 = DSH 用 `dsh-resource://file/session/…` 命名的文件(产物、交付、正文提及、工具视图);'
+            + '“所有文件”还会认领不带会话的绝对路径 `dsh-resource://file/absolute/…`。'
+            + '未被认领的地址由 DSH 自带预览兜底。')
         ),
         React.createElement('div', { className: 'dshcs-field' },
           React.createElement('div', { className: 'dshcs-fieldHead' },
@@ -716,7 +799,7 @@ let React = require('react')
             checked: draft !== null ? draft.windowedOpen : loaded.windowedOpen,
             disabled: snapshot.writable !== true,
             onChange: function (v) { setDraft(function (prev) { return Object.assign({}, prev !== null ? prev : loaded, { windowedOpen: v === true }) }); setFailed(false) },
-          }, '开启后入口(产物按钮/设置卡)在浏览器新标签页打开 code-server(自动启动并跟随当前工作区);关闭则使用右侧栏标签')
+          }, '开启后入口(设置卡按钮/guide 入口框)在浏览器新标签页打开 code-server(自动启动并跟随当前工作区);关闭则使用右侧栏标签')
         ),
         React.createElement('div', { className: 'dshcs-field' },
           React.createElement('div', { className: 'dshcs-fieldHead' },
@@ -757,89 +840,6 @@ let React = require('react')
       }
     }
 
-    // ---------- 产物列表+图标(替代官方 deliverables 列表,链内唯一匹配) ----------
-    // 数据:owner.turn.data.get("deliverables") → { produced: [{ path, seq }] }
-    // 过滤:produced.seq <= owner.seq(官方 producedForClosing 同款——不拿后续 tool 的文件)。
-    function producePathList(owner) {
-      var list = []
-      try {
-        var d = owner.turn.data.get('deliverables')
-        var seq = owner.seq != null ? owner.seq : Number.POSITIVE_INFINITY
-        if (d != null && Array.isArray(d.produced)) {
-          var seen = {}
-          for (var i = 0; i < d.produced.length; i++) {
-            var p = d.produced[i]
-            if (p == null || typeof p.path !== 'string' || p.path === '') continue
-            if (p.seq != null && p.seq > seq) continue
-            if (seen[p.path] === true) continue
-            seen[p.path] = true
-            list.push(p.path)
-          }
-        }
-      } catch (e) { /* respect */ }
-      return list
-    }
-    function selectProduced(owner) {
-      var paths = producePathList(owner)
-      return paths.length === 0 ? null : paths
-    }
-    function OpenFileGlyph(props) {
-      // code-server 官方图标(内联 data URI,随插件分发)
-      return React.createElement('img', {
-        src: ICON_URL, alt: '', 'aria-hidden': true, draggable: false,
-        style: { width: 15, height: 15, display: 'block', objectFit: 'contain', WebkitUserDrag: 'none', userSelect: 'none' },
-      })
-    }
-    function TurnArtifacts(props) {
-      var store = useStore()
-      if (props == null || !Array.isArray(props.matched) || props.matched.length === 0) return null
-      var paths = props.matched
-      function basenameOf(p) {
-        var s = String(p).replace(/\\/g, '/')
-        var i = s.lastIndexOf('/')
-        return i >= 0 ? s.slice(i + 1) : s
-      }
-      /** 打开顺序:windowedOpen → 浏览器新标签页;否则右侧栏 tab(带 path);再不行只启动并提示。 */
-      function openInCodeServer(p) {
-        var st = store.status
-        if (st != null && st.windowedOpen === true) {
-          openExternalTab(activeWorkspaceCwd(props.useSessions, props.useWorkspaces))
-          return
-        }
-        if (store.sidebarActive === true && sidebarBridge.openTab !== null) {
-          if (sidebarBridge.openTab({ path: p }) === true) return
-        }
-        // 侧栏不可用(未挂载 seat / 无会话):退化为"在浏览器新标签页打开",不再有浮窗兜底
-        openExternalTab(activeWorkspaceCwd(props.useSessions, props.useWorkspaces))
-        api('/code-server/open-file', { file: p }).then(function (s) {
-          if (s == null || s.ok !== true) {
-            window.alert(s != null && s.error ? s.error : '打开失败')
-          }
-        }).catch(function (e) { window.alert('打开失败: ' + String(e)) })
-      }
-      // 复刻官方列表(label + 行),但每个文件名旁加"仅图标"按钮 → 在 code-server 打开
-      return React.createElement('div', { className: 'dshcs-artifacts' },
-        React.createElement('span', { className: 'dshcs-artlabel' }, '产物'),
-        React.createElement('div', { className: 'dshcs-artrow' },
-          paths.slice(0, 6).map(function (p) {
-            return React.createElement('span', { key: p, className: 'dshcs-artitem' },
-              React.createElement('button', {
-                type: 'button', className: 'dshcs-artfile', title: p,
-                'aria-label': '打开: ' + p,
-                onClick: function () { openInCodeServer(p) },
-              }, basenameOf(p)),
-              React.createElement('button', {
-                type: 'button', className: 'dshcs-artbtn',
-                title: '在 Code Server 打开: ' + p,
-                'aria-label': '在 Code Server 打开: ' + p,
-                onClick: function () { openInCodeServer(p) },
-              }, React.createElement(OpenFileGlyph, null))
-            )
-          }),
-          paths.length > 6 ? React.createElement('span', { className: 'dshcs-artmore' }, '…' ) : null
-        )
-      )
-    }
     function apply(ctx) {
       try {
         internalApply(ctx)
@@ -900,22 +900,11 @@ let React = require('react')
           { name: 'shell.overlay', id: 'code-server', order: 70, label: 'Code Server' },
           (props) => React.createElement(Resident, props)
         ))
-        // ---- 产物图标按钮(每轮产物旁,点击在 code-server 打开) ----
-        // 与 deliverables 共用 turnTail 插槽;select 读 owner.turn.data 的 deliverables。
-        try {
-          slots.inject('conversation.chat.turnTail', function () {
-            return slots.register({
-              name: 'conversation.chat.turnTail',
-              priority: -9, // 先于官方 deliverables(chain 唯一匹配 → 我们渲染完整"列表+图标")
-              id: 'dshcs-open-file',
-              select: selectProduced,
-            }, TurnArtifacts)
-          })
-        } catch (e) {
-          console.warn('[code-server] turnTail register failed:', e != null && e.message != null ? e.message : String(e))
-        }
+        // 0.2.5 起**不再注册 conversation.chat.turnTail**:官方的产物/交付行由
+        // ui-deliverables 自己渲染,我们通过上面的 patterns/canOpen 认领文件地址,
+        // 使官方的 openFile(产物 chip、交付卡片预览、正文内联提及)在本 tab 打开。
         console.log('[code-server] client registered via ' + via + ': sidebar tab=' + registered
-          + ' + turnTail artifacts + resident preload + settings card')
+          + '(claims dsh-resource://file/**) + resident preload + settings card')
       }
 
       function onLegacyDsh(reportToHost) {

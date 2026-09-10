@@ -1,8 +1,8 @@
 {
   "name": "dshcs-open-file",
   "displayName": "DSH Code Server Open File",
-  "description": "Opens files requested by the DSH host through a signal file (dshcs-open.json).",
-  "version": "0.0.1",
+  "description": "Opens files requested by the DSH host through a signal file (dshcs-open.json), optionally at a line.",
+  "version": "0.0.2",
   "publisher": "dsh-code-server-app",
   "engines": {
     "vscode": "^1.80.0"

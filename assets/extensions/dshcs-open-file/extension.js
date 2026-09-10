@@ -1,4 +1,4 @@
-// dshcs-open-file:DSH host 通过信号文件请求打开文件。
+// dshcs-open-file:DSH host 通过信号文件请求打开文件(可带 1 基行号)。
 // host 写入 <user-data>/User/dshcs-open.json 后,本扩展在已连接的窗口中打开该文件。
 // 信号路径优先取环境变量 DSHCS_OPEN_FILE_SIGNAL(host 注入);
 // 取不到时用 context.globalStorageUri 推导(=<user-data>/User/globalStorage/<id> 的上两级)。
@@ -25,14 +25,22 @@ function processSignal(signal) {
     return; // 尚无信号
   }
   let file = null;
+  let line = null;
   try {
-    file = JSON.parse(raw).file;
+    const parsed = JSON.parse(raw);
+    file = parsed.file;
+    line = typeof parsed.line === 'number' && Number.isSafeInteger(parsed.line) && parsed.line > 0 ? parsed.line : null;
   } catch {
     return;
   }
   if (typeof file !== 'string' || file === '') return;
   const uri = vscode.Uri.file(file);
-  vscode.window.showTextDocument(uri, { preview: false }).then(
+  const options = { preview: false };
+  if (line !== null) {
+    const at = new vscode.Position(line - 1, 0);
+    options.selection = new vscode.Range(at, at);
+  }
+  vscode.window.showTextDocument(uri, options).then(
     () => {
       try {
         fs.unlinkSync(signal);
