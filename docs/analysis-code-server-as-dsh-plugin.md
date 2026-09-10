@@ -258,3 +258,52 @@ GET /          → 200 text/html len=4222
 2. `pnpm pack` → `publish:plugin`(发 **next**,不动 latest);
 3. 你重启 `dsh web` 确认无误后,`pnpm run promote -- 0.2.0` 推进 latest。
    回退路径:`dsh plugin --profile web add dsh-code-server-app@0.1.43`。
+
+## 8. 常驻 IDE 面(0.2.2)
+
+### 8.1 触发点:DSH 右侧栏只渲染激活标签
+
+- 证据(读源码):`ui-dockkit` 的 `TabPanel.tsx:412` 只调用 `callbacks.renderTab(active)`——非激活标签 body
+  **不在文档里**;切走 = React 卸载 iframe = 浏览上下文销毁,切回 = 整页重载(未保存缓冲区丢失)。
+- 侧栏收起(`transform: translateX(100%)`)时面板**仍挂载**,只有标签切换会真卸载。
+
+### 8.2 机理验证:`appendChild` 重载 vs `moveBefore` 状态保持
+
+在真实浏览器(Edge/Chromium 151)里用一个同源 iframe 装计数器探针,分别用两种方式在 A/B 容器间搬:
+
+| 移动方式 | 探针计数器 | 结论 |
+|---|---|---|
+| `dst.appendChild(frame)` | 归零(1 → 重新 1) | 等价重载 |
+| `dst.moveBefore(frame, null)` | 连续(1 → 2) | **状态保持**,不重载 |
+
+- `Element.moveBefore` 为 Chromium ≥133 的"状态保持型原子移动";运行时不支持时按 `degraded` 处理。
+- 实测捕获的失败面:宿主被 React 先摘出文档、后跑 effect cleanup 时 `moveBefore` 抛
+  `HierarchyRequestError: State-preserving atomic move cannot be performed on nodes participating in an invalid hierarchy`。
+  修法:停放改在 `useLayoutEffect` cleanup(先于 DOM 摘除)执行 + `moveBefore` try/catch 退回 `appendChild`,
+  并记录 `degraded` / `lastMoveError`,**绝不把 iframe 留在已脱离文档的宿主里**。
+
+### 8.3 端到端实测(DSH web GUI,真实鼠标事件)
+
+| 步骤 | 观测 |
+|---|---|
+| 关闭 Code Server 标签 | `frames:1`、`sameNode:true`、内部探针存活、`parent:"dshcs-park"`、`degraded:false` |
+| 真实点击标签切回 | `docked:true`、`owner:"tab:<id>"`、`src` 不变、同一 iframe 节点、无整页重载 |
+
+### 8.4 新发现的缺陷:长停放后"元素在、画面不重绘"
+
+- 现象:跨源 iframe 离屏停放一段时间后被移回,`getBoundingClientRect()`、尺寸、`elementFromPoint()` 命中、
+  `visibility/opacity/transform`、`inert` 状态**全部正常**,但面板**一片白**;连续多次切标签也不恢复。
+- 排除项:探针确认 iframe 文档仍在运行(内部计时器继续、`contentWindow.length` 正常);
+  把同一 URL 作为顶层标签打开,workbench 正常渲染 ⇒ 服务端与截图/合成管线都正常,问题只在"被搬回的跨源 iframe"。
+- 无效尝试:`transform: translateZ(0)`、`opacity` 微调、单纯等待。
+- 有效修法:`frame.style.display='none'; void frame.offsetHeight; frame.style.display=<原值>`
+  —— **同一个 JS 任务内**完成,不产生可见闪烁;iframe 文档不重载(VS Code 布局、"欢迎"页状态保持)。
+- 落地:每次「停放 → 停靠」补一次 `nudgeRepaint()`,计数进 `surfaceSnapshot().nudgeCount`;
+  `setNudgeEnabled(false)` 可现场做 A/B 对照,`window.__dshcsSurface` 为排障句柄。
+- 未测量的变量:触发所需的停放时长下限(Chrome 对不可见跨源 iframe 的节流窗口)、页面级 `visibilitychange` 的影响。
+  因此该修复按"条件下必然发生"的兜底实现(每次停靠都补),代价是一次强制重排。
+
+### 8.5 宿主半部
+
+- `Config.keepResident: boolean`(默认 `true`)→ 插件启动后即建面并停在停放区(**预热**),
+  首次点开标签不必等冷启动;`preload` 不抢正在停靠的面。设置卡片新增行「后台常驻(切标签不重载)」。

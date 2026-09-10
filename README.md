@@ -32,11 +32,44 @@
 - 检测方式:`ctx.inject(['sidebarRightTabs','sidebarRight'], …)`——服务就绪才注册标签类型;
   服务缺失/注册失败则整段不生效,自动回退悬浮球(不按版本号硬判,也不影响插件激活)。
 - 侧栏标签内即 code-server 页面(iframe),跟随当前会话工作区;面板可折叠/分屏/浮动/全屏(由 DSH 右侧栏提供)。
-- **已知取舍**:DSH 只渲染「当前激活标签」的 body,切到别的标签再切回会重挂 iframe
-  (code-server 整页重载,未保存的编辑缓冲区会丢);需要长驻会话时请把该标签**浮动**出来或保持激活。
+- **IDE 常驻(0.2.2 起,默认开)**:切到别的标签/收起侧栏再回来**不再重载** code-server——
+  未保存的编辑缓冲区、终端、调试会话都留在原处(见下方「为什么切标签不再重载」)。
 - 设置卡片在侧栏模式下隐藏「保留输入框上方空间」(只对浮窗有意义);
   「窗口化打开(新标签页)」仍然生效(开启后各入口改为浏览器新标签页打开)。
 - `windowedOpen` 优先级最高:开启时入口按钮一律新开浏览器标签页。
+
+## 为什么切标签不再重载(IDE 常驻)
+
+**过去的坑**:DSH 的右侧栏(ui-dockkit)`TabPanel` **只渲染当前激活标签的 body**
+(`TabPanel.tsx:412` → `renderTab(active)`)——切到别的标签 = React 卸载该 body = iframe 被移出文档 =
+浏览上下文销毁,切回来就是一次完整的 VS Code 重载(未保存的缓冲区丢失)。把标签浮动成独立面板只是绕开它,
+并没有解决。
+
+**现在的做法(客户端 `src/surface.js`,0.2.2)**:插件把 iframe **从 React 手里接管**,做成**单例常驻面**:
+
+| 场景 | 动作 | 结果 |
+|---|---|---|
+| 标签激活 | `host.moveBefore(frame, null)` 移进当前可见的停靠位 | 状态保持型原子移动,**不重载** |
+| 标签失活 / 收起侧栏 | 移回文档级 park 容器(离屏、保留最后停靠尺寸、`inert` + `aria-hidden`) | 面不销毁,后台继续跑 |
+| 工作区 / 端口变化 | 显式设置 `src` | 这是唯一正常的"重载"入口 |
+
+- **为什么是 `moveBefore`**:浏览器实测(Edge/Chromium 151)普通 `appendChild` 移动 iframe 会让内部计时器**归零**
+  (等价重载),而 `Element.moveBefore()`(Chromium ≥133)保持状态(计时器 1→2 连续)。
+- **降级不静默**:`moveBefore` 缺失、或宿主已被 React 摘除而抛 `HierarchyRequestError: invalid hierarchy`
+  (passive effect cleanup 晚于 DOM 卸载)时,退回 `appendChild`——会重载一次,但**绝不丢帧**;
+  状态里 `degraded`/`lastMoveError` 明示,界面据此提示"常驻不可用"。
+- **重绘修复(实测坑)**:跨源 iframe 离屏停放较久后被移回,元素尺寸、命中测试、`visibility` 全部正常,
+  但**画面不再重绘**(面板一片白,多切几次标签也不恢复)。`translateZ(0)`、`opacity` 微调都无效;
+  `display:none → 强制重排 → 还原`(同一个 JS 任务内)可唤醒,且 iframe 文档不重载、内部状态不变、无可见闪烁。
+  因此每次「停放 → 停靠」都补一次 `nudgeRepaint()`(`surfaceSnapshot().nudgeCount` 计数,便于排障)。
+- **后台预热**:配置 `keepResident`(默认 `true`)时,宿主在插件启动后就把面建好并停在停放区,
+  首次点开标签无需冷启动等待;`preload` 不会把正在使用的面拽走。
+- **排障句柄**:控制台可用 `window.__dshcsSurface`(`snapshot()` / `setParkStrategy('offscreen'|'behind')` /
+  `dock()` / `park()` / `nudge()` / `setNudgeEnabled(false)` / `destroy()`)。
+
+**实测记录**(DSH web GUI,sidebar 标签间真实鼠标切换):切走 → `docked:false`、iframe 仍为同一节点、内部探针存活、
+`degraded:false`;切回 → `docked:true`、`src` 不变、IDE 画面与编辑状态保持(无整页重载)。
+完整证据与探针脚本见 `docs/analysis-code-server-as-dsh-plugin.md`。
 
 ## 服务方式(serve)
 
@@ -359,8 +392,10 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
 - **`serve: dsh` 的 iframe 与 DSH 同源** → 该模式不挂 `sandbox`(同源 + `allow-same-origin` 可被 frame 自行摘除);
   `loopback` 模式跨源,`sandbox` 作为真防护保留。
 - **跨会话单实例**:host 级共享一份 IDE;切换 cwd 需重启实例(右侧栏标签/浮窗自动处理并提示)。
-- **侧栏标签切换重载**:DSH 右侧栏只渲染当前激活标签的 body,切走再切回会重挂 iframe(VS Code 整页重载);
-  长驻会话请保持该标签激活或将其浮动为独立面板。
+- **侧栏标签切换**(0.2.2 起不再重载):DSH 右侧栏只渲染当前激活标签的 body,React 卸载会移走 iframe;
+  插件把 iframe 收成单例常驻面,用 `Element.moveBefore()`(状态保持型原子移动)在停靠位与文档级停放区之间搬,
+  切标签/收起侧栏再回来**不重载**。不支持 `moveBefore` 的浏览器退回旧行为(`appendChild` → 整页重载),
+  状态里以 `degraded` 明示;详见下方「为什么切标签不再重载」。
 - **远程访问**:`serve: dsh` 下浏览器只需能到达 DSH 本身(单一端口,认证与 `/api` 同级);
   `serve: loopback` 默认仅回环、`auth: none`,跨机访问请改用 `serve: dsh`
   (0.2.0 起不再支持 `auth: password`)。

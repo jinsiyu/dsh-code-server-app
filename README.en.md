@@ -21,9 +21,46 @@ A static profile plugin (npm package with host + client bundle) that ships the *
 
 - Detection: `ctx.inject(['sidebarRightTabs','sidebarRight'], …)` registers the tab type only when the services are ready; if they never appear (or registration fails) nothing is registered and the floating ball fallback stays in place. No version comparison, and the plugin's own activation is never blocked.
 - The sidebar tab hosts the code-server page (iframe) and follows the current session workspace; the panel can be collapsed/split/floated/fullscreened by DSH's right sidebar.
-- **Known trade-off**: DSH renders only the active tab's body, so switching away and back remounts the iframe (a full code-server reload; unsaved editor buffers are lost). Float the tab into its own panel or keep it active for long-running sessions.
+- **Resident IDE (0.2.2, on by default)**: switching to another tab or collapsing the sidebar and coming back **no longer reloads** code-server — unsaved editor buffers, terminals and debug sessions all stay put (see "Why switching tabs no longer reloads" below).
 - In sidebar mode the settings card hides "Reserve space above the composer" (floating-window geometry only). "Open in a window (new tab)" still applies to every entry point.
 - `windowedOpen` has the highest priority: when on, entry buttons always open a browser tab.
+
+## Why switching tabs no longer reloads (resident IDE)
+
+**The old trap**: DSH's right sidebar (ui-dockkit) renders **only the active tab's body**
+(`TabPanel.tsx:412` → `renderTab(active)`) — switching to another tab unmounts that body in React, which moves the
+iframe out of the document and destroys its browsing context; switching back is a full VS Code reload (unsaved buffers
+lost). Floating the tab into its own panel only worked around it.
+
+**What it does now (`src/surface.js` in the client, 0.2.2)**: the plugin takes the iframe **away from React** and turns
+it into a **singleton resident surface**:
+
+| Situation | Action | Result |
+|---|---|---|
+| tab becomes active | `host.moveBefore(frame, null)` into the visible dock slot | state-preserving atomic move, **no reload** |
+| tab deactivates / sidebar collapses | move back into a document-level park container (offscreen, keeps last docked size, `inert` + `aria-hidden`) | never destroyed, keeps running in the background |
+| workspace / port changes | assign `src` explicitly | the only normal "reload" entry point |
+
+- **Why `moveBefore`**: measured in a real browser (Edge/Chromium 151), a plain `appendChild` move resets the iframe's
+  internal timers (i.e. reloads it), while `Element.moveBefore()` (Chromium ≥133) preserves state (a probe counter keeps
+  counting 1→2).
+- **Degradation is never silent**: when `moveBefore` is missing, or the host was already detached by React and it throws
+  `HierarchyRequestError: invalid hierarchy` (passive effect cleanup runs after DOM removal), the code falls back to
+  `appendChild` — one reload, but the frame is **never lost** — and reports `degraded` / `lastMoveError` so the UI can
+  say "residency unavailable".
+- **Repaint fix (measured)**: after a long offscreen park, a moved-back cross-origin iframe had correct size, hit
+  testing and `visibility`, yet **stopped repainting** (a fully white panel that several tab switches did not fix).
+  `translateZ(0)` and `opacity` nudges did nothing; `display:none → forced reflow → restore` inside a single JS task
+  revives it without reloading the iframe document, without losing internal state and without a visible flash. Every
+  park→dock transition therefore runs one `nudgeRepaint()` (counted as `surfaceSnapshot().nudgeCount` for debugging).
+- **Warm-up**: with `keepResident` (default `true`) the host builds the surface right after plugin start and leaves it
+  parked, so the first tab open needs no cold start; preloading never yanks a surface that is currently docked.
+- **Debug handle**: `window.__dshcsSurface` (`snapshot()`, `setParkStrategy('offscreen'|'behind')`, `dock()`, `park()`,
+  `nudge()`, `setNudgeEnabled(false)`, `destroy()`).
+
+**Measured** (DSH web GUI, real mouse clicks between sidebar tabs): switching away → `docked:false`, same iframe node,
+in-frame probe still alive, `degraded:false`; switching back → `docked:true`, unchanged `src`, IDE pixels and editing
+state preserved (no full reload). Full evidence and probe scripts: `docs/analysis-code-server-as-dsh-plugin.md`.
 
 ## Serving mode (`serve`)
 
@@ -353,7 +390,10 @@ so users cannot remove it from the extensions panel.
   escapable by the frame itself); in `loopback` mode the iframe is cross-origin and `sandbox` stays as real protection.
 - **Single instance across sessions**: one shared IDE per host; switching cwd requires a restart (the sidebar tab /
   floating window handles it and hints).
-- **Sidebar tab switching reloads**: DSH's right sidebar renders only the active tab's body, so switching away and back
-  remounts the iframe (a full VS Code reload); keep the tab active or float it for long-running sessions.
+- **Sidebar tab switching** (no longer reloads since 0.2.2): DSH's right sidebar renders only the active tab's body, and
+  a React unmount moves the iframe away; the plugin keeps it as a singleton resident surface and shuttles it between the
+  dock slot and a document-level park container with `Element.moveBefore()` (a state-preserving atomic move), so
+  switching tabs or collapsing the sidebar and back **does not reload** it. Browsers without `moveBefore` fall back to
+  the old behaviour (`appendChild` → full reload), reported as `degraded`; see "Why switching tabs no longer reloads".
 - **Remote access**: with `serve: dsh` the browser only needs to reach DSH itself (one port, protected exactly like `/api`);
   `serve: loopback` stays loopback-only with `auth: none`, and 0.2.0 no longer supports `auth: password`.
