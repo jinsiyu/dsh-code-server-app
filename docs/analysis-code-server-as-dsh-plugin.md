@@ -360,3 +360,62 @@ GET /          → 200 text/html len=4222
 
 删除 `motion` 与浮窗/悬浮球后,客户端 bundle **180.4 KB → 37.3 KB**(-79%;`motion` 不再被打进客户端,
 `react-dom` 的静态 require 也随之消失——浮窗是唯一使用 portal 的地方)。
+
+## 10. 回归与修复:desktop 上"设置卡正常、右侧栏却没有 Code Server"(0.2.4)
+
+### 10.1 现场与排查路径(用户报告)
+
+用户在 dsh-desktop 里看不到右侧栏的 Code Server 入口。逐步取证:
+
+1. **profile 安装**:`~/.dsh/profiles/desktop/package.json` 的 dependencies 里有 `dsh-code-server-app@0.2.3`,
+   且它是该 profile **唯一**的第三方依赖;`node_modules/dsh-code-server-app/lib/client.js` = 37 326 B(0.2.3 构建)。
+   `dsh plugin --profile desktop …` 会被 CLI 直接拒绝("profile "desktop" is managed exclusively by the Electron application"),
+   说明 desktop 的包事务由 Electron 应用自己完成。
+2. **合成清单**:`desktop-packages.json`(241 包)只含第一方 core 包集(不含第三方),`desktop.cordis.yml` 每次启动被
+   desktop-host 覆写为 `[]`("package transactions own this file")→ 真正的合成来自 profile 的 `package.json` 依赖层
+   + `apps/desktop-host/config/desktop.cordis.patch.yml`。该补丁注释写明 *"Electron reuses the browser composition"*,
+   只 disabled `web-startup` / `webserver` / `web-runtime` / `client-hmr` / `open-in-app` / `ui-open-in-app` / `directory-picker`,
+   并插入原生目录选择器 —— **`ui-sidebar-right` 未被禁用**。
+3. **服务名**:`@deepseek-ai/dsh-client-ui-sidebar-right` 的 bundle 里 `ctx.reflect.provide("sidebarRight")` 与
+   `provide("sidebarRightTabs")` 同时存在 → 名字与我的探测一致。
+4. **运行态**:`~/.dsh/code-server/pid.json` 的 `launchCommand` 指向
+   `~\\.dsh\\profiles\\desktop\\node_modules\\dsh-code-server-app\\lib\\launcher.mjs`,实例 22:21:51 启动且 `/healthz` 200
+   → **host 半部在 desktop 正常工作**,并且没有被我新加的"旧版回收"逻辑杀掉。
+5. **渲染器实际加载的 bundle**:在 `%APPDATA%\@deepseek-ai\dsh-desktop\Code Cache\js\` 里能同时找到
+   `sidebarUi` / `__dshcsSurface`(0.2.3 的字符串字面量)与旧版的 `dshcs-ball` → 0.2.3 的 client **确实被 desktop 渲染器加载过**。
+6. 用户观察(决定性):**设置卡是正常设置项**(说明没走 legacy 分支),但右侧栏没有入口/标签。
+
+### 10.2 根因(两个脆弱点,均已修)
+
+- **① 注册走了"插件 ctx 的属性访问"**:0.2.3 的实现是"同步探测命中 → `onModernUi(ctx)`",而 `registerSidebarTab` 读的是
+  `sctx.sidebarRightTabs` / `sctx.sidebarRight` **属性**。desktop 的上下文只保证 `ctx.get(name)` 可见时,这两个属性是
+  `undefined` → 命中 `if (tabs == null || controller == null) return` **静默返回** → 标签类型/body/入口框全都没注册,
+  但 `sidebarUi` 已被置为 `modern` → 卡片看起来完全正常。web 之所以没暴露:web 上服务晚于本插件就绪,
+  走的是 `ctx.inject` 回调(注入上下文里属性可见),从未走那条快路径。
+- **② 判定会 latch**:超时一旦判定 legacy,后来的 `ctx.inject` 回调被丢弃 → 即使服务随后就绪也永远不注册。
+- 另有一个放大器:0.2.3 的 legacy 上报没有宽限,一旦误判就会让 host 回收刚预启动的实例;
+  本次 desktop 实例没被杀,是因为走到的是 ① 而不是 legacy 分支(卡片正常即为证据)。
+
+### 10.3 修复(0.2.4)
+
+| 项 | 做法 |
+|---|---|
+| 服务查找 | `serviceOf(ctx,name)`:`ctx[name]` → `ctx.get(name)` 双通道,任一可见即用 |
+| 注册路径 | 统一走 `ctx.inject(['sidebarRightTabs','sidebarRight'], cb)`;同步可见但 inject 不回调时 **1.5 s 兜底注册**(`SYNC_FALLBACK_MS`) |
+| 判定可逆 | 服务晚到 → 撤销 legacy、补注册、上报 `{sidebar:true}`;`modernSettled` 只保证不重复注册 |
+| 上报宽限 | 2.5 s 只提示(`LEGACY_NOTICE_MS`),**10 s** 才上报 host(`LEGACY_REPORT_MS`),避免误杀慢启动宿主 |
+| 不再静默 | `registerSidebarTab` 返回布尔并显式 `console.error`;失败写入 `sidebarRegisterFailed`,设置卡入口行显示告警 |
+
+### 10.4 回归用例(`.spike/spike-legacy-ui.mjs`,共 27 项,全部 PASS)
+
+| 场景 | 覆盖 |
+|---|---|
+| A | 旧版 DSH:只注册设置卡、无 overlay/turnTail/body、2.5 s 时**尚未**上报 |
+| A2 | 超过 10 s 宽限后才上报 `{sidebar:false}` |
+| B | 现代 DSH + inject 同步回调:全量注册、不上报 legacy、卡片为常规设置项 |
+| C | **desktop 形态**:服务只在 `ctx.get` 可见、`inject` 不回调 → 200 ms 时未注册、1.5 s 后兜底注册成功、未误报旧版 |
+| D | 服务 3 s 才出现:2.7 s 时"只等不注册"、到达后补注册、从未误报 |
+| D2 | 先落到旧版判定、服务 3.5 s 才到:卡片先显示提示 → 到达后补注册 + 上报 `{sidebar:true}` + 卡片恢复常规设置项 |
+
+> 教训(写给下一次):客户端插件的服务获取不要只依赖一种形态(属性 vs `get()`),
+> 注册失败不要静默,超时判定要可逆 —— 三者叠加才会产生"UI 看起来正常、功能却整段没生效"这种最难查的故障。

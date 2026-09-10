@@ -20,9 +20,15 @@ A static profile plugin (npm package with host + client bundle) that ships the *
 | older (no sidebar service) | **Unsupported**: nothing but one notice on the settings page | none (Settings → Plugins → Code Server shows an upgrade notice) |
 
 - Detection: first a synchronous `ctx.get('sidebarRightTabs') / ctx.get('sidebarRight')` probe; because the services may come up after this plugin, `ctx.inject(['sidebarRightTabs','sidebarRight'], …)` is awaited and a **2.5 s timeout marks the DSH as legacy** (no version comparison, and the plugin's own activation is never blocked).
+  Since 0.2.4 that verdict is **reversible** and registration no longer relies on `ctx` property access (which on desktop silently skipped registration — the symptom was "settings card looks normal but the sidebar has no entry"):
+  - services are looked up as `ctx.<name>` first and `ctx.get(name)` second, so either context shape registers;
+  - when the sync probe already sees the services but `inject` never calls back, registration falls back to the sync services after **1.5 s**;
+  - at 2.5 s only the settings notice appears; only after **10 s** does the client tell the host to recycle/stop prestarting (so a slow host is not punished);
+  - services arriving late automatically revoke the legacy verdict, register the sidebar, and report `{sidebar:true}` so the host re-enables;
+  - a failed registration is no longer silent: it logs an error and the card's entry row says "right-sidebar services were found but the tab could not be registered".
 - **0.2.3 dropped legacy-DSH compatibility**: the floating ball and the internal floating window are **deleted**. When the DSH is detected as legacy the plugin
   - registers only the settings card (an upgrade notice) — no ball, no floating window, no artifact buttons, no IDE preload;
-  - reports `/api/code-server/ui-mode { sidebar:false }` to the host, which then **recycles an instance it auto-prestarted** and stops prestarting (a user-started/adopted instance is never touched);
+  - reports `/api/code-server/ui-mode { sidebar:false }` to the host (after the 10 s grace above); the host then **recycles an instance it auto-prestarted** and stops prestarting (a user-started/adopted instance is never touched), and `{sidebar:true}` reverses that if the services show up later;
   - upgrading DSH needs **no reinstall** — refresh the page and the card turns back into the full settings card.
 - The sidebar tab hosts the code-server page (iframe) and follows the current session workspace; the panel can be collapsed/split/floated/fullscreened by DSH's right sidebar.
 - **Resident IDE (0.2.2, on by default)**: switching to another tab or collapsing the sidebar and coming back **no longer reloads** code-server — unsaved editor buffers, terminals and debug sessions all stay put (see "Why switching tabs no longer reloads" below).

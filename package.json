@@ -1,6 +1,6 @@
 {
   "name": "dsh-code-server-app",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "VS Code (from a code-server release) inside DSH: a right-sidebar tab driven by the plugin's own launcher over the in-process VS Code server (lib/launcher.mjs). The IDE is a resident surface moved with Element.moveBefore instead of being remounted, so switching sidebar tabs no longer reloads the workbench. Requires a DSH with the right-sidebar services (sidebarRightTabs/sidebarRight, >= 0.1.5-alpha.1); older DSH versions get a single upgrade notice on the settings page and no other UI. Two serving modes: loopback port (default) or same-origin mount on DSH's own webServer (/code-server, protected by ctx.connection.requestRejection). No code-server Node layer, no argon2, no C++ toolchain.",
   "homepage": "https://github.com/jinsiyu/dsh-code-server-app",
   "repository": {
