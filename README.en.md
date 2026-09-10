@@ -10,7 +10,7 @@
 > - Microsoft **open-source** extensions (Python, TypeScript debugger, ESLint, …) are mirrored on Open VSX and install normally by search;
 > - **If you need a proprietary Microsoft extension**: download the `.vsix` from the Marketplace page and install it manually with `code-server --install-extension <file>` (or drop it into `--extensions-dir`).
 
-A static profile plugin (npm package with host + client bundle) that ships [code-server](https://github.com/coder/code-server) as a **platform-independent dependency package** (a pack-time artifact at `vendor/code-server` → `@jinsiyu/dshcs-code-server`, with no install scripts and no postinstall); its binaries (argon2 plus 16 native modules) come from `@jinsiyu/dshcs-*-win32-<arch>` platform packages selected automatically per architecture by the platform aggregator. VS Code's inner dependencies and the prebuilt native modules are **all installed by the package manager together with the plugin** — no global npm install, no `bin` configuration, no profile config changes, no second install command.
+A static profile plugin (npm package with host + client bundle) that ships the **VS Code server tree** from a [code-server](https://github.com/coder/code-server) release as a **platform-independent dependency package** (pack-time artifact `vendor/vscode` → `@jinsiyu/dshcs-vscode-server`, no install scripts, no postinstall). The code-server **Node service layer is replaced by the plugin's own `lib/launcher.mjs`**: it drives `<tree>/lib/vscode/out/server-main.js` (`loadCodeWithNls()` / `createServer()` / `handleRequest()` / `handleUpgrade()`) directly and re-adds the few HTTP endpoints code-server used to provide (`/healthz`, `/manifest.json`, `/_static/*`, `/proxy/:port`). The 16 native modules (node-pty / @vscode/sqlite3 / spdlog / …) come from `@jinsiyu/dshcs-*-win32-<arch>` platform packages selected automatically per architecture by the platform aggregator. VS Code's inner dependencies and the prebuilt native modules are **all installed by the package manager together with the plugin** — no global npm install, no `bin` configuration, no profile config changes, no second install command, **no argon2/C++ toolchain**.
 
 ## UI carrier (chosen by the DSH version, feature-detected at runtime)
 
@@ -25,7 +25,21 @@ A static profile plugin (npm package with host + client bundle) that ships [code
 - In sidebar mode the settings card hides "Reserve space above the composer" (floating-window geometry only). "Open in a window (new tab)" still applies to every entry point.
 - `windowedOpen` has the highest priority: when on, entry buttons always open a browser tab.
 
-## Floating ball / window (legacy-DSH fallback path only)
+## Serving mode (`serve`)
+
+| Mode | What it does | Requires |
+|---|---|---|
+| **`loopback` (default)** | the plugin listens on its own loopback port (`host:port`) and the sidebar iframe connects cross-origin; the process can be adopted after a DSH host restart | nothing |
+| **`dsh`** | the IDE is mounted on **DSH's own HTTP port** at `/code-server/*` (HTTP prefix route) plus `/code-server/<quality>-<commit>` (exact WebSocket route), forwarded to the launcher's **named pipe**; **no extra port**; every request (including the WS handshake) first passes `ctx.connection.requestRejection()` — the same Host/Origin fence and browser-cookie authentication as `/api` | DSH providing `webServer` (web profile); desktop falls back to loopback automatically |
+
+- Switch it in `config.serve` in `cordis.patch.yml` or in Settings → Plugins → Code Server (takes effect on the next start).
+- Benefits of `dsh`: a single URL/port (remote access to DSH gives you the IDE), no extra loopback listener, authentication on par with DSH.
+- Two **known trade-offs** of `dsh`: the iframe shares DSH's origin, so `sandbox` is dropped there (same-origin plus
+  `allow-same-origin` is escapable by the frame itself; in `loopback` mode the iframe is cross-origin and `sandbox` stays
+  as real protection — clipboard is still granted via `allow="clipboard-read; clipboard-write"`); and forwarded-port
+  **WebSockets** cannot be routed because `registerUpgrade` matches exact paths while `/proxy/:port` carries the port in
+  the path (HTTP forwarding works; use `loopback` when you need WS forwarding).
+
 
 - **Floating ball** (bottom-right, official code-server icon, above the composer): click to **expand the floating window and light it up** (blue glow), click again to **collapse**; **drag to any position** (remembered across refreshes; no accidental click after drag);
   no sidebar button, no window control button group (the ball is the only entry/toggle); the ball carries a status dot (green = running / amber = starting / red = error);
@@ -46,20 +60,21 @@ A static profile plugin (npm package with host + client bundle) that ships [code
   crash/exit updates status live; after a DSH host restart the plugin **adopts** a still-running instance (verifies pid + `/healthz`), without duplicate start or killing unrelated processes;
 - `node_modules` and the pack-time artifact `vendor/` are git-ignored; after cloning, follow
   "Install the plugin (script-free install; code-server bundled)" below — `pnpm install` → `pnpm run build:client` →
-  `pnpm run vendor:code-server` → `pnpm pack` + `dsh plugin --profile web add`.
+  `pnpm run vendor:vscode` → `pnpm pack` + `dsh plugin --profile web add`.
 
 > Verified locally (BM: Windows 11 ARM64): `code-server@4.136.2` (with Code 1.136.1) bundled in the plugin,
 > placed offline at activation → VS Code internal deps installed → started → healthz 200 →
 > cwd switch restart while running → stopped → fully recycled.
 
+## Floating ball / window (legacy-DSH fallback path only)
 ## Packaging (how to build the tarball)
 
 ```powershell
 cd C:\Users\User\Desktop\dsh-code-server-app
 pnpm install             # dev deps (esbuild + motion); allowBuilds is explicit → no postinstall runs
 pnpm run build:client    # src/factory.js → lib/client.js (not committed; must be built first)
-pnpm run vendor:check    # optional: show the bundled code-server version vs npm latest
-pnpm run vendor:code-server                      # ① produce vendor/code-server (the upstream tree)
+pnpm run vendor:check    # optional: show the bundled tree version vs the latest code-server release
+pnpm run vendor:vscode                            # ① produce vendor/vscode (the trimmed VS Code tree, ~197MB)
 pnpm run repack:build -- --target win32-arm64,win32-x64 --pack   # ② one script builds every sub-package
 pnpm run publish:repacks                         # ③ publish every @jinsiyu/* sub-package (default dist-tag: next)
 pnpm pack                                        # ④ → dsh-code-server-app-<version>.tgz (~107KB)
@@ -81,18 +96,17 @@ pnpm run promote -- <version>
 
 | Sub-package | Content | os/cpu |
 |---|---|---|
-| `@jinsiyu/dshcs-code-server@<code-server version>` | the code-server tree (`out/` + `lib/vscode` + its 136 runtime deps), **no machine-specific binary** | platform-independent |
-| `@jinsiyu/dshcs-argon2-win32-arm64` / `-x64` | the argon2 module plus its compiled `.node` for that architecture (arm64 0xaa64 / x64 0x8664) | win32-<arch> |
+| `@jinsiyu/dshcs-vscode-server@<code-server version>` | the trimmed VS Code tree (`lib/vscode` + `out/browser` + `src/browser`; **without** code-server's `out/node` and its 136 runtime deps) | platform-independent |
 | `@jinsiyu/dshcs-<name>[-win32-<arch>]` ×24 | the VS Code inner packages that need building (node-pty / @vscode/sqlite3 / kerberos / koffi / ssh2 / …) | gated when platform-specific |
-| `@jinsiyu/dsh-code-server-runtime-win32-<arch>` | platform aggregator: its `dependencies` map those 16 natives **plus argon2** back to their original names via `npm:` aliases | win32-<arch> |
+| `@jinsiyu/dsh-code-server-runtime-win32-<arch>` | platform aggregator: its `dependencies` map those 16 natives back to their original names via `npm:` aliases | win32-<arch> |
 
 | Goal | Command |
 |---|---|
-| **Build the latest code-server from npm** | `pnpm run vendor:latest` (= `--force`): snapshots `code-server@latest` into `vendor/code-server`; afterwards you **must** re-run `repack:build` and republish every sub-package |
-| **Pin a version** | `pnpm run vendor:code-server -- --version 4.136.2` |
-| **Snapshot from an existing tree** | `pnpm run vendor:code-server -- --from <code-server dir>` (seconds) |
+| **Build from the latest upstream release** | `pnpm run vendor:latest` (= `--force`): pulls `code-server@latest`'s tree into `vendor/vscode`; afterwards you **must** re-run `repack:build` and republish every sub-package |
+| **Pin a version** | `pnpm run vendor:vscode -- --version 4.136.2` |
+| **Snapshot from an existing tree** | `pnpm run vendor:vscode -- --from <code-server dir>` (seconds) |
 | **Rebuild every sub-package** | `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack` (without `--from` it npm-installs and compiles the source tree itself — slow) |
-| **Rebuild only the code-server/argon2 packages** | `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64 --pack` (reuses the natives already in `repack/build`, no source-tree analysis) |
+| **Rebuild only the tree/aggregator packages** | `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64 --pack` (reuses the natives already in `repack/build`) |
 | **Publish sub-packages** | `pnpm run publish:repacks` (`--dry-run` to preview; `--only <substr>` to filter; `--otp <code>` / `--limit N` for 2FA) |
 | **Publish the plugin itself** | `pnpm run publish:plugin` (publishes the exact tarball that was verified; no re-packing; default dist-tag `next`) |
 | **Promote `latest`** | `pnpm run promote -- <version>` (only after the user restarted and confirmed; `--dry-run` shows the current tags first) |
@@ -107,101 +121,73 @@ pnpm run promote -- <version>
 
 ```powershell
 # no postinstall in the package → no pnpm approve-builds / allowBuilds; one command installs everything
-dsh plugin --profile web add dsh-code-server-app@0.1.43
+dsh plugin --profile web add dsh-code-server-app@0.2.0
 # a local tarball works the same way:
-dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.1.43.tgz
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.2.0.tgz
 ```
 
 Ready to use immediately — **no second step, no "Install environment", no install-guide modal**.
-Since 0.1.40 the main package is only **~107KB** (the plugin's own code); everything else is dependencies:
+The main package is only **~110KB** (the plugin's own code plus the launcher); everything else is dependencies:
 
-- **the code-server tree** (`lib/vscode` 196.9MB + its own 136 runtime dependencies) is a **platform-independent
-  package** `@jinsiyu/dshcs-code-server@<code-server version>` declared in the plugin's `dependencies`; it runs from
-  `<profile>\node_modules\@jinsiyu\dshcs-code-server\code-server`;
+- **the VS Code tree** (`lib/vscode` 196.9MB + `out/browser` + `src/browser`) is a **platform-independent package**
+  `@jinsiyu/dshcs-vscode-server@<code-server version>` declared in the plugin's `dependencies`; it runs from
+  `<profile>\node_modules\@jinsiyu\dshcs-vscode-server\vscode` (the legacy full tree at
+  `@jinsiyu/dshcs-code-server/code-server` is still recognised as a fallback);
 - the **pure-JS part** of VS Code's inner dependencies (35 packages: xterm / katex / typescript / ws / tar …) is
   declared in the plugin's `dependencies` and installed by pnpm into the profile's `node_modules` (hoisted);
-- the **binary part** comes entirely from `@jinsiyu/dshcs-*` platform packages (one per platform, `os`/`cpu` gated):
-  `@jinsiyu/dshcs-argon2-win32-<arch>` and 16 native packages, mapped back to their **original names**
-  (`argon2` / `node-pty` / `@vscode/sqlite3` / …) by the **platform aggregator**
+- the **binary part** comes entirely from `@jinsiyu/dshcs-*` platform packages: 16 native packages mapped back to their
+  **original names** (`node-pty` / `@vscode/sqlite3` / `@vscode/spdlog` / …) by the **platform aggregator**
   `@jinsiyu/dsh-code-server-runtime-win32-<arch>` using `npm:` aliases; the aggregators sit in the plugin's
   `optionalDependencies`, so pnpm auto-selects the right platform;
 - consequently the dependency graph contains **no package with pre/install/postinstall or a `binding.gyp`** →
   no profile `allowBuilds`, no build script ever runs, and **the user machine needs no C++ toolchain**;
-- **upgrading the plugin no longer re-downloads code-server**: the tree package is cached by version, so only a
-  code-server version change pulls those ~60MB again (the argon2 platform package is only ~1.5MB).
+- **upgrading the plugin no longer re-downloads the tree**: the tree package is cached by version
+  (~60MB, ~197MB unpacked).
 
 ### Install mechanism (why it is built this way)
 
 - **The pnpm 11 hard constraint**: any package in the dependency graph whose manifest has
-  `preinstall|install|postinstall` (or whose tarball contains `binding.gyp`/`.hooks`) is treated as
-  "requires build" and must be approved through the **host profile's** `pnpm-workspace.yaml` (`allowBuilds`),
-  otherwise `dsh plugin add` exits 1 with `[ERR_PNPM_IGNORED_BUILDS]`. A dependency's own `pnpm.allowBuilds`,
-  `.npmrc`, the `patch:` protocol and `optionalDependencies` are all ineffective (measured 2026-09, pnpm 11.25);
-- **the code-server tree** is prepared at pack time with `npm install code-server@<version> --ignore-scripts`
-  (skips the official `sh ./postinstall.sh` — there is no `sh` on Windows and the script only accepts npm/yarn
-  user agents, so it always fails under pnpm) → supply the argon2 native binary (no Windows prebuild exists;
-  compile with `node-gyp-build`, or reuse an existing `argon2.node` via `DSHCS_ARGON2_BINARY`) → strip leftover
-  install scripts → snapshot to `vendor/code-server/`;
-- the same script then builds the **platform-independent tree package**: the tree lives in an inner `code-server/`
-  directory (npm/pnpm packing **always excludes the package root's `node_modules`**; a subdirectory covered by
-  `files` is included), the package declares **no `dependencies`** (those 136 packages are already files inside
-  `code-server/node_modules`; declaring them would make pnpm install a second copy) and its
-  `node_modules/argon2` is removed entirely;
-- **argon2** becomes two platform packages (`@jinsiyu/dshcs-argon2-win32-arm64` / `-x64`) built with the very same
-  rules as the other natives (delete `scripts`/`files`/`binding.gyp`, delete `prebuilds/` so both always load
-  `build/Release`), each compiled with `node-gyp rebuild --arch=<arch>` and PE-checked (0xaa64 / 0x8664);
-- **packages that need compiling** are repacked into `@jinsiyu/dshcs-*`:
-  copy the already-compiled package directory → **delete `scripts` / `files` / `binding.gyp` / `.hooks` /
-  `.npmignore`** (keeping the compiled `.node` and every runtime file) → rewrite dependencies that belong to the
-  same set to `npm:` aliases → platform-specific ones get an `os`/`cpu` pair and a `-<platform>-<arch>` suffix;
-- **the platform aggregator** maps those repacks and argon2 back to their original names (e.g.
-  `"node-pty": "npm:@jinsiyu/dshcs-node-pty@1.2.0-beta.15"`, `"argon2": "npm:@jinsiyu/dshcs-argon2-win32-arm64@0.44.0"`),
-  so code-server's and VS Code's `require(...)` calls need no change. The aggregator itself is `os`/`cpu` gated,
-  and the plugin declares both win32-arm64 and win32-x64 in `optionalDependencies` → one command picks the right one;
-- **resolution path**: the host resolves the runtime root with
-  `require.resolve('@jinsiyu/dshcs-code-server/package.json')` (then the inner `code-server/` directory) and
-  launches `code-server/out/node/entry.js`; inner dependencies resolve upward from there
-  (`code-server/node_modules` → the package's `node_modules` → `<profile>/node_modules`).
-- **runtime layout self-healing** (`ensureRuntimeLayout()` in `lib/native.js`, run idempotently on activation and
-  right before every code-server start): the host materialises two kinds of **junctions** (Windows junction /
-  POSIX directory symlink) inside the code-server tree:
-  1. `ensureAliasLinks()` — the native aliases brought back by the aggregator, linked into
-     `<code-server tree>/node_modules`. pnpm installs `os`/`cpu`-gated packages **nested inside the aggregator**,
-     and VS Code's `lib/vscode/out/server-main.js` loads them with **ESM `import`** (which ignores `NODE_PATH`) —
-     without the links the page returns HTTP 500;
-  2. `ensureInnerModuleLinks()` — VS Code's **inner dependency directories** `lib/vscode/node_modules` and
-     `lib/vscode/extensions/node_modules`, rebuilt from the two `package.json` dependency lists. The old model
-     installed them as real directories inside the tree; now they live flattened at the profile root, so code that
-     builds paths by hand (e.g. the built-in TS extension looking for
-     `<ext>/../node_modules/typescript/lib/tsserver.js`) would otherwise fail with
-     "VS Code's tsserver was deleted by another application…" (measured on 1.136.1).
-  Every link points at the package the package manager actually installed; stale links after a reinstall are
-  detected and recreated. The environment check resolves against both anchors (code-server root + aggregator
-  directory) and `NODE_PATH` still covers CJS as a fallback.
+  `preinstall|install|postinstall` (or that ships a `binding.gyp`/`.hooks`) counts as "needs building" and must be
+  approved by the **host profile's** `pnpm-workspace.yaml` via `allowBuilds`, otherwise `dsh plugin add` exits 1 with
+  `[ERR_PNPM_IGNORED_BUILDS]`. A dependency's own `pnpm.allowBuilds`, `.npmrc`, `patch:` protocol and
+  `optionalDependencies` do not help (measured 2026-09, pnpm 11.25);
+- **the tree** is prepared at pack time with `npm install code-server@<version> --ignore-scripts` (skipping the official
+  `sh ./postinstall.sh`, which cannot run on Windows), then `scripts/vendor-vscode-server.mjs` keeps **only the VS Code
+  tree**: `lib/vscode/**`, `out/browser/**`, `src/browser/**` plus the license files are copied to `vendor/vscode/`, and a
+  generated root `package.json` records the upstream code-server version. code-server's own `out/node/**` and its 136
+  runtime dependencies **no longer ship** — they are replaced by `lib/launcher.mjs`;
+- **the packages that need a toolchain** are repacked into `@jinsiyu/dshcs-*` by `scripts/vendor-repacks.mjs`:
+  the compiled package directory is copied and its `scripts` / `files` / `binding.gyp` / `.hooks` / `.npmignore` are
+  **removed** (the built `.node` and every runtime file stay) → sibling packages in its dependency list become `npm:`
+  aliases → platform-specific ones get `os`/`cpu` plus a `-<platform>-<arch>` suffix. For win32 targets the script also
+  verifies each `.node` PE machine (0x8664=x64 / 0xaa64=arm64) so a cross-compiled artifact cannot ship the wrong arch;
+- **the platform aggregator** maps those repacks back to their original names (e.g.
+  `"node-pty": "npm:@jinsiyu/dshcs-node-pty@1.2.0-beta.15"`), so VS Code's `import('node-pty')` needs no change; the
+  aggregator is itself `os`/`cpu` gated, and the plugin declares both win32-arm64 and win32-x64 in
+  `optionalDependencies`, so one command picks the right one;
+- **resolution path**: the host finds the tree with `require.resolve('@jinsiyu/dshcs-vscode-server/package.json')`
+  (then the inner `vscode/` directory) and the entry is `vscode/lib/vscode/out/server-main.js`; VS Code's inner deps are
+  resolved upwards from that root (`vscode/lib/vscode/node_modules` → package `node_modules` → `<profile>/node_modules`).
+  The legacy full tree (`@jinsiyu/dshcs-code-server/code-server`) is still recognised as a fallback;
+- **runtime layout self-healing** (`ensureRuntimeLayout()` in `lib/native.js`, idempotent, run **at activation before
+  `envCheck` and again before every start**): the host adds two kinds of **junctions** (Windows junctions / POSIX dir
+  symlinks) into the tree:
+  1. `ensureAliasLinks()`: re-links the native aliases the aggregator carries into `<tree>/node_modules` — pnpm nests
+     `os`/`cpu`-gated packages under the aggregator's own `node_modules`, and `lib/vscode/out/server-main.js` uses
+     **ESM imports** (ESM ignores `NODE_PATH`), so a missing link means an immediate 500;
+  2. `ensureInnerModuleLinks()`: restores VS Code's **inner dependency directories**
+     `lib/vscode/node_modules` and `lib/vscode/extensions/node_modules` from the two `package.json` files — the trimmed
+     tree ships neither, and code that builds dependency paths explicitly (e.g. the bundled TypeScript extension looking
+     for `<ext>/../node_modules/typescript/lib/tsserver.js`) otherwise reports
+     "VS Code's tsserver was deleted by another application…" (measured with 1.136.1).
+> **Size note**: the plugin tarball is **~110KB**; `@jinsiyu/dshcs-vscode-server` is **~60MB** (~197MB unpacked);
+> the 16 native packages add ~250MB. A full install downloads roughly 310MB. Neither `vendor/` nor `repack/` is committed to git (see `.gitignore`).
 
-> **Size note**: the plugin tarball is **~107KB**; `@jinsiyu/dshcs-code-server` is **~60.5MB** (242MB unpacked);
-> each argon2 platform package is **~1.5MB**; the 16 native packages add ~250MB. A full install downloads
-> roughly 315MB. Neither `vendor/` nor `repack/` is tracked by git (see `.gitignore`).
-
-> **Upgrading from ≤ 0.1.39**: code-server moved from a platform-specific sub-package to **one
-> platform-independent package plus two argon2 platform packages**, and every binary is now produced by the single
-> repack script. The upgrade command is unchanged
-> (`dsh plugin --profile web add dsh-code-server-app@<version>`); the old `dshcs-code-server-win32-*`
-> sub-packages are removed by pnpm.
-
-> **Upgrading from ≤ 0.1.35**: the old install root `<profile>\.code-server-app` (with ~1.4GB of inner
-> dependencies) and the "Install environment" step are gone. The new version detects the old root and logs that it
-> can be safely deleted: `Remove-Item -Recurse -Force <profile>\.code-server-app`. Old
-> `dsh-code-server-app: false` entries in the profile's `pnpm-workspace.yaml` can be removed too (no build
-> approval is needed any more).
-
-> **Uninstall**: `dsh plugin --profile web remove dsh-code-server-app` is enough; the tree package, argon2 and the
-> natives are separate dependencies, so to remove everything run e.g.
-> `dsh plugin --profile web remove @jinsiyu/dshcs-code-server` (or `pnpm remove` inside the profile);
-> if an old install root is still around, delete `<profile>\.code-server-app` manually.
-
-> After install/dependency changes, **restart `dsh web`** (the static plugin row and host probe paths load at startup).
-
+> **Upgrading from ≤ 0.1.43**: the tree package changed from `@jinsiyu/dshcs-code-server` (the full code-server tree with
+> `out/node` and 136 runtime deps) to `@jinsiyu/dshcs-vscode-server` (the trimmed tree). **The new code defaults to
+> `serve: loopback`, which behaves exactly like 0.1.43**; switch to `serve: dsh` for same-origin mounting. The install
+> command is unchanged (`dsh plugin --profile web add dsh-code-server-app@<version>`), and pnpm drops the old
+> `dshcs-code-server` sub-package.
 ### Development: install from source (changes take effect immediately)
 
 ```powershell
@@ -209,7 +195,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 ```
 
 > A source path installs via `link:`. On a dev machine without `vendor/code-server`, run
-> `pnpm run vendor:code-server` first. Dependencies (inner JS deps + the platform aggregator) are installed by pnpm
+> `pnpm run vendor:vscode -- --dev-links` first. Dependencies (inner JS deps + the platform aggregator) are installed by pnpm
 > too — but the not-yet-published local `@jinsiyu/*` packages must either be published first, or the
 > `repack/tgz/*.tgz` files must be installed into the profile as `file:` dependencies.
 >
@@ -225,7 +211,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 |---|---|---|---|
 | Node.js | **v24.x** (latest code-server requirement; v24.13.1 here) | required | required |
 | npm / pnpm | npm ships with Node; pnpm comes from DSH | required (installs deps) | required |
-| **MSVC build tools** | **VS Community 2026 + C++ desktop workload** | ❌ **not needed** | pack time (16 native packages + argon2) |
+| **MSVC build tools** | **VS Community 2026 + C++ desktop workload** | ❌ **not needed** | pack time (16 native packages) |
 | **VS Spectre-mitigated libs** | one set for ARM64 **and** one for x86/x64 ("MSVC v14x Spectre-mitigated libs") | ❌ not needed | pack time (otherwise MSB8040) |
 | Python | **3.13.x** | ❌ not needed | pack time (node-gyp) |
 | node-gyp | **13.x** (older versions don't recognize VS 2026) | ❌ not needed | pack time |
@@ -246,30 +232,30 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 - If you don't need the self-contained install (e.g. a global code-server already exists), skip it:
   the plugin falls back to a configured/PATH `bin` (see the "Config" table).
 
-### Upgrading the code-server version
+### Upgrading the VS Code tree (upstream = a code-server release)
 
-- **The version is decided at pack time**: `pnpm run vendor:latest` (= `--force`) rebuilds with the npm
-  **latest** version; or use `pnpm run vendor:code-server -- --version 4.136.2` / `DSHCS_CODE_SERVER_VERSION`.
-  With an existing `vendor/code-server`, a plain `pnpm pack` never upgrades (it is a no-op).
-- **Check first**: `pnpm run vendor:check` prints the bundled version / npm latest.
+- **The version is decided at pack time**: `pnpm run vendor:latest` (= `--force`) pulls the tree of the npm **latest**
+  release; or use `pnpm run vendor:vscode -- --version 4.136.2` / `DSHCS_CODE_SERVER_VERSION`.
+  With an existing `vendor/vscode`, a plain `pnpm pack` never upgrades (it is a no-op).
+- **Check first**: `pnpm run vendor:check` prints the bundled version / upstream latest.
 - **A version bump means rebuilding and republishing the sub-packages** (all with the same script):
   1. `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack` → the new tree package
-     (`@jinsiyu/dshcs-code-server@<new version>`), the new argon2 platform packages and the natives rebuilt
-     against the new inner dependencies (the script also rewrites the plugin's pure-JS `dependencies` and both
-     aggregator versions);
-  2. `pnpm run publish:repacks` → publish; then bump the plugin version → `pnpm pack` → publish the plugin.
+     (`@jinsiyu/dshcs-vscode-server@<new version>`) and the natives rebuilt against the new inner dependencies (the
+     script also rewrites the plugin's pure-JS `dependencies` and both aggregator versions);
+  2. `pnpm run republish:repacks` (`pnpm run publish:repacks`) → publish; then bump the plugin version → `pnpm pack`
+     → publish the plugin.
+- `productPath` (`<quality>-<commit>`, part of the client WebSocket path) is **computed from `lib/vscode/product.json`**,
+  so upgrading the tree needs no code change — but the routes are registered at activation, so restart `dsh web` afterwards.
 - **No runtime auto-upgrade anymore**: nothing fetches latest at startup; the version is fully determined by the bundled artifact.
-- Bundled locally right now: `code-server@4.136.2` (with Code 1.136.1).
+- Bundled locally right now: the tree of `code-server@4.136.2` (VS Code 1.136.1, `productPath=stable-8d5f383f…`).
 
 ### Compatibility with the old install locations
 
-Host probe order: `@jinsiyu/dshcs-code-server/code-server` (**the real layout since 0.1.40**) >
+Host probe order: `@jinsiyu/dshcs-vscode-server/vscode` (**the real layout since 0.2.0**) >
+`@jinsiyu/dshcs-code-server/code-server` (the full tree, 0.1.40–0.1.43) >
 `@jinsiyu/dshcs-code-server-<platform>-<arch>/code-server` (the 0.1.37 platform sub-packages) >
-the in-package `vendor/code-server` (0.1.36 and earlier / development) > the old install root
-`<profile>\.code-server-app\node_modules\code-server` (0.1.35 and earlier) > plugin-internal
-`node_modules/code-server` (development) > PATH/config `bin`. The old root is only mentioned in a startup log
-line; nothing writes to it any more.
-
+the in-package `vendor/vscode` > the in-package `vendor/code-server` (development). The old install root
+`<profile>\.code-server-app` is only mentioned in a startup log line; nothing writes to it any more.
 ## Settings card (Settings → Plugins → Code Server)
 
 Modeled after dsh-auto-open-web's custom card, registered on the `settings.plugin.item` slot,
@@ -285,7 +271,7 @@ persisted via the official settings domain (`settingsScope`, namespace `code-ser
 > so the host re-registers the settings namespace (schema includes the new key); otherwise save/validation of the new key won't work.
 
 The bottom of the card is **Environment check** (click "Check environment" to read the host `status.env`): entry,
-`native` (argon2), VS Code inner dependencies, and **prebuilt native packages** (platform aggregator name +
+the tree version / `productPath` / server entry, VS Code inner dependencies, and **prebuilt native packages** (platform aggregator name +
 resolved module count). Since 0.1.36 there is no "Install environment" button — dependencies are installed by the
 package manager, and the card only reports the result.
 
@@ -350,9 +336,19 @@ so users cannot remove it from the extensions panel.
 
 ## Known limitations
 
-- **No sub-path**: the code-server front-end uses root paths/WebSocket/Service Worker, so it must be a direct iframe on its own port;
-  no DSH webServer reverse proxy; `--base-path` is not officially supported.
-- **Single instance across sessions**: one shared code-server per host; switching cwd requires a restart (the sidebar tab / floating window handles it and hints).
-- **Sidebar tab switching reloads**: DSH's right sidebar renders only the active tab's body, so switching away and back remounts the iframe (a full code-server reload); keep the tab active or float it for long-running sessions.
-- **Remote access**: default is loopback + no auth. Cross-machine access requires `host` + `auth: password` + `passwordToken`,
-  and the browser must be able to reach that host directly (the plugin's "open in new tab" builds the URL from `host:port`).
+- ~~No sub-path~~ **no longer true (corrected with measurements in 0.2.0)**: the workbench HTML VS Code renders references
+  **only relative URLs** (9 references measured, 0 absolute; `serverBasePath="."`, `rootEndpoint="."`), and the client
+  builds its WebSocket path from `location.pathname + join(serverBasePath ?? '/', <quality>-<commit>)`. The IDE can
+  therefore be mounted directly under DSH's own `/code-server/*` (`serve: dsh`) — no second port, no HTML rewriting.
+  Item-by-item evidence: `docs/analysis-code-server-as-dsh-plugin.md`.
+- **`serve: dsh` cannot proxy forwarded-port WebSockets**: `registerUpgrade` matches exact paths while `/proxy/:port`
+  carries the port in the path, so WebSocket forwarding for the Ports panel is unavailable in that mode (HTTP forwarding
+  works). Use `serve: loopback` when you need it.
+- **`serve: dsh` shares DSH's origin**, so the iframe is not sandboxed there (same-origin plus `allow-same-origin` is
+  escapable by the frame itself); in `loopback` mode the iframe is cross-origin and `sandbox` stays as real protection.
+- **Single instance across sessions**: one shared IDE per host; switching cwd requires a restart (the sidebar tab /
+  floating window handles it and hints).
+- **Sidebar tab switching reloads**: DSH's right sidebar renders only the active tab's body, so switching away and back
+  remounts the iframe (a full VS Code reload); keep the tab active or float it for long-running sessions.
+- **Remote access**: with `serve: dsh` the browser only needs to reach DSH itself (one port, protected exactly like `/api`);
+  `serve: loopback` stays loopback-only with `auth: none`, and 0.2.0 no longer supports `auth: password`.
