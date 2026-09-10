@@ -1,25 +1,17 @@
 /**
  * dsh-code-server — 常驻 IDE 面(0.2.2)
  *
- * 背景(实测):DSH 的 ui-dockkit **只渲染当前激活标签的 body**(TabPanel.tsx:412 →
- * `renderTab(active)`),切走 = React 卸载 = iframe 被移出文档 = 浏览上下文销毁;
- * 再切回来就是一次完整的 VS Code 重载。浏览器实测:普通 `appendChild` 移动 iframe
- * 会让内部计时器归零(重载),而 **`Element.moveBefore()` 是状态保持型原子移动**
- * (Edge/Chromium 151 实测:计时器 1→2 连续,不重载)。
+ * 背景(实测):ui-dockkit 只渲染当前激活标签的 body(TabPanel.tsx:412),切走即 React 卸载 =
+ * iframe 被移出文档 = 浏览上下文销毁;而普通 `appendChild` 移动 iframe 会让内部计时器归零(等价重载),
+ * `Element.moveBefore()`(Chromium ≥133)才是状态保持型原子移动(实测计时器 1→2 连续)。
+ * 因此 iframe 由本模块持有:激活时 `host.moveBefore(frame, null)` 停靠,失活时移回文档级 park
+ * 容器(离屏、保留最后尺寸、不销毁),只有 src 真变化(工作区/端口)才显式导航。
  *
- * 因此本模块把 iframe 从 React 手里拿出来,做成**单例常驻面**:
- *   - 停靠(dock):`host.moveBefore(frame, null)` 把 iframe 移进当前可见的停靠位;
- *   - 停放(park):标签失活时移回文档级的 park 容器(离屏、保留最后尺寸),**不销毁**;
- *   - 于是切标签/收起侧栏/拖成浮动窗口都不再重载;只有 src 真变化(工作区/端口)才显式导航。
+ * 实测坑:曾出现"元素在、画面不重绘"(尺寸/命中/可见性全对但一片白);`translateZ(0)`、`opacity`
+ * 无效,`display:none → 强制重排 → 还原` 可在同一 JS 任务内恢复且不重载文档 —— 触发条件未复现,
+ * 故按兜底处理:每次"停放 → 停靠"补一次 `nudgeRepaint()`(`setNudgeEnabled(false)` 可现场 A/B)。
  *
- * 另一个实测坑(0.2.2 兜底):真实 GUI 里出现过一次"元素在、画面不重绘"——iframe 尺寸/命中/可见性全对,
- * 但面板一片白(两张截图字节相同,确认没有新帧)。`translateZ(0)`、`opacity` 微调无效,
- * `display:none → 强制重排 → 还原` 能在**同一个 JS 任务内**恢复:无可见闪烁、iframe 文档不重载、状态不变。
- * 触发条件未能复现(探针页离屏停放 337s 后移回、关闭该修复仍正常绘制),因此按**兜底**处理:
- * 每次"从停放到停靠"补一次 `nudgeRepaint()`(可用 `setNudgeEnabled(false)` 现场关掉做 A/B)。
- *
- * 不支持 `moveBefore` 的浏览器:退回 `appendChild`(即旧行为,会重载),并把 `degraded` 标记出来,
- * 由界面明示"常驻不可用",不静默失败。
+ * 不支持 `moveBefore` 时退回 `appendChild`(会重载)并标记 `degraded`,由界面明示,不静默失败。
  */
 
 /** 状态保持型移动是否可用(Chromium ≥133)。 */
@@ -221,7 +213,7 @@ function moveInto(target) {
   target.appendChild(state.frame)
 }
 
-/** 把常驻面停靠到 host 容器(host 通常是标签 body / 浮窗里的占位 div)。 */
+/** 把常驻面停靠到 host 容器(标签 body 里的占位 div)。 */
 export function dockInto(host, owner) {
   if (state.frame === null || host == null) return
   var wasParked = state.owner === null

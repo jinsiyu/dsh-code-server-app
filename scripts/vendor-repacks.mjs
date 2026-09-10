@@ -1,29 +1,21 @@
-// scripts/vendor-repacks.mjs — 打包期把「VS Code 树」与「pnpm 拒绝安装」的原生包全部打成可安装的预编译包。
+// scripts/vendor-repacks.mjs — 打包期把「VS Code 树」与「pnpm 拒绝安装」的原生包打成可安装的预编译包。
 //
 // 为什么:pnpm 认为「含安装脚本」或「含 binding.gyp / .hooks」的包需要构建,必须由宿主
-// pnpm-workspace.yaml 的 allowBuilds 批准,否则 dsh plugin add 直接 exit 1。VS Code 内部依赖里
-// 的一批原生包都属于这一类;树本身则因为 npm 打包永远排除**包根** node_modules 而必须重打包。
+// pnpm-workspace.yaml 的 allowBuilds 批准,否则 dsh plugin add 直接 exit 1;VS Code 内部依赖里的一批
+// 原生包都属于这一类。树本身则因为 npm 打包永远排除**包根** node_modules 而必须重打包。
 //
-// 产物(全部由本脚本统一生成,再由 scripts/publish-repacks.mjs 统一发布):
-//   ① @<scope>/dshcs-vscode-server@<code-server 版本>        平台无关:vendor/vscode 的树
-//      (lib/vscode + out/browser + src/browser);**不含** code-server 的 out/node 与其 136 个依赖
-//      —— 那层由插件自带的 lib/launcher.mjs 取代(见 docs/analysis-code-server-as-dsh-plugin.md);
-//   ② @<scope>/dshcs-<名字>[-<platform>-<arch>]@<版本>        VS Code 内部依赖里需要构建的包
-//      (node-pty / @vscode/sqlite3 / kerberos / koffi / ssh2 / …),
-//      依赖链上命中它们的包也一并重打包(含 optionalDependencies,如 @vscode/proxy-agent → windows-ca-certs);
-//   ③ @<scope>/dsh-code-server-runtime-<platform>-<arch>@<插件版本>  平台聚合包:
-//      dependencies 用 npm: 别名把 ② 装回**原始名字**(node-pty / @vscode/sqlite3 / …),
-//      这样 VS Code 的 require/import 不用改,插件只需按 os/cpu 声明 ①(常规依赖)+ ③(可选依赖)。
-//   (argon2 已随 code-server 服务层一起移除:auth=none 不再需要口令哈希。)
+// 产物(全部由本脚本生成,再由 scripts/publish-repacks.mjs 发布):
+//   ① @<scope>/dshcs-vscode-server@<code-server 版本>  vendor/vscode 的树(lib/vscode + out/browser
+//      + src/browser),不含 code-server 的 out/node 与它的 136 个依赖(那层由 lib/launcher.mjs 取代);
+//   ② @<scope>/dshcs-<名字>[-<platform>-<arch>]@<版本>  需要构建的原生包(node-pty / @vscode/sqlite3 /
+//      kerberos / koffi / ssh2 / …),依赖链上命中它们的包也一并重打包(含 optionalDependencies);
+//   ③ @<scope>/dsh-code-server-runtime-<platform>-<arch>@<插件版本>  平台聚合包:用 npm: 别名把 ② 装回
+//      原始名字,VS Code 的 require/import 无需改动;插件按 os/cpu 声明 ①(常规)+ ③(可选)依赖。
 //
-// 结果:pnpm install 不再遇到任何带构建信号的包 → 无需 allowBuilds、无需「安装环境」步骤。
-//
-// 用法:
-//   node scripts/vendor-repacks.mjs [--from <已完整安装的 code-server 树>] \
+// 用法:node scripts/vendor-repacks.mjs [--from <已完整安装的 code-server 树>]
 //        [--target win32-arm64,win32-x64] [--scope @jinsiyu] [--pack]
-//   不给 --from 时自动准备源树(按 vendor/VENDOR.json 的版本 npm install --ignore-scripts,
-//   再在 lib/vscode 里解包 + rebuild;耗时且需要工具链,维护者换版本时用)。
-//   --pack 会用 npm pack 生成 repack/tgz/*.tgz(随后用 scripts/publish-repacks.mjs 发布)。
+//   不给 --from 时自动准备源树(按 vendor/VENDOR.json 的版本 npm install --ignore-scripts,再在
+//   lib/vscode 里解包 + rebuild;耗时且需要工具链,维护者换版本时用)。--pack 生成 repack/tgz/*.tgz。
 import { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, writeFileSync, cpSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

@@ -1,6 +1,6 @@
 // scripts/build-client.mjs — 构建 client bundle(单文件,loader 工厂格式)
 // esbuild CJS 打包 src/factory.js → lib/client.js:
-//   - 无第三方运行时依赖(body 只有插件自身代码 + ./surface.js;0.2.3 删除浮窗后不再内嵌 motion);
+//   - body 只有插件自身代码(+ ./surface.js、./address.js),无第三方运行时依赖;
 //   - react / react/jsx-runtime 外置为静态 require,落在外层 factory(require) 参数上(DSH 冻结模块表);
 //   - banner/footer 包出 window.__ModuleLoader__.load({ id, factory }) 形态,
 //     factory 内部提供 module/exports,末尾 return module.exports。

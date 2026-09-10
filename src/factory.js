@@ -1,32 +1,19 @@
-// dsh-code-server — client bundle(右侧栏标签常驻 iframe;**只支持带右侧栏的 DSH**)
-// 构建:node scripts/build-client.mjs → lib/client.js。
-// 产物形态:window.__ModuleLoader__.load({ id, factory })——esbuild 以 CJS 打包,
-// 整个 bundle 内嵌进 factory 函数体,静态 require('react'/'react/jsx-runtime')
-// 直接落在 factory 的 require 参数上(DSH 冻结模块表;种子含 react/jsx-runtime)。
-// 唯一源码:src/factory.js;改动后执行 `pnpm run build:client` 重新生成 lib/client.js。
+// dsh-code-server — client bundle(右侧栏标签内的常驻 IDE 面;**只支持带右侧栏的 DSH**)
+// 构建:`pnpm run build:client` → lib/client.js;产物形态 window.__ModuleLoader__.load({id,factory}),
+// factory 内静态 require('react')/('react/jsx-runtime')(DSH 冻结模块表)。
 //
-// 数据通道:同源 fetch DSH Connection 的共享 /api 通道(host: ctx.connection.fetch.register)
-//   GET  /api/code-server/status → { ok, running, status, port, host, pid, cwd, url, version, error, logTail, adopted }
-//   POST /api/code-server/start  → { cwd? } → status
-//   POST /api/code-server/stop   → status
-//   POST /api/code-server/setup / open-file
-//   POST /api/code-server/ui-mode → { sidebar: boolean }(客户端上报本部署是否带右侧栏)
-// web 与 desktop 路径相同:web 由 webServer 的 /api 前缀承载,desktop 由 IPC 帧管道承载 → 插件不依赖 webServer。
+// 数据通道:同源 fetch DSH Connection 的共享 /api(status / start / stop / setup / open-file / ui-mode;
+// web 走 webServer 的 /api 前缀,desktop 走 IPC 帧管道 → 插件不依赖 webServer)。
 //
-// UI 载体:仅**右侧栏标签**一种(DSH ≥ 0.1.5-alpha.1 的 sidebarRightTabs / sidebarRight 服务):
-//     - 一段:ctx.sidebarRightTabs.register({ id, kind, priority, patterns, canOpen, title, guide })
-//       → 右侧栏 guide 页出现入口框(data-sidebar-right-guide-entry="code-server")
-//       → 同时**认领文件地址**(`dsh-resource://file/**`):官方 openFile(产物 chip、
-//         "交付"卡片预览、正文内联提及)与任何第三方 openResource(fileAddress) 都落到本 tab。
-//     - 二段:ctx.slots.register({ name:'sidebar.right.pane.tab', key:id }, CodeServerBody)
-//       → tab 内渲染常驻 code-server iframe;body 经 props.useTabInfo() 取 navigation(address/params/revision)
+// UI 载体只有右侧栏标签(需要 sidebarRightTabs / sidebarRight 服务,DSH ≥ 0.1.5-alpha.1):
+//   一段 ctx.sidebarRightTabs.register({ id, kind, priority, patterns, canOpen, title, guide })
+//     → guide 页入口框;并通过 patterns 认领 `dsh-resource://file/**` 文件地址,成为官方 openFile
+//       (产物 chip / "交付"卡片预览 / 正文提及)与任何 openResource(fileAddress) 的落点。
+//   二段 ctx.slots.register({ name:'sidebar.right.pane.tab', key:id }, CodeServerBody)
+//     → tab 内渲染常驻 iframe;body 从 navigation.address 解析文件并让 workbench 定位。
 //
-// 0.2.5 起文件打开走官方入口:不再顶掉官方 `conversation.chat.turnTail` 产物行(0.2.4 及更早用
-// priority:-9 劫持该链并自绘产物行);body 从 navigation.address 解析文件并让 workbench 定位它。
-//
-// 0.2.3 起**不再兼容旧版 DSH**:不再提供悬浮球与内部浮动窗口回退。
-// 探测不到右侧栏服务时,除「设置 → 插件 → Code Server」的一条提示外,不注册任何 UI,
-// 也不预热/启动 IDE;同时上报 host(/ui-mode),让 host 停掉已自动预启动的实例。
+// 探测不到右侧栏服务(旧版 DSH)时:除「设置 → 插件 → Code Server」的一条提示外不注册任何 UI、
+// 不预热 IDE,并上报 host /ui-mode 让它回收已自动预启动的实例。
 import {
   basenameOfAddress,
   claimsAddress,
@@ -217,21 +204,6 @@ let React = require('react')
       return null
     }
 
-    /** 在浏览器新标签页打开 code-server(windowedOpen=true 的入口共用);未运行先启动。 */
-    function openExternalTab(cwd) {
-      var openTab = function (s) {
-        var u = buildPageUrl(s, cwd)
-        if (u != null && typeof window.open === 'function') window.open(u, '_blank', 'noopener')
-      }
-      var current = getState().status
-      if (current != null && current.running === true) { openTab(current); return }
-      if (getState().busy === true) return
-      setState({ busy: true })
-      api('/code-server/start', typeof cwd === 'string' ? { cwd: cwd } : {})
-        .then(function (s) { setState({ status: s, busy: false }); openTab(s) })
-        .catch(function () { setState({ busy: false }) })
-    }
-
     // ---------- 样式(主题变量 + 兜底值;只覆盖插件自身结构) ----------
     var CSS =
       // 常驻 IDE 面:iframe 由 surface.js 持有,借 moveBefore 在停靠位/停放区之间搬
@@ -265,7 +237,7 @@ let React = require('react')
     var LEGACY_REPORT_MS = 10000
     /** 服务已在注册表、但 ctx.inject 迟迟不回调时的兜底注册延迟。 */
     var SYNC_FALLBACK_MS = 1500
-    // 产物按钮/设置卡调用侧栏的桥接;legacy(旧版 DSH)时保持 null。
+    // 设置卡/guide 入口调用侧栏的桥接;legacy(旧版 DSH)时保持 null。
     var sidebarBridge = { openTab: null }
 
     /** 侧栏入口图标:code-server 官方图标(内联 data URI,不依赖服务端路径)。 */
@@ -471,7 +443,7 @@ let React = require('react')
       '.dshcs-field+.dshcs-field{border-top:1px solid var(--dsw-alias-border-l2)}' +
       '.dshcs-fieldHead{align-items:center;gap:8px;display:flex}' +
       '.dshcs-fieldLabel{min-width:0;color:var(--dsw-alias-label-primary);flex:1;font-size:13px;font-weight:500;line-height:1.5}' +
-      '.dshcs-hint{color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary));margin:0;font-size:12px;line-height:1.5}' +
+      '.dshcs-card .dshcs-hint{color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary));margin:0;font-size:12px;line-height:1.5}' +
       '.dshcs-check{display:flex;align-items:center;gap:8px;cursor:pointer}' +
       '.dshcs-check input{accent-color:var(--dsw-alias-brand-primary);width:15px;height:15px;margin:0;flex:none}' +
       '.dshcs-check input:disabled{cursor:default}' +
@@ -581,7 +553,7 @@ let React = require('react')
       try {
         var scope = props.scope
         var [snapshot, setSnapshot] = React.useState(function () { return scope !== undefined ? scope.getSnapshot() : null })
-        var [draft, setDraft] = React.useState(null) // null | { reserveComposer, windowedOpen, keepResident }(未保存草稿)
+        var [draft, setDraft] = React.useState(null) // null | { keepResident, fileOpenScope }(未保存草稿)
         var [saving, setSaving] = React.useState(false)
         var [failed, setFailed] = React.useState(false)
         // 共享 store:读取当前 UI 载体状态(右侧栏是否就绪 / 是否旧版 DSH),必须放在所有提前 return 之前
@@ -613,7 +585,6 @@ let React = require('react')
       var value = snapshot.value !== undefined && snapshot.value !== null ? snapshot.value : {}
       var user = snapshot.user
       var loaded = {
-        windowedOpen: value.windowedOpen === true,
         keepResident: value.keepResident !== false,
         fileOpenScope: value.fileOpenScope === 'all' ? 'all' : 'session',
       }
@@ -637,12 +608,10 @@ let React = require('react')
           )
         )
       }
-      var overriddenWin = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'windowedOpen')
       var overriddenKeep = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'keepResident')
       var overriddenScope = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'fileOpenScope')
       var sidebarActive = liveStore != null && liveStore.sidebarActive === true
-      var dirty = draft !== null && (draft.windowedOpen !== loaded.windowedOpen
-        || draft.keepResident !== loaded.keepResident
+      var dirty = draft !== null && (draft.keepResident !== loaded.keepResident
         || draft.fileOpenScope !== loaded.fileOpenScope)
       var saveDisabled = !dirty || saving
       var state = {
@@ -664,7 +633,6 @@ let React = require('react')
           setSaving(true); setFailed(false)
           try {
             var d = draft !== null ? draft : loaded
-            await props.scope.set('windowedOpen', d.windowedOpen === true)
             await props.scope.set('keepResident', d.keepResident === true)
             await props.scope.set('fileOpenScope', d.fileOpenScope === 'all' ? 'all' : 'session')
             setDraft(null)
@@ -681,11 +649,9 @@ let React = require('react')
         try {
           // unset 清除 user 覆盖层 → 回到 base 默认值;成功后镜像同步
           if (typeof props.scope.unset === 'function') {
-            await props.scope.unset('windowedOpen')
             await props.scope.unset('keepResident')
             await props.scope.unset('fileOpenScope')
           } else {
-            await props.scope.set('windowedOpen', value.windowedOpen === true)
             await props.scope.set('keepResident', value.keepResident === undefined || value.keepResident === null ? true : value.keepResident)
             await props.scope.set('fileOpenScope', value.fileOpenScope === 'all' ? 'all' : 'session')
           }
@@ -736,7 +702,7 @@ let React = require('react')
       )
       return React.createElement(csCard, {
         title: 'Code Server',
-        description: '入口:右侧栏标签(DSH ≥ 0.1.5-alpha.1);窗口化设置控制新标签页打开',
+        description: '入口:右侧栏标签(DSH ≥ 0.1.5-alpha.1);认领范围决定哪些文件交给 Code Server 打开',
         state: state,
         unsavedLabel: '未保存', readOnlyLabel: '本部署的设置为只读。',
         saveFailedLabel: '本部署没有接受这些值，已保留供你修改。',
@@ -756,7 +722,7 @@ let React = require('react')
           ),
           React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 6 } },
             liveStore != null && liveStore.sidebarRegisterFailed === true
-              ? '⚠ 已探测到右侧栏服务,但标签注册失败(控制台有 [code-server] 报错);IDE 仍可通过"窗口化打开(新标签页)"使用。'
+              ? '⚠ 已探测到右侧栏服务,但标签注册失败(控制台有 [code-server] 报错);请修好后刷新页面。'
               : '当前:右侧栏标签,并**认领文件地址**——DSH 官方的产物 chip、"交付"卡片预览、正文里的文件名点击都会在 Code Server 里打开。')
         ),
         React.createElement('div', { className: 'dshcs-field' },
@@ -783,23 +749,6 @@ let React = require('react')
             '会话内文件 = DSH 用 `dsh-resource://file/session/…` 命名的文件(产物、交付、正文提及、工具视图);'
             + '“所有文件”还会认领不带会话的绝对路径 `dsh-resource://file/absolute/…`。'
             + '未被认领的地址由 DSH 自带预览兜底。')
-        ),
-        React.createElement('div', { className: 'dshcs-field' },
-          React.createElement('div', { className: 'dshcs-fieldHead' },
-            React.createElement('span', { className: 'dshcs-fieldLabel' }, '窗口化打开(新标签页)'),
-            overriddenWin === true
-              ? React.createElement(csBadges, {
-                  overridden: true, disabled: snapshot.writable !== true,
-                  overriddenLabel: '已覆盖', resetLabel: '恢复默认',
-                  onReset: function () { doReset() },
-                })
-              : null
-          ),
-          React.createElement(csCheck, {
-            checked: draft !== null ? draft.windowedOpen : loaded.windowedOpen,
-            disabled: snapshot.writable !== true,
-            onChange: function (v) { setDraft(function (prev) { return Object.assign({}, prev !== null ? prev : loaded, { windowedOpen: v === true }) }); setFailed(false) },
-          }, '开启后入口(设置卡按钮/guide 入口框)在浏览器新标签页打开 code-server(自动启动并跟随当前工作区);关闭则使用右侧栏标签')
         ),
         React.createElement('div', { className: 'dshcs-field' },
           React.createElement('div', { className: 'dshcs-fieldHead' },
@@ -874,8 +823,7 @@ let React = require('react')
         csSettingsPage
       ))
 
-      // ---- 能力探测:只有带右侧栏服务(DSH ≥ 0.1.5-alpha.1)才注册可用 UI ----
-      // 旧的“悬浮球 + 内部浮动窗口”回退已在 0.2.3 删除:探测不到服务时除设置页提示外什么都不注册。
+      // ---- 能力探测:只有带右侧栏服务(DSH ≥ 0.1.5-alpha.1)才注册可用 UI;探测不到就只留设置页提示 ----
       var modernSettled = false
 
       function onModernUi(sctx, via) {
@@ -900,9 +848,8 @@ let React = require('react')
           { name: 'shell.overlay', id: 'code-server', order: 70, label: 'Code Server' },
           (props) => React.createElement(Resident, props)
         ))
-        // 0.2.5 起**不再注册 conversation.chat.turnTail**:官方的产物/交付行由
-        // ui-deliverables 自己渲染,我们通过上面的 patterns/canOpen 认领文件地址,
-        // 使官方的 openFile(产物 chip、交付卡片预览、正文内联提及)在本 tab 打开。
+        // 不注册 conversation.chat.turnTail:官方产物/交付行由 ui-deliverables 渲染,
+        // 我们只通过 patterns/canOpen 认领文件地址,让它的 openFile 落到本 tab。
         console.log('[code-server] client registered via ' + via + ': sidebar tab=' + registered
           + '(claims dsh-resource://file/**) + resident preload + settings card')
       }
