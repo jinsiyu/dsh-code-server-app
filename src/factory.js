@@ -32,6 +32,17 @@
 //   - 窗口 pointer-events:auto,顶部细条 pointerdown 拖动(setPointerCapture),
 //     双击最大化,8 个 resize handle 缩放,min 尺寸约束,viewport 边缘 clamp。
 import { motion } from 'motion/react';
+// 常驻 IDE 面:iframe 由 surface.js 持有,不随 React 装卸(切标签/收起侧栏不重载)
+import {
+  dockInto,
+  ensureSurface,
+  parkSurface,
+  preloadSurface,
+  setSurfaceSrc,
+  subscribeSurface,
+  supportsMoveBefore,
+  surfaceSnapshot,
+} from './surface.js';
 
 // 工厂体:module/exports/require 由构建产物外层的 factory 参数提供(见 footer/banner)
 let React = require('react')
@@ -125,37 +136,51 @@ let React = require('react')
       return status.url + '?folder=' + encodeURIComponent(folder)
     }
 
-    /** code-server 内容区(浮窗与右侧栏标签共用):运行中 → iframe;启动中 → 占位 + 提示;否则 → 诊断面板。
-     *  reloadTick 变化强制重建 iframe(切工作区/重试);返回元素由调用方放进 .dshcs-body / .dshcs-tabroot。 */
-    function serverBody(status, pageUrl, reloadTick) {
+    /** 常驻 IDE 面组件(浮窗与右侧栏标签共用):只渲染"停靠位",iframe 由 surface.js 持有,
+     *  经 moveBefore 移入/移出 —— 切标签、收起侧栏、拖成浮动窗口都不再重载。
+     *  reloadTick 变化 = 显式重载(切工作区/重试);owner 用于多停靠位仲裁:后停靠者接管,
+     *  非当前停靠者卸载时不得把面拽走。 */
+    function CodeServerSurface(props) {
+      var status = props.status
+      var pageUrl = props.pageUrl
+      var reloadTick = props.reloadTick
+      var owner = props.owner
+      var hostRef = React.useRef(null)
       var running = status != null && status.ok === true && status.running === true
       var starting = status != null && status.status === 'starting'
       var errored = status != null && status.ok === false
-      // serve=dsh 时 iframe 与 DSH 同源:此时再挂 sandbox(含 allow-same-origin)= 可被 frame 自己摘掉,
-      // 属于"看起来有防护";故同源模式不挂 sandbox,只保留 allow(Permissions Policy 授予剪贴板读写)。
-      // serve=loopback 时 iframe 跨源(127.0.0.1:<port>),sandbox 是真防护,维持原样。
+      // serve=dsh 时 iframe 与 DSH 同源(不挂 sandbox);loopback 跨源,sandbox 是真防护。
       var sameOrigin = status != null && status.serve === 'dsh'
-      var attrs = {
-        key: reloadTick,
-        className: 'dshcs-frame',
-        src: '',
-        title: 'code-server',
-        allow: 'clipboard-read; clipboard-write',
+
+      // 停靠必须在绘制前完成(useLayoutEffect)→ 不闪白;src 变化时只做"重新停靠 + 导航"。
+      React.useLayoutEffect(function () {
+        if (!running || pageUrl === null) {
+          // 未运行/启动中:本组件不再渲染停靠位(React 会摘掉 slot)。必须先把面收回停放区,
+          // 否则 iframe 会留在被摘除的宿主里(源容器脱离文档 → 下次 moveBefore 抛错并降级)。
+          parkSurface(owner)
+          return
+        }
+        ensureSurface({ src: pageUrl, sameOrigin: sameOrigin })
+        if (hostRef.current !== null) dockInto(hostRef.current, owner)
+      }, [running, pageUrl, sameOrigin, reloadTick, owner])
+
+      // 停放必须用 **layout** cleanup:React 在提交阶段先跑 layout effect 销毁、再摘除 DOM,
+      // 此时 iframe 仍连着文档 → moveBefore 成功(状态保持);若放到 passive cleanup,
+      // 宿主已被摘除,实测会抛 HierarchyRequestError 并把 iframe 丢掉。
+      React.useLayoutEffect(function () {
+        return function () { parkSurface(owner) }
+      }, [owner])
+
+      if (running && pageUrl !== null) {
+        return React.createElement('div', {
+          ref: hostRef,
+          className: 'dshcs-slot',
+          'data-code-server-slot': owner != null ? owner : 'code-server',
+        })
       }
-      if (!sameOrigin) {
-        attrs.sandbox = 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock allow-clipboard-read allow-clipboard-write'
-      }
-      var frame = function (src) {
-        // 用 Object.assign 保持 attrs 复用;src 为空(about:blank)时不设该属性
-        return React.createElement('iframe', Object.assign({}, attrs, { src: src }))
-      }
-      if (running && pageUrl !== null) return frame(pageUrl)
       if (starting) {
-        // 启动中:立即渲染 iframe(about:blank)+ 加载提示;running 后由轮询自动替换 src
-        return React.createElement(React.Fragment, null,
-          frame('about:blank'),
-          React.createElement('div', { className: 'dshcs-loading' }, '正在启动 code-server…')
-        )
+        // 启动中:先给占位与提示;常驻面由上一次的 cleanup 停在停放区,启动完成后自动停靠。
+        return React.createElement('div', { className: 'dshcs-loading' }, '正在启动 code-server…')
       }
       var errText = errored && status != null && status.error
         ? status.error
@@ -163,6 +188,9 @@ let React = require('react')
       var modeHint = sameOrigin
         ? '当前以 DSH 同源路径 ' + ((status != null && status.url) || '/code-server/') + ' 提供(无独立端口)。'
         : '当前以独立回环端口提供(端口 ' + (status != null && status.port != null ? status.port : '8090') + ' 被占用时请释放或修改 port 配置)。'
+      var residentHint = supportsMoveBefore
+        ? '常驻面:可用(切标签/收起侧栏不重载)。'
+        : '常驻面:当前浏览器不支持 Element.moveBefore —— 切标签会整页重载(升级浏览器后自动可用)。'
       return React.createElement('div', { className: 'dshcs-empty' },
         React.createElement('div', { className: 'dshcs-emptybox' },
           React.createElement('div', null, errored ? 'code-server 启动失败' : 'code-server 未运行'),
@@ -171,8 +199,24 @@ let React = require('react')
             'VS Code 树随插件包内置、就地运行(无需全局安装、无需联网安装、无「安装环境」步骤);' +
             '内部依赖与预编译原生模块由包管理器在安装插件时一并装好(无需 C++ 工具链)。' +
             '若此处长期未运行,请到 设置 → 插件 → Code Server 点「检测环境」查看原因。' +
-            modeHint)
+            modeHint + residentHint)
         ))
+    }
+
+    /** 后台常驻预热(keepResident=true):宿主 running 后立即在停放区加载 workbench,
+     *  首次点开免等待。它不占任何插槽位置,也不把已停靠的面拽走。 */
+    function Resident(props) {
+      var store = useStore()
+      var status = store.status
+      var running = status != null && status.ok === true && status.running === true
+      var keep = status != null && status.keepResident === true
+      var cwd = activeWorkspaceCwd(props && props.useSessions, props && props.useWorkspaces)
+      var url = running ? buildPageUrl(status, cwd) : null
+      React.useEffect(function () {
+        if (!keep || !running || url === null) return
+        preloadSurface({ src: url, sameOrigin: status != null && status.serve === 'dsh' })
+      }, [keep, running, url, status != null ? status.serve : null])
+      return null
     }
 
     /** 在浏览器新标签页打开 code-server(windowedOpen=true 的入口共用);未运行先启动。 */
@@ -376,6 +420,9 @@ let React = require('react')
       '.dshcs-ball-dot[data-status=running]::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:1px solid currentColor;opacity:.3;animation:dshcs-pulse 2s ease-out infinite}' +
       // 右侧栏标签 body:撑满面板(iframe/空态复用窗口内同一套 .dshcs-frame/.dshcs-empty)
       '.dshcs-tabroot{position:relative;display:flex;flex-direction:column;width:100%;height:100%;min-width:0;min-height:0;background:var(--dsw-alias-bg-base,#fff)}' +
+      // 常驻面:停靠位占满面板;停放容器离屏(或按策略压在面板下),iframe 始终是同一个(见 src/surface.js)
+      '.dshcs-slot{position:relative;display:block;width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;background:var(--dsw-alias-bg-base,#fff)}' +
+      '.dshcs-park{position:fixed;left:-20000px;top:0;width:320px;height:200px;overflow:hidden;pointer-events:none;z-index:0;visibility:hidden;contain:strict}' +
       '@keyframes dshcs-pulse{0%{transform:scale(.7);opacity:.35}70%,100%{transform:scale(1.65);opacity:0}}'
     var CSS_TAG = 'dsh-code-server/styles'
     if (typeof document !== 'undefined' && document.querySelector('style[data-dshcs=' + JSON.stringify(CSS_TAG) + ']') === null) {
@@ -786,7 +833,9 @@ let React = require('react')
         ? baseUrl + (folderParam !== null ? '?folder=' + encodeURIComponent(folderParam) : '')
         : null
 
-      var body = serverBody(status, pageUrl, reloadTick)
+      var body = React.createElement(CodeServerSurface, {
+        status: status, pageUrl: pageUrl, reloadTick: reloadTick, owner: 'window',
+      })
 
       var className = ['dshcs-win', maximized ? 'dshcs-win-max' : '', snapMax ? 'dshcs-win-snap' : '', store.open === false ? 'dshcs-win-hidden' : ''].filter(Boolean).join(' ')
       // 最大化由 rect 驱动(maximizedRect 占满"输入栏上方"区域),不用 CSS inset;
@@ -900,9 +949,9 @@ let React = require('react')
       })
     }
 
-    /** 右侧栏 tab 的 body:面板里铺满 code-server iframe。
-     *  与浮窗共用共享 store 与 serverBody 渲染;挂载即让实例跟随当前会话工作区。
-     *  注:ui-dockkit 只渲染当前激活标签的 body → 切走再切回会重挂 iframe(接受整页重载)。 */
+    /** 右侧栏 tab 的 body:面板里铺满常驻 IDE 面(iframe 由 surface.js 持有)。
+     *  与浮窗共用共享 store 与 CodeServerSurface;挂载即让实例跟随当前会话工作区。
+     *  0.2.2 起 ui-dockkit 的"切走即卸载 body"不再导致重载:卸载只把面停放到停放区。 */
     function CodeServerBody(props) {
       var info = props.useTabInfo()
       var tab = info.tab
@@ -948,7 +997,9 @@ let React = require('react')
       }, [revision])
 
       return React.createElement('div', { className: 'dshcs-tabroot', 'data-code-server-tab': 'body' },
-        serverBody(status, buildPageUrl(status, cwd), tick)
+        React.createElement(CodeServerSurface, {
+          status: status, pageUrl: buildPageUrl(status, cwd), reloadTick: tick, owner: 'tab:' + tab.id,
+        })
       )
     }
 
@@ -1122,11 +1173,16 @@ let React = require('react')
       try {
         var scope = props.scope
         var [snapshot, setSnapshot] = React.useState(function () { return scope !== undefined ? scope.getSnapshot() : null })
-        var [draft, setDraft] = React.useState(null) // null | { reserveComposer, windowedOpen }(未保存草稿)
+        var [draft, setDraft] = React.useState(null) // null | { reserveComposer, windowedOpen, keepResident }(未保存草稿)
         var [saving, setSaving] = React.useState(false)
         var [failed, setFailed] = React.useState(false)
         // 共享 store:读取当前 UI 载体(右侧栏标签 / 悬浮球),必须放在所有提前 return 之前
         var liveStore = useStore()
+        // 常驻面实时状态(停靠/停放/降级):卡片里显示,便于判断"切标签是否还会重载"
+        var [surfaceState, setSurfaceState] = React.useState(surfaceSnapshot())
+        React.useEffect(function () {
+          return subscribeSurface(function (snap) { setSurfaceState(snap) })
+        }, [])
         React.useEffect(function () {
           if (scope === undefined || typeof scope.subscribe !== 'function') return
           function onUpdate() {
@@ -1151,11 +1207,15 @@ let React = require('react')
       var loaded = {
         reserveComposer: value.reserveComposer !== false,
         windowedOpen: value.windowedOpen === true,
+        keepResident: value.keepResident !== false,
       }
       var overridden = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'reserveComposer')
       var overriddenWin = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'windowedOpen')
+      var overriddenKeep = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'keepResident')
       var sidebarActive = liveStore != null && liveStore.sidebarActive === true
-      var dirty = draft !== null && (draft.reserveComposer !== loaded.reserveComposer || draft.windowedOpen !== loaded.windowedOpen)
+      var dirty = draft !== null && (draft.reserveComposer !== loaded.reserveComposer
+        || draft.windowedOpen !== loaded.windowedOpen
+        || draft.keepResident !== loaded.keepResident)
       var saveDisabled = !dirty || saving
       var state = {
         available: true,
@@ -1180,6 +1240,7 @@ let React = require('react')
             var d = draft !== null ? draft : loaded
             await props.scope.set('reserveComposer', d.reserveComposer === true)
             await props.scope.set('windowedOpen', d.windowedOpen === true)
+            await props.scope.set('keepResident', d.keepResident === true)
             setDraft(null)
             syncStatusToStore()
           } catch (e) {
@@ -1196,9 +1257,11 @@ let React = require('react')
           if (typeof props.scope.unset === 'function') {
             await props.scope.unset('reserveComposer')
             await props.scope.unset('windowedOpen')
+            await props.scope.unset('keepResident')
           } else {
             await props.scope.set('reserveComposer', value.reserveComposer === undefined || value.reserveComposer === null ? true : value.reserveComposer)
             await props.scope.set('windowedOpen', value.windowedOpen === true)
+            await props.scope.set('keepResident', value.keepResident === undefined || value.keepResident === null ? true : value.keepResident)
           }
           setDraft(null)
           syncStatusToStore()
@@ -1304,6 +1367,28 @@ let React = require('react')
             disabled: snapshot.writable !== true,
             onChange: function (v) { setDraft(function (prev) { return Object.assign({}, prev !== null ? prev : loaded, { windowedOpen: v === true }) }); setFailed(false) },
           }, '开启后入口(产物按钮/设置卡/悬浮球)在浏览器新标签页打开 code-server(自动启动并跟随当前工作区);关闭则使用右侧栏标签或内部浮动窗口')
+        ),
+        React.createElement('div', { className: 'dshcs-field' },
+          React.createElement('div', { className: 'dshcs-fieldHead' },
+            React.createElement('span', { className: 'dshcs-fieldLabel' }, '后台常驻(切标签不重载)'),
+            overriddenKeep === true
+              ? React.createElement(csBadges, {
+                  overridden: true, disabled: snapshot.writable !== true,
+                  overriddenLabel: '已覆盖', resetLabel: '恢复默认',
+                  onReset: function () { doReset() },
+                })
+              : null
+          ),
+          React.createElement(csCheck, {
+            checked: draft !== null ? draft.keepResident : loaded.keepResident,
+            disabled: snapshot.writable !== true,
+            onChange: function (v) { setDraft(function (prev) { return Object.assign({}, prev !== null ? prev : loaded, { keepResident: v === true }) }); setFailed(false) },
+          }, '开启后宿主启动即把 IDE 加载到后台"停放区":切换右侧栏标签、收起/展开侧栏、拖成浮动窗口都不再重载,首次打开免等待;关闭则只在打开面板时加载(省内存)'),
+          React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 4 } },
+            supportsMoveBefore
+              ? '常驻面:' + (surfaceState.docked ? '已停靠' : (surfaceState.ready ? '已停放(后台运行中)' : '未启动'))
+                + (surfaceState.degraded ? ' · 本次发生过降级重载' : '')
+              : '当前浏览器不支持 Element.moveBefore(Chromium <133)→ 常驻不可用,切标签仍会整页重载(升级浏览器后自动生效)')
         ),
         React.createElement('div', { className: 'dshcs-field' },
           React.createElement('div', { className: 'dshcs-fieldHead' },
@@ -1436,7 +1521,9 @@ let React = require('react')
         { name: 'shell.overlay', id: 'code-server', order: 70, label: 'Code Server' },
         (props) => React.createElement(React.Fragment, null,
           React.createElement(Ball, props),
-          React.createElement(Window, props)
+          React.createElement(Window, props),
+          // 常驻预热:始终挂载(不渲染任何东西),宿主 running 时把 IDE 加载到停放区
+          React.createElement(Resident, props)
         )
       ))
 
