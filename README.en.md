@@ -40,6 +40,11 @@ A static profile plugin (npm package with host + client bundle) that ships the *
   **WebSockets** cannot be routed because `registerUpgrade` matches exact paths while `/proxy/:port` carries the port in
   the path (HTTP forwarding works; use `loopback` when you need WS forwarding).
 
+- In `loopback` mode every upgrade passes a **code-server-equivalent Origin check** (since 0.2.1): when an `Origin`
+  header is present its host must equal `Host` (honouring `Forwarded: host=` / `X-Forwarded-Host`, like code-server),
+  otherwise the handshake gets `403`; non-browser requests without `Origin` are allowed. Without that check any local
+  browser page could complete a handshake against `ws://127.0.0.1:<port>/stable-<commit>` and drive the IDE.
+
 
 - **Floating ball** (bottom-right, official code-server icon, above the composer): click to **expand the floating window and light it up** (blue glow), click again to **collapse**; **drag to any position** (remembered across refreshes; no accidental click after drag);
   no sidebar button, no window control button group (the ball is the only entry/toggle); the ball carries a status dot (green = running / amber = starting / red = error);
@@ -121,9 +126,9 @@ pnpm run promote -- <version>
 
 ```powershell
 # no postinstall in the package → no pnpm approve-builds / allowBuilds; one command installs everything
-dsh plugin --profile web add dsh-code-server-app@0.2.0
+dsh plugin --profile web add dsh-code-server-app@0.2.1
 # a local tarball works the same way:
-dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.2.0.tgz
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.2.1.tgz
 ```
 
 Ready to use immediately — **no second step, no "Install environment", no install-guide modal**.

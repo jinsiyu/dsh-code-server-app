@@ -53,6 +53,10 @@
   2. 转发端口(Ports 面板)的 **WebSocket** 无法用精确升级路由覆盖(端口号在路径里)→ 该功能在 `dsh` 模式下不可用;
      HTTP 转发端口正常;需要端口转发 WS 时请用 `loopback` 模式。
 
+- `loopback` 模式下 upgrade 会做 **code-server 同款 Origin 校验**(0.2.1 起):带 `Origin` 时其 host 必须等于 `Host`
+  (含 `Forwarded: host=` / `X-Forwarded-Host` 的反代语义),否则回 `403`;缺 `Origin` 的非浏览器请求放行。
+  没有这道检查时,本机任意浏览器页面都能对 `ws://127.0.0.1:<port>/stable-<commit>` 完成握手并驱动 IDE。
+
 ## 悬浮球 / 浮窗(仅旧版 DSH 回退路径)
 
 - **右下角悬浮球**(code-server 官方图标,输入框上方):点击**展开浮窗并亮起**(蓝色光环),再点击**收起并复原**;
@@ -136,9 +140,9 @@ pnpm run promote -- <version>
 
 ```powershell
 # 包内无 postinstall → 无需 pnpm approve-builds / allowBuilds;一条命令装完
-dsh plugin --profile web add dsh-code-server-app@0.2.0
+dsh plugin --profile web add dsh-code-server-app@0.2.1
 # 本地 tarball 同理:
-dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.2.0.tgz
+dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-server-app-0.2.1.tgz
 ```
 
 装完即用,**没有第二步、没有「安装环境」、不弹安装指引**。主包约 **110KB**(插件自身代码 + launcher),

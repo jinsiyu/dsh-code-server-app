@@ -1,6 +1,6 @@
 {
   "name": "dsh-code-server-app",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "VS Code (from a code-server release) inside DSH Web and Desktop: right-sidebar tab with a floating-ball fallback, driven by the plugin's own launcher over the in-process VS Code server (lib/launcher.mjs). Two serving modes: loopback port (default) or same-origin mount on DSH's own webServer (/code-server, protected by ctx.connection.requestRejection). No code-server Node layer, no argon2, no C++ toolchain.",
   "homepage": "https://github.com/jinsiyu/dsh-code-server-app",
   "repository": {
