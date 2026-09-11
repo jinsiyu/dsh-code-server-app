@@ -22,6 +22,7 @@ import {
   resolveFilePath,
   SCOPE_SESSION,
 } from './address.js';
+import { installPipeRelay } from './pipe-relay.js';
 import {
   dockInto,
   ensureSurface,
@@ -723,6 +724,8 @@ let React = require('react')
       }
     }
     function internalApply(ctx) {
+      // 阶段 1:IDE 的 WebSocket 字节经此中继走 /api 隧道(postMessage ↔ streaming POST)
+      installPipeRelay()
       var slots = ctx.get('slots')
       if (slots === undefined) {
         console.error('[code-server] slots service unavailable')
