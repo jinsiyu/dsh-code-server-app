@@ -179,3 +179,31 @@ DSH 前端(deliverables chip / 正文提及 / 任何 openResource(dsh-resource:/
 4. 两个非法文件名(空格/加号)不走逐文件路由,依赖 `/vscode-remote-resource` 端点。
 5. 自定义 scheme 下无 HTTP 缓存/CacheStorage/service worker,所有资产每次启动重新取
    (已用 `?v=` 标记 + 镜像转发应对;首屏体积仍受工作台 bundle 影响)。
+
+## 11. 与"最初"的区别
+
+三个基线:**原版 code-server** → **0.1.x 插件(重构起点)** → **0.2.x(自建 launcher)** → **0.3.1(现在)**。
+
+| | 原版 code-server | 0.1.x 插件 | 0.2.x | 0.3.1 |
+|---|---|---|---|---|
+| Node 服务层 | code-server 自己的 CLI/`main.js` | **原样当子进程跑**(黑盒) | 自建 `launcher.mjs` 取代它(直接 `createServer`/`handleRequest`/`handleUpgrade`) | 同 0.2.x |
+| 客户端到 IDE 的通道 | 浏览器直连它的端口 | 同(iframe 指向 loopback) | web:DSH `webServer` 同源挂载;desktop:loopback | **两者都零端口**(资产镜像 + WS 隧道) |
+| IDE 连接(WS) | 浏览器原生 WebSocket | 同 | 同 | **裸字节 shim** → 父窗口中继 → DSH 管道 → 代理到 IDE 监听器 |
+| IDE 资源 | 它自己的静态服务 | 同 | 同 | **镜像到 `/api/code-server/asset/**`**(URL 空间原样) |
+| 认证 | 默认 password | `none` + Host/Origin 栅栏 | 同 + web 侧 `requestRejection` | 同 + **隧道随机 token** |
+| 设置卡 | — | 入口 / 依赖安装 / 环境检测 | 收敛到 2 项(认领范围、后台常驻) | 2 项 |
+| 打开文件 | — | — | 官方 `openFile` 认领地址 → 信号文件 → 内置扩展 `showTextDocument` | 同 |
+| 插件侧体量 | — | 依赖安装/argon2/vendoring 一大堆 | launcher ~500 行 + 客户端 37 KB | 再 + 镜像/隧道/shim;删掉死代码 |
+| 诊断 | 无 | 日志 tail | 日志 tail | 4 份日志 + `/healthz` 字段 + 4 个离线测试 + 本地端到端复现工具 |
+| 端口 | 一个监听 | 一个监听(web/desktop 都要) | web 无、desktop 一个 | **客户端零**;服务端保留一个(仅本机,Windows 句柄约束) |
+
+**始终没变的**:
+
+- **IDE 本体是原版**:VS Code/code-server 树不做源码修改(只做发布裁剪);唯一的客户端侧手术是
+  1 行 `webSocketFactory` 注入 + 约 200 行裸字节 shim,而且**在 serve 时施加、不落磁盘**。
+- 扩展宿主、终端、扩展机制、语言功能全部是 VS Code 自己的实现。
+- 打开文件仍靠"信号文件 + 内置扩展"这一跳(它在 IDE 进程内,隧道/管道都够不到)。
+
+**变化的主线**:让 IDE 从"用户自己装、自己占端口"变成"插件的右侧栏标签",再把它的**客户端面**
+逐步搬进 DSH 自己的通道 —— 先是 WebSocket(0.3.0 阶段 1),再是全部资产(阶段 2),
+于是桌面端不再需要 loopback 端口;web 端则一直用 DSH `webServer` 的同源挂载。
