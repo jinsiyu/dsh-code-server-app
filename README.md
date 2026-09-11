@@ -61,7 +61,8 @@
   打开 IDE 用右侧栏「开始」页的 **Code Server 入口框**,或直接点官方的产物 chip / 交付卡片 / 正文文件名;
   诊断看 DSH host 日志里的 `[code-server]` 输出(`/api/code-server/status` 仍返回 `env` 供脚本排查)。
   旧版的 `windowedOpen`(窗口化打开)、`reserveComposer` 已在 0.2.6 移除:旧设置文档里残留的这两个键不会报错,只是被忽略(不再出现在 schema 里)。
-  需要在新标签页用 IDE 时,直接访问回环地址 `http://127.0.0.1:<port>/`(`serve: dsh` 时为 DSH 的 `/code-server/`)。
+  需要在新标签页用 IDE 时,从设置卡/空态提示里**复制完整地址**(含路径令牌,`http://127.0.0.1:<port>/<token>/`;
+  `serve: dsh` 时为 DSH 的 `/code-server/`)—— 少了令牌那一段会 404。
 
 ## 文件打开(0.2.5 起走官方入口)
 
@@ -146,8 +147,30 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 
 | 方式 | 说明 | 需要 |
 |---|---|---|
-| **`loopback`(默认)** | 插件自己起一个回环端口(`host:port`),右侧栏 iframe 跨源直连;进程可被 adopt(DSH host 重启后接管) | 无 |
+| **`loopback`(默认)** | 插件自己起一个回环端口(**默认 `port: 0` = 每次启动由系统分配随机端口**),右侧栏 iframe 跨源直连;**URL 带随机路径令牌**(`http://127.0.0.1:<port>/<token>/`,见下「回环端口的安全模型」);进程可被 adopt(DSH host 重启后接管) | 无 |
 | **`dsh`** | IDE 挂到 **DSH 自己的 HTTP 端口**上的 `/code-server/*`(HTTP prefix 路由)+ `/code-server/<quality>-<commit>`(WS 精确路由),转发到 launcher 的**命名管道**;**没有额外端口**;每条请求(含 WS 握手)先过 `ctx.connection.requestRejection()` —— 与 `/api` 同一套 Host/Origin fence + 浏览器 cookie 认证 | DSH 提供 `webServer` 服务(web profile);desktop 无此服务 → 自动回退 loopback |
+
+### 回环端口的安全模型(0.2.14 起)
+
+`loopback` 是 desktop 端唯一的通路(无 webServer、无同源挂载),所以它单独加固了一层:
+
+- **随机端口**:`port` 默认 `0` → 由系统分配空闲端口,launcher 把**实际**端口写进 `$DSH_HOME/code-server/endpoint.json`,
+  host 读回(因此端口每次都变、也不存在"8090 被占用"这类冲突)。要固定地址就显式配 `port`。
+- **路径令牌**:每次**新启动**生成 32 位随机令牌(`[0-9A-Za-z_-]`,24 字节随机),写在
+  `$DSH_HOME/code-server/path-token`(用户 profile 下,默认 ACL 仅本人可读),成为 URL 的路径前缀。
+  没有这个前缀的请求一律 **404**(不泄露"这里跑着 IDE"),前缀不带结尾斜杠会 302 补上。
+- **为什么不用 VS Code 自带的 `connection-token`**:它靠 `?tkn=` → 302 + `Set-Cookie: vscode-tkn; SameSite=Lax`;
+  而 desktop 的 iframe 是**跨源**的(`dsh-app://` → `127.0.0.1`),Lax cookie 在跨站子框架里不会被带上
+  → 会让 IDE 直接打不开。路径前缀不需要 cookie:workbench 的资源与 WS 全部由 `location.pathname` 派生
+  (`serve: dsh` 挂在 `/code-server/` 下已验证同一机制),前缀天然跟随每个子请求与 WS 握手。
+  (已用真实 Edge + CDP 在**跨源 iframe** 里验证:随机端口 + 令牌下 workbench 正常渲染并建立 WS。)
+- **Host 白名单**:回环模式只接受 `127.0.0.1 | localhost | [::1] : <实际端口>`。挡的是 DNS rebinding ——
+  这类攻击构造的请求可以不带 `Origin`,只靠 `Origin == Host` 那条检查拦不住。
+- **`Referrer-Policy: no-referrer`**:令牌在路径里,不能让它在加载站外资源时经 `Referer` 漏出去。
+- **令牌不落 argv、不进日志**:命令行对本机任意进程可见,所以走文件传递;日志里只打印"已启用"。
+
+边界(说清楚,不夸大):这一层挡的是"本机其它应用/端口扫描器/浏览器页面"顺手访问你的 IDE;
+**同用户的本地恶意程序**本来就能直接读你的文件、也能读那个令牌文件 —— 那不在本插件的威胁模型内。
 
 - 在 `cordis.patch.yml` 的 `config.serve`(或设置文档里的 `code-server.serve`)切换,下次启动生效 —— **设置卡片不提供这一行**(卡片只有认领类型/打开即全屏/后台常驻三个设置)。
 - `dsh` 模式的实际收益:单一 URL/单一端口(远程访问 DSH 即可用 IDE)、不再暴露额外回环端口、认证与 DSH 同级。
@@ -441,8 +464,8 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 | `serve` | `loopback` | 服务方式:`loopback`(独立回环端口,iframe 跨源)→ `dsh`(挂到 DSH 自身端口的 `/code-server/*`,转发到命名管道,复用 DSH 的 Host/Origin + cookie 防护)。需 DSH 提供 `webServer`,缺失时自动回退 loopback |
 | `bin` | `''`(空 = 用自带 launcher) | 逃生舱:显式指定外部 code-server 可执行文件 / `out/node/entry.js` 时退回旧模型(不经 `lib/launcher.mjs`) |
 | `host` | `127.0.0.1` | loopback 模式的绑定地址(仅允许回环) |
-| `port` | `8090` | loopback 模式的端口;被占用时启动失败并给出诊断(不自动换端口) |
-| `auth` | `none` | 固定 `none`(0.2.0 起 argon2 已移除;需要对外访问请用 `serve: dsh`) |
+| `port` | `0` | loopback 模式的端口;**`0` = 每次启动由系统分配随机端口**(实际端口写在 `endpoint.json`,host 读回)。显式给端口则固定使用;该端口被占用且无有效 `pid.json` 时报错并给诊断(拒绝误杀) |
+| `auth` | `none` | 固定 `none`(0.2.0 起 argon2 已移除);回环模式的访问控制由**随机端口 + 路径令牌 + Host 白名单**承担(见「回环端口的安全模型」),对外访问请用 `serve: dsh` |
 | `userDataDir` | `$DSH_HOME/code-server/user-data` | 用户数据隔离目录 |
 | `extensionsDir` | `$DSH_HOME/code-server/extensions` | 扩展目录 |
 | `locale` | `''` | 界面语言(空 = 跟随浏览器),如 `zh-cn` |
@@ -466,8 +489,8 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/code-server/status` | `{ ok, running, status, host, port, pid, cwd, launchCwd, url, version, error, logTail, adopted }`(另含 `env` 环境检测与 `setup` 兼容字段;`cwd` = 当前 workbench 目录,`launchCwd` = 进程启动目录) |
-| POST | `/api/code-server/start` | body `{ cwd? }`(省略 cwd 不切换工作目录);幂等;运行中切 cwd = **只换目录不重启进程**(0.2.12) |
+| GET | `/api/code-server/status` | `{ ok, running, status, host, port, pid, cwd, launchCwd, url, version, error, logTail, adopted }`(另含 `env` 环境检测与 `setup` 兼容字段;`cwd` = 当前 workbench 目录,`launchCwd` = 进程启动目录,loopback 下 `port` = **实际**端口、`url` = 含路径令牌的完整地址) |
+| POST | `/api/code-server/start` | body `{ cwd? }`(省略 cwd 不切换工作目录);幂等;运行中切 cwd = **只换目录不重启进程**(0.2.12);loopback 新启动会**轮换端口与路径令牌**(0.2.14) |
 | POST | `/api/code-server/stop` | 停止并回收进程树 |
 | POST | `/api/code-server/setup` | **兼容空操作**:0.1.36 起依赖由包管理器安装,调用只重新自检 `env` 并返回 |
 | POST | `/api/code-server/open-file` | body `{ file }` — 写信号文件,由内置扩展 `dshcs-open-file` 在 code-server 中打开 |
@@ -539,5 +562,8 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
   切标签/收起侧栏再回来**不重载**。不支持 `moveBefore` 的浏览器退回旧行为(`appendChild` → 整页重载),
   状态里以 `degraded` 明示;详见下方「为什么切标签不再重载」。
 - **远程访问**:`serve: dsh` 下浏览器只需能到达 DSH 本身(单一端口,认证与 `/api` 同级);
-  `serve: loopback` 默认仅回环、`auth: none`,跨机访问请改用 `serve: dsh`
-  (0.2.0 起不再支持 `auth: password`)。
+  `serve: loopback` 仅回环绑定(随机端口 + 路径令牌 + Host 白名单,见「回环端口的安全模型」),
+  跨机访问请改用 `serve: dsh`(0.2.0 起不再支持 `auth: password`)。
+- **回环模式的令牌会随实例轮换**:每次新启动端口与令牌都变;`adopt`(host 重启后接管存活实例)靠
+  `endpoint.json` + `path-token` 两个文件对上,所以**别手动删**这两个文件(删了 host 认不出旧实例,
+  会当成陌生端口占用处理)。

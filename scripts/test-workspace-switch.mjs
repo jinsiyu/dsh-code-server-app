@@ -61,6 +61,9 @@ await sleep(300);
 
 const pidPath = join(dshHome, 'code-server', 'pid.json');
 mkdirSync(join(dshHome, 'code-server'), { recursive: true });
+// 0.2.14 起 launcher 走"路径令牌 + 随机端口":host 的探针与接管都要读令牌文件,没有它就认定
+// "那个实例不是本代插件拉起来的",不接管 —— 所以这个测试必须把令牌文件写上。
+writeFileSync(join(dshHome, 'code-server', 'path-token'), 'worktest-token-0123456789abcdef', 'utf8');
 writeFileSync(pidPath, JSON.stringify({
   pid: fakeIde.pid,
   startedAt: Date.now(),

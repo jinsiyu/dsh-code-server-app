@@ -47,7 +47,9 @@ A static profile plugin (npm package with host + client bundle) that ships the *
   Open the IDE from the **Code Server box** on the sidebar's guide page, or by clicking DSH's own produced-file chips / delivered-file previews / inline file names;
   diagnostics stay out of the UI — the `[code-server]` lines in the DSH host log are the place to look (`/api/code-server/status` still returns `env` for scripts).
   The old `windowedOpen` (open in a window) and `reserveComposer` were **removed in 0.2.6**: leftover keys in an old settings document neither fail nor apply (they are no longer part of the schema).
-  To use the IDE in a browser tab, visit the loopback address `http://127.0.0.1:<port>/` (or DSH's `/code-server/` under `serve: dsh`).
+  To use the IDE in a browser tab, **copy the full address** from the settings card / empty-state hint (it contains the
+  path token: `http://127.0.0.1:<port>/<token>/`; under `serve: dsh` it is DSH's `/code-server/`) — dropping the token
+  segment yields a 404.
 
 ## Opening files (official entry points since 0.2.5)
 
@@ -143,8 +145,35 @@ state preserved (no full reload). Full evidence and probe scripts: `docs/analysi
 
 | Mode | What it does | Requires |
 |---|---|---|
-| **`loopback` (default)** | the plugin listens on its own loopback port (`host:port`) and the sidebar iframe connects cross-origin; the process can be adopted after a DSH host restart | nothing |
+| **`loopback` (default)** | the plugin listens on its own loopback port (**`port: 0` by default = a random port assigned per start**), the sidebar iframe connects cross-origin, and the URL carries a **random path token** (`http://127.0.0.1:<port>/<token>/`, see "Security model of the loopback port" below); the process can be adopted after a DSH host restart | nothing |
 | **`dsh`** | the IDE is mounted on **DSH's own HTTP port** at `/code-server/*` (HTTP prefix route) plus `/code-server/<quality>-<commit>` (exact WebSocket route), forwarded to the launcher's **named pipe**; **no extra port**; every request (including the WS handshake) first passes `ctx.connection.requestRejection()` — the same Host/Origin fence and browser-cookie authentication as `/api` | DSH providing `webServer` (web profile); desktop falls back to loopback automatically |
+
+### Security model of the loopback port (since 0.2.14)
+
+`loopback` is the only transport desktop has (no webServer, no same-origin mount), so it is hardened on its own:
+
+- **Random port**: `port` defaults to `0` → the OS assigns a free port and the launcher writes the **actual** one to
+  `$DSH_HOME/code-server/endpoint.json`, which the host reads back. The port therefore changes on every start and the old
+  "8090 is busy" class of conflicts is gone. Pin `port` explicitly if you need a fixed address.
+- **Path token**: a fresh 32-character token (`[0-9A-Za-z_-]`, 24 random bytes) is generated on every **new start**, stored in
+  `$DSH_HOME/code-server/path-token` (inside the user profile, readable only by the owner under the default ACL), and becomes
+  the URL path prefix. Requests without that prefix get a plain **404** (nothing reveals that an IDE lives there); a prefix
+  without the trailing slash is answered with a 302.
+- **Why not VS Code's own `connection-token`**: it works through `?tkn=` → 302 + `Set-Cookie: vscode-tkn; SameSite=Lax`.
+  The desktop iframe is **cross-origin** (`dsh-app://` → `127.0.0.1`), and a Lax cookie is not sent from a cross-site
+  subframe — the IDE would simply fail to load. A path prefix needs no cookie at all: the workbench derives every asset and
+  WebSocket URL from `location.pathname` (the same mechanism already proven by mounting under `/code-server/` in `serve: dsh`),
+  so the prefix rides along on every subrequest and on the WS handshake. (Verified with a real Edge + CDP run: with a random
+  port and a token, the workbench renders **inside a cross-origin iframe** and establishes its WebSocket.)
+- **Host allowlist**: in loopback mode only `127.0.0.1 | localhost | [::1] : <actual port>` is accepted. This is what stops
+  DNS rebinding, whose requests can arrive without an `Origin` header and therefore slip past the `Origin == Host` check.
+- **`Referrer-Policy: no-referrer`**: the token lives in the path, so it must not leak through `Referer` when external resources load.
+- **The token never reaches argv or the logs**: command lines are readable by any local process, so it travels through a file;
+  the log only says "enabled".
+
+Boundary, stated plainly: this layer stops other local applications, port scanners and browser pages from casually reaching
+your IDE. A **malicious program running as the same user** can already read your files and that token file — that is outside
+this plugin's threat model.
 
 - Switch it in `config.serve` in `cordis.patch.yml` or in Settings → Plugins → Code Server (takes effect on the next start).
 - Benefits of `dsh`: a single URL/port (remote access to DSH gives you the IDE), no extra loopback listener, authentication on par with DSH.
@@ -444,7 +473,7 @@ reports the tree version / `productPath` / server entry, VS Code inner dependenc
 |---|---|---|
 | `bin` | `code-server` (placeholder) | Launch priority: explicit `bin` in config > the tree package `@jinsiyu/dshcs-code-server/code-server/out/node/entry.js` > the old platform sub-packages `@jinsiyu/dshcs-code-server-<platform>-<arch>` > the in-package `vendor/code-server` > the old install root `.code-server-app` > plugin-internal `node_modules` > `code-server` on PATH. None present → startup error with troubleshooting hints |
 | `host` | `127.0.0.1` | Bind address; `auth: none` only allows loopback (localhost/127.0.0.1/::1) |
-| `port` | `8090` | Port; on conflict startup fails with diagnostics (no automatic port change) |
+| `port` | `0` | Port for loopback mode; **`0` = a random free port assigned per start** (the actual one is written to `endpoint.json` and read back by the host). Give an explicit port to pin it; when that port is taken and no valid `pid.json` exists, startup fails with diagnostics instead of killing a stranger |
 | `auth` | `none` | `none` \| `password`; non-loopback host automatically requires password |
 | `passwordToken` | `''` | Token for password mode (passed to code-server via the `PASSWORD` env var) |
 | `userDataDir` | `$DSH_HOME/code-server/user-data` | User-data isolation directory |
@@ -568,4 +597,8 @@ What remains on the plugin side:
   switching tabs or collapsing the sidebar and back **does not reload** it. Browsers without `moveBefore` fall back to
   the old behaviour (`appendChild` → full reload), reported as `degraded`; see "Why switching tabs no longer reloads".
 - **Remote access**: with `serve: dsh` the browser only needs to reach DSH itself (one port, protected exactly like `/api`);
-  `serve: loopback` stays loopback-only with `auth: none`, and 0.2.0 no longer supports `auth: password`.
+  `serve: loopback` binds to loopback only (random port + path token + Host allowlist — see "Security model of the loopback
+  port"), so use `serve: dsh` for cross-machine access (0.2.0 no longer supports `auth: password`).
+- **The loopback token rotates per instance**: port and token change on every new start; adoption after a host restart
+  matches the live instance through the `endpoint.json` and `path-token` files, so **do not delete those two files**
+  (without them the host cannot recognise the old instance and treats the port as foreign).

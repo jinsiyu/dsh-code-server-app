@@ -704,3 +704,30 @@ GET /          → 200 text/html len=4222
 - 发布:`@jinsiyu/dshcs-vscode-server@4.137.0`(50.8 MB)+ 两个平台聚合包 `0.2.13`
   (聚合包版本跟插件版本走,所以 bump 插件版本必须在 repack 之前);
   x64 聚合包在 registry 上比 arm64 晚几分钟才可见(publish 返回 "being processed"),重查即可。
+
+### 14.6 0.2.14:随机端口 + 路径令牌 + Host 白名单(回环端口加固)
+
+- 需求(用户):"随机化通信端口并加强安全"。
+- **为什么不能用 VS Code 自带的 `connection-token`**(读树确认):它靠 `?tkn=` → 302 +
+  `Set-Cookie: vscode-tkn; SameSite=Lax`(server-main.js `_handleRoot`)。桌面端 iframe 是**跨源**的
+  (`dsh-app://` → `127.0.0.1`),Lax cookie 在跨站子框架里不会被带上 ⇒ 一走 cookie 就把 desktop 打挂。
+  (其 token 格式校验 `/^[0-9A-Za-z_-]+$/` 我们沿用了。)
+- **改用 URL 路径前缀**:`http://127.0.0.1:<port>/<token>/…`。workbench 的资源与 WS 全部由
+  `location.pathname` 派生(`serve: dsh` 挂在 `/code-server/` 下已证同一机制),前缀天然跟随所有子请求与
+  WS 握手,不需要 cookie/header 注入,客户端代码也不用改(它只用 `status.url`)。
+- **端口随机化**:`port` 默认 `0` → 系统分配;launcher 把实际地址原子写进 `endpoint.json`,host 读回后才
+  开始就绪轮询,并把实际端口补写进 `pid.json`。固定端口仍可用(显式配 `port`),此时"端口被占用"的
+  adopt/报错分支保留(探针带令牌)。
+- **Host 白名单**:回环模式只接受 `127.0.0.1|localhost|[::1]:<实际端口>`。补的是 `originAllowed()` 的缺口
+  —— 它对"不带 Origin"的请求放行,而 DNS rebinding 恰好能构造这种请求。
+- **令牌传递**:文件(`$DSH_HOME/code-server/path-token`,原子写 0600)而非 argv(命令行本机任意进程可见);
+  日志不打印令牌;文档响应加 `Referrer-Policy: no-referrer`。
+- **adopt 语义收紧**:host 重启后接管需要"pid 存活 + 令牌文件在 + endpoint 记录的端口上 /healthz 带令牌响应",
+  缺一不接管(陌生占用会被当成冲突报错,而不是误杀)。
+- 验证:
+  - `scripts/test-launcher-routes.mjs` 扩到 9 项(端口 0 → endpoint 回报、无令牌/错令牌 404、少斜杠 302、
+    伪造 Host 403、文档改写与 `?v=`、healthz 回报实际端口、前缀下 manifest/_static);
+  - `.spike/probe-token-iframe.mjs`(真 Edge + CDP,跨源 iframe + 随机端口 + 令牌):workbench 渲染成功
+    (`hasWorkbench`、23 个样式表)、`workbench.js?v=` 生效、launcher 记录到前缀下的两次 WS 握手、无控制台错误
+    —— 这是"不用 cookie"这条设计的关键证据;
+  - `test-workspace-switch.mjs` 补写令牌文件(host 的探针/接管读它)。
