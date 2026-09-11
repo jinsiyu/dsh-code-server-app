@@ -1,4 +1,4 @@
-# 方案 B:自建 VS Code 构建,桌面端零端口跑 IDE
+开始# 方案 B:自建 VS Code 构建,桌面端零端口跑 IDE
 
 > 目标读者:本插件维护者。写完于 2026-09-11,基于 code-server 4.136.2 / VS Code 1.136.1
 > (`productPath=stable-8d5f383f301ca20681f5b6606b8207d9dc87bdd8`)与 DSH desktop 协议 v3。
@@ -114,6 +114,29 @@ globalThis.__DSH_WS_FACTORY__ = {
 
 - `BrowserSocket.drain()` 返回 resolved(F5),即 VS Code 上层**不感知背压**;`send()` 会把字节塞进隧道。管道背压是**全局**的(F8 的 reader 全局暂停),IDE 一次大传输可能拖慢 DSH 自身 API。
 - 缓解:① 隧道 WritableStream 设有限 `highWaterMark`,超过阈值直接关闭隧道(快速失败,而不是无限涨内存);② 关掉 IDE 侧大流量来源(遥测、marketplace 轮询、`workbench.editor` 预取);③ 必要时把两个方向拆成两条隧道,至少让其中一个方向独立;④ Phase 2 用真实工程(装 expansion 包 + 大文件搜索)量化 DSH UI 延迟。
+
+### 4.5 阶段 1 实测修订:为什么必须经父窗口中继(2026-09-11)
+
+原计划让「工作台文档(loopback 源)直接 fetch `/api/code-server/tunnel`」。用一次性 Electron 实测后推翻:
+
+| 方向 | 结果 |
+|---|---|
+| `dsh-app://` 文档 → `http://127.0.0.1:PORT` fetch(GET / streaming POST) | **Failed to fetch**(两侧都不行;POST 已带 `access-control-allow-origin: *`,所以不是 CORS 头的问题) |
+| `http://127.0.0.1:PORT` 文档 → `dsh-app://` fetch(GET / streaming POST) | **Failed to fetch** |
+| `dsh-app://` 文档 → `ws://127.0.0.1:PORT` | **可以连接**(101 成功;这解释了现状 loopback 方案为何能工作) |
+| loopback 文档 → 同源 fetch / 同源 WS | 正常 |
+
+结论:**自定义 scheme 与 loopback 之间只能靠导航(iframe/资源加载)与 WebSocket,不能 fetch**。因此阶段 1 的字节路径是:
+
+```
+工作台文档(loopback)              父窗口(DSH 前端,dsh-app://app)
+  shim:RFC6455 客户端  ──postMessage(ArrayBuffer)──►  中继:fetch POST /api/code-server/tunnel
+  (自己产出/解析帧)     ◄──postMessage(ArrayBuffer)──  (requestBody:'streaming',同源 ✓)
+```
+
+- 好处:token 只存在于父窗口,iframe 里没有凭据;而且**阶段 2 把文档搬到 `dsh-app://` 之后,同一套 shim 可以直连隧道**(中继退化为可选优化)。
+- 代价:多两次 postMessage 跳转(同进程不同 frame,开销可忽略),以及需要在 `src/factory.js` 里装一个消息中继(`src/pipe-relay.js`)。
+- 附带结论:loopback WS 仍然可用 —— 阶段 1 保留它作为回退,验收标准是"**隧道建立且 IDE 不再新开 `ws://` 连接**"。
 
 ## 5. 资源层(真正的工作量)
 
