@@ -44,6 +44,7 @@
     "lib/serve-dsh.mjs",
     "lib/pipe-tunnel.mjs",
     "lib/pipe-ws.js",
+    "lib/asset-mirror.mjs",
     "lib/vendor.js",
     "lib/native.js",
     "assets/favicon.ico",

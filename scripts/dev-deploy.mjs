@@ -9,7 +9,7 @@
 //   node scripts/dev-deploy.mjs desktop --revert   # 还原工作台 bundle(插件文件不动)
 //   node scripts/dev-deploy.mjs web                # web profile 只部署 lib/*(没有 B2 补丁)
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,7 +43,7 @@ if (revert) {
   process.exit(0);
 }
 
-const FILES = ['index.js', 'client.js', 'launcher.mjs', 'pipe-tunnel.mjs', 'native.js', 'serve-dsh.mjs', 'vendor.js'];
+const FILES = ['index.js', 'client.js', 'launcher.mjs', 'pipe-tunnel.mjs', 'asset-mirror.mjs', 'native.js', 'serve-dsh.mjs', 'vendor.js'];
 /** 裸字节 shim 源:launcher 在 serve 时注入工作台 bundle(见 lib/launcher.mjs)。 */
 const SHIM_SOURCE = join(root, 'src', 'pipe-ws.js');
 const SHIM_TARGET = join(pluginDir, 'lib', 'pipe-ws.js');

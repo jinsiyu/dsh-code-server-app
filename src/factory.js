@@ -110,16 +110,22 @@ let React = require('react')
     }
 
     /** 构建 code-server 页面 URL(base + ?folder=<cwd>,Windows 路径须为 /C:/ 形式)。
-     *  cwd 为空时回退 status.cwd;两者皆无 → 裸根 URL。 */
+     *  cwd 为空时回退 status.cwd;两者皆无 → 裸根 URL。
+     *  阶段 2:host 提供资产镜像时优先用它的文档地址(同源 dsh-app://,子资源不再走 loopback);
+     *  镜像未注册成功则回退 status.url(loopback),与 0.2.x 行为一致。 */
     function buildPageUrl(status, cwd) {
       if (status == null || typeof status.url !== 'string' || status.url === '') return null
+      var mirror = status.assetMirror
+      var base = mirror != null && mirror.enabled !== false && typeof mirror.document === 'string' && mirror.document !== '' && mirror.registered > 0
+        ? mirror.document
+        : status.url
       var dir = typeof cwd === 'string' && cwd !== '' ? cwd : (status != null && status.cwd != null ? status.cwd : null)
-      if (dir == null || dir === '') return status.url
+      if (dir == null || dir === '') return base
       var normalized = dir.replace(/\\/g, '/')
       var folder = normalized
       if (/^[A-Za-z]:\//.test(normalized)) folder = '/' + normalized
       else if (normalized.charCodeAt(0) !== 47) folder = '/' + normalized
-      return status.url + '?folder=' + encodeURIComponent(folder)
+      return base + '?folder=' + encodeURIComponent(folder)
     }
 
     /** 常驻 IDE 面组件(右侧栏标签 body 的唯一渲染者):只渲染"停靠位",iframe 由 surface.js 持有,
