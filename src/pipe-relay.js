@@ -166,6 +166,13 @@ function onMessage(event) {
   if (data === null || typeof data !== 'object' || data.__dshcs !== MARK) return;
   const source = event.source;
   if (source === null || typeof source.postMessage !== 'function') return;
+  // 页面诊断(工作台 HTML 里注入的脚本发的):iframe 自己 fetch /api 到不了 host(桌面端实测一条没到),
+  // 所以由父窗口代发 —— 这正是隧道在用、已被验证可用的通道。
+  if (data.kind === 'diag') {
+    const entry = data.entry !== null && typeof data.entry === 'object' ? data.entry : { raw: String(data.entry) };
+    diag({ from: 'page', ...entry });
+    return;
+  }
   if (data.kind === 'open') {
     console.log('[code-server] tunnel open requested:', String(data.path ?? ''));
     void openTunnel(source, data);

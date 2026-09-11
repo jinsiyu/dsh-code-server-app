@@ -42,7 +42,8 @@ await test('枚举:形状正确(out/extensions/_static 三个来源 + singletons
   assert.ok(urls.includes(`/${PRODUCT}/static/out/nls.messages.js`));
   assert.ok(urls.includes(`/${PRODUCT}/static/extensions/javascript/package.json`));
   assert.ok(urls.includes('/_static/src/browser/media/favicon.ico'));
-  assert.ok(urls.includes('/vscode-remote-resource'), '扩展资源端点必须在集合里');
+  assert.ok(urls.includes('/vscode-remote-resource'), 'NLS 用的无前缀端点必须在集合里');
+  assert.ok(urls.includes(`/${PRODUCT}/vscode-remote-resource`), '工作台文件服务用的**带前缀**端点必须在集合里(2026-09-11 漏过:主题/语法/图标全读不到)');
   assert.ok(urls.includes('/manifest.json'));
 });
 
@@ -88,14 +89,26 @@ await test('注册:枚举到的合法路径都注册,且都带 GET/HEAD 与 buff
   assert.deepEqual(route.methods, ['GET', 'HEAD']);
   assert.equal(route.requestBody, 'buffered');
   assert.ok(registered.has(ASSET_DOCUMENT), '文档路由必须注册');
+  assert.ok(registered.has(`${ASSET_BASE}/${PRODUCT}/vscode-remote-resource`), '带前缀的扩展资源端点必须注册');
+});
+
+await test('转发:扩展资源端点(带前缀)原样带到上游并回传(主题/语法/图标走这条)', async () => {
+  const routePath = `${ASSET_BASE}/${PRODUCT}/vscode-remote-resource`;
+  const route = registered.get(routePath);
+  assert.ok(route !== undefined, '缺这条路由 = 桌面端读不到任何扩展资源');
+  const upstreamPath = `/${PRODUCT}/vscode-remote-resource`;
+  const response = await route.fetch(new Request(`https://dsh.invalid${routePath}?path=%2Fc%3A%2Fext%2Ftheme.json`, { method: 'GET' }));
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), `echo:${upstreamPath}?path=%2Fc%3A%2Fext%2Ftheme.json`);
 });
 
 await test('转发:同路径 + 同查询串到达上游,响应体原样回传', async () => {
   const route = registered.get(`${ASSET_BASE}/${PRODUCT}/static/out/nls.messages.js`);
+  const servedBefore = mirror.snapshot().served;
   const response = await route.fetch(new Request(`https://dsh.invalid${ASSET_BASE}/${PRODUCT}/static/out/nls.messages.js?x=1`, { method: 'GET' }));
   assert.equal(response.status, 200);
   assert.equal(await response.text(), `echo:/${PRODUCT}/static/out/nls.messages.js?x=1`);
-  assert.equal(mirror.snapshot().served, 1);
+  assert.equal(mirror.snapshot().served, servedBefore + 1);
 });
 
 await test('文档路由:映射到上游 `/`(不是 /index.html)', async () => {
