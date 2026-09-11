@@ -126,8 +126,8 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 
 | 方式 | 说明 | 需要 |
 |---|---|---|
-| **`loopback`(默认)** | 插件自己起 IDE 并把它接到**命名管道**(`\\.\pipe\dshcs-vscode-<pid>`,0.3.2 起;不占任何 TCP 端口),右侧栏经镜像 + 隧道访问;进程可被 adopt(DSH host 重启后接管) | 无 |
-| **`dsh`** | IDE 挂到 **DSH 自己的 HTTP 端口**上的 `/code-server/*`(HTTP prefix 路由)+ `/code-server/<quality>-<commit>`(WS 精确路由),转发到 launcher 的**命名管道**;**没有额外端口**;每条请求(含 WS 握手)先过 `ctx.connection.requestRejection()` —— 与 `/api` 同一套 Host/Origin fence + 浏览器 cookie 认证 | DSH 提供 `webServer` 服务(web profile);desktop 无此服务 → 自动回退 loopback |
+| **`loopback`(默认)** | 插件自己起 IDE 并把它接到**命名管道**(`\\.\pipe\dshcs-vscode-<pid>`;不占任何 TCP 端口),右侧栏经镜像 + 隧道访问;同一次 host 运行内的重复激活可 adopt 已有实例 | 无 |
+| **`dsh`** | IDE 挂到 **DSH 自己的 HTTP 端口**上的 `/code-server/*`(HTTP prefix 路由)+ `/code-server/<quality>-<commit>`(WS 精确路由),转发到 launcher 的**命名管道**;**没有额外端口**;每条请求(含 WS 握手)先过 `ctx.connection.requestRejection()` —— 与 `/api` 同一套 Host/Origin fence + 浏览器 cookie 认证 | DSH 提供 `webServer` 服务(web profile);**没有就直接报错**(0.3.3 起没有回退) |
 
 - 在 `cordis.patch.yml` 的 `config.serve`(或设置文档里的 `code-server.serve`)切换,下次启动生效 —— **设置卡片不提供这一行**(卡片只有认领范围/后台常驻两个设置)。
 - `dsh` 模式的实际收益:单一 URL/单一端口(远程访问 DSH 即可用 IDE)、不再暴露额外回环端口、认证与 DSH 同级。
@@ -137,11 +137,10 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
   2. 转发端口(Ports 面板)的 **WebSocket** 无法用精确升级路由覆盖(端口号在路径里)→ 该功能在 `dsh` 模式下不可用;
      HTTP 转发端口正常;需要端口转发 WS 时请用 `loopback` 模式。
 
-- `loopback` 模式下 upgrade 会做 **code-server 同款 Origin 校验**(0.2.1 起):带 `Origin` 时其 host 必须等于 `Host`
-  (含 `Forwarded: host=` / `X-Forwarded-Host` 的反代语义),否则回 `403`;缺 `Origin` 的非浏览器请求放行。
-  没有这道检查时,本机任意浏览器页面都能对 `ws://127.0.0.1:<port>/stable-<commit>` 完成握手并驱动 IDE。
-- **传输与回退**(0.3.2):默认命名管道;若管道 10s 内不就绪,host 自动用回环端口 `8090` 重启一次并在状态/日志留痕。
-  强制走端口:`DSHCS_TRANSPORT=tcp`。
+- **传输只有命名管道一条路,没有任何回退**(0.3.3):不监听 TCP 端口,也没有"退回端口"的开关或分支。
+  管道起不来(权限、杀软、树损坏…)时状态直接是 `error` 并附启动日志尾部;`error` 里写明建议动作。
+- `loopback` 模式下 upgrade 仍做 **code-server 同款 Origin 校验**(0.2.1 起,走 launcher 自己的 upgrade 分发):
+  带 `Origin` 时其 host 必须等于 `Host`(含 `Forwarded: host=` / `X-Forwarded-Host` 的反代语义),否则回 `403`。
 
 ## 零端口(0.3.0 客户端 / 0.3.2 服务端,desktop)
 
@@ -150,10 +149,11 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 - **客户端(0.3.0 起)**:工作台的文档与全部子资源经 `/api/code-server/asset/**` 镜像
   (1295 条精确路由转发给 IDE 自己的监听端),WebSocket 经 `/api/code-server/tunnel` 字节隧道 ——
   两者都走 DSH 自己的通道,客户端一侧完全不碰 `127.0.0.1`。
-- **服务端(0.3.2 起)**:IDE 的 HTTP/WS 服务监听在命名管道上,资源管理器/`netstat` 里不再出现端口。
-  关键是让**扩展宿主**也走管道:VS Code 默认用 `child.send(msg, handle)` 把 accept 出来的**真 socket 句柄**
-  交给扩展宿主(Windows 只认 TCP 句柄:`Duplex` → `ERR_INVALID_HANDLE_TYPE`、命名管道 → `write ENOTSUP`),
-  而上游自带一个开关 —— 给 server 传 `--socket-path`,它就改为自建内部命名管道 + `_pipeSockets()` 泵字节。
+- **服务端(0.3.2 起)**:IDE 的 HTTP/WS 服务监听在命名管道上,资源管理器/`netstat` 里不再出现端口;
+  0.3.3 起这条路径上**没有端口回退**。关键是让**扩展宿主**也走管道:VS Code 默认用
+  `child.send(msg, handle)` 把 accept 出来的**真 socket 句柄**交给扩展宿主(Windows 只认 TCP 句柄:
+  `Duplex` → `ERR_INVALID_HANDLE_TYPE`、命名管道 → `write ENOTSUP`),而上游自带一个开关 ——
+  给 server 传 `--socket-path`,它就改为自建内部命名管道 + `_pipeSockets()` 泵字节。
   launcher 因此以 `--pipe <name> --exthost-ipc <flag>` 成对启动(只给前者 = "IDE 起得来但扩展宿主连不上")。
 - **客户端只有两处改动**:工作台 bundle 的 `webSocketFactory` 注入(1 行,serve 时由 launcher 注入,
   不改磁盘上的 VS Code 树)+ 约 200 行裸字节 shim(`lib/pipe-ws.js`;`skipWebSocketFrames=true`
@@ -161,7 +161,7 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 - **web 侧行为不变**:`serve: dsh` 继续用 DSH `webServer` 的同源挂载;镜像与 shim 注入都只在
   "组合里没有 `webServer`" 时启用(`DSHCS_TUNNEL_MODE`)。
 - **排障入口**:`/healthz` 的 `transport`/`exthost`/`listen`/`tunnelMode`/`serveInjection`/`shimInjections`;
-  状态快照里的 `transport`/`pipe`/`port`;`<user-data>/tunnel.log`(隧道事件与双向字节数)、
+  状态快照里的 `transport`/`pipe`;`<user-data>/tunnel.log`(隧道事件与双向字节数)、
   `page-errors.log`(页面内错误)、`client-diag.log`(客户端中继信标);仓库内
   `scripts/test-plugin-apply.mjs`(含传输参数断言)、`scripts/test-desktop-pipe.mjs`(真 IDE 起在管道上的端到端)、
   `scripts/test-*.mjs` 其余离线测试与 `scripts/repro-tunnel.mjs`(本地复现,不需要桌面应用、不需要重启)。
@@ -374,8 +374,8 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 - **x64 交叉编译**:`vendor-repacks.mjs` 用 `npm install --os=win32 --cpu=x64 --ignore-scripts`
   取包,再 `npm rebuild --arch=x64` 逐个编译,已验证产物 PE 架构正确(kerberos / sqlite3 / spdlog …)。
 - code-server 最新版要求 **Node v24**。
-- 若不需要插件自足(例如已有全局 code-server),可跳过安装:
-  插件会回退到 PATH/配置的 `bin`(见"配置"表)。
+- 插件自足:VS Code 树来自平台无关包(或开发期 `vendor/vscode`),不存在"退回外部 code-server 二进制"的路径
+  (0.3.3 起 `bin` 配置项已移除)。
 
 ### 升级 VS Code 树(上游 = code-server 发行版)
 
@@ -425,15 +425,15 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `serve` | `loopback` | 服务方式:`loopback`(IDE 接到命名管道,客户端走镜像 + 隧道)→ `dsh`(挂到 DSH 自身端口的 `/code-server/*`,转发到同一条命名管道,复用 DSH 的 Host/Origin + cookie 防护)。需 DSH 提供 `webServer`,缺失时自动回退 loopback |
-| `bin` | `''`(空 = 用自带 launcher) | 逃生舱:显式指定外部 code-server 可执行文件 / `out/node/entry.js` 时退回旧模型(不经 `lib/launcher.mjs`) |
-| `host` | `127.0.0.1` | **回退**端口模式(0.3.2 之前的行为)的绑定地址(仅允许回环);`DSHCS_TRANSPORT=tcp` 或管道不就绪时才会用到 |
-| `port` | `8090` | 同上:回退端口模式的端口;被占用时启动失败并给出诊断(不自动换端口)。默认管道路径**不使用**它 |
+| `serve` | `loopback` | 服务方式:`loopback`(IDE 在命名管道上,客户端走镜像 + 隧道)→ `dsh`(挂到 DSH 自身端口的 `/code-server/*`,复用 DSH 的 Host/Origin + cookie 防护)。需 DSH 提供 `webServer`,**没有就启动报错**(0.3.3 起不回退) |
 | `auth` | `none` | 固定 `none`(0.2.0 起 argon2 已移除;需要对外访问请用 `serve: dsh`) |
 | `userDataDir` | `$DSH_HOME/code-server/user-data` | 用户数据隔离目录 |
 | `extensionsDir` | `$DSH_HOME/code-server/extensions` | 扩展目录 |
 | `locale` | `''` | 界面语言(空 = 跟随浏览器),如 `zh-cn` |
-| `readyTimeoutMs` | `60000` | `/healthz` 就绪探测超时(TCP 或命名管道) |
+| `readyTimeoutMs` | `60000` | 管道上 `/healthz` 的就绪探测超时 |
+
+> 0.3.3 起移除了 `bin` / `host` / `port` 三个键(连同"退回外部 code-server 二进制"与"退回回环端口"两条回退路径)。
+> 配置文件里若仍写着它们,会被忽略(不报错、不迁移)。
 
 用户级覆盖示例(写在 `$DSH_HOME/profiles/web/cordis.patch.yml`,应使用 `- id: code-server` 行覆盖):
 
@@ -441,7 +441,6 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 - id: code-server
   config:
     serve: dsh        # 同源挂载:/code-server/*(无额外端口,复用 DSH 防护)
-    # port: 8091      # serve: loopback 时才生效
 ```
 
 ## JSON API(同源 fetch;web 与 desktop 同一套路径)
@@ -466,10 +465,11 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
 
 - host 半部 `inject = ['connection', 'settings']`(**不含 `webServer`**)——desktop profile 关掉了 webserver/web-runtime,
   本插件照常工作;`/api/*` 请求由 Electron `dsh-app://` 协议处理器 → IPC 帧管道 → `createSharedFetchHandler('/api')`。
-- 右侧栏标签、guide 入口框、文件地址认领、设置卡片在 desktop 下与 web 相同(code-server 仍是本机 `http://127.0.0.1:<port>` 的 iframe;
-  桌面端 `webSecurity: true` 且页面无 CSP 限制,跨源 iframe 正常加载)。
+- 右侧栏标签、guide 入口框、文件地址认领、设置卡片在 desktop 下与 web 相同(工作台文档来自同源资产镜像 +
+  字节隧道;桌面端 `webSecurity: true` 且页面无 CSP 限制,iframe 正常加载)。
   桌面端同样自带 `dsh-client-ui-sidebar-right`(见 desktop 构建 seed 包列表),因此 0.2.3 的
-  "只支持带右侧栏的 DSH" 对 desktop 不构成降级;唯一差别是 desktop 无 `webServer`,`serve: dsh` 会自动回退 loopback。
+  "只支持带右侧栏的 DSH" 对 desktop 不构成降级;唯一差别是 desktop 无 `webServer`,因此 `serve` 必须是
+  `loopback`(配成 `dsh` 会直接报错,0.3.3 起不回退)。
 - 安装到 desktop profile:桌面端插件管理窗(**不是** CLI,见下)。
 - **桌面端安装的 24 小时供应链策略(实测,2026-09-10,已用它装上 0.2.4)**:
   - CLI 路径不可用:`dsh plugin --profile desktop …` 会被拒绝(*"profile "desktop" is managed exclusively by the Electron application"*),
@@ -520,9 +520,10 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
   → 该模式下 Ports 面板的 **WebSocket** 转发不可用(HTTP 转发正常);需要时用 `serve: loopback`。
 - **`serve: dsh` 的 iframe 与 DSH 同源** → 该模式不挂 `sandbox`(同源 + `allow-same-origin` 可被 frame 自行摘除);
   `loopback` 模式跨源,`sandbox` 作为真防护保留。
-- **`serve: loopback` 的名字没变,但传输换了(0.3.2)**:该模式现在把 IDE 接到命名管道上(零 TCP 端口),
-  客户端经资产镜像 + 隧道访问;`host`/`port` 两个配置项只在回退路径(`DSHCS_TRANSPORT=tcp`,
-  或管道 10s 内不就绪)才生效。端口模式下既有的 Origin 校验与 Host/Origin 栅栏逻辑保留不变。
+- **`serve: loopback` 的名字没变,但传输换了(0.3.2/0.3.3)**:该模式把 IDE 接到命名管道上(零 TCP 端口),
+  客户端经资产镜像 + 隧道访问;0.3.3 起没有端口回退,`host`/`port` 配置项已移除。
+  upgrade 的 Origin 校验与 Host/Origin 栅栏逻辑保留不变(只是目标从端口变成管道)。
+- **`serve: dsh` 需要 `webServer`,没有就报错**(0.2.0 起支持该模式;0.3.3 起不再静默回退 loopback)。
 - **跨会话单实例**:host 级共享一份 IDE;切换 cwd 需重启实例(右侧栏标签自动处理并提示)。
 - **旧版 DSH 不受支持(0.2.3 起)**:没有 `sidebarRightTabs`/`sidebarRight` 的 DSH 上,除设置页一条升级提示外无任何入口;
   旧版用户请留在 `0.2.2`(`dsh plugin --profile web add dsh-code-server-app@0.2.2`)。

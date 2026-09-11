@@ -448,14 +448,19 @@ VS Code 用 IPC `child.send(msg, handle)` 把连接句柄交给扩展宿主进�
   客户端本来就是零依赖端口。
 - 注意:探针必须在**非受限沙箱**下跑(受限模式下连接命名管道直接 EPERM)。
 
-### 15.4 落地(0.3.2)
+### 15.4 落地(0.3.2 → 0.3.3 拆掉全部回退)
 
-- `lib/index.js`:`resolveTransport()`(默认 pipe,`DSHCS_TRANSPORT=tcp` 强制回退)+ `launcherFlags()`
-  (`--pipe` 必配 `--exthost-ipc`)+ `spawnOnce(transport)` / `waitReady()` 与**一次性 TCP 回退**
-  (管道 10s 内不就绪 → 用回环端口重启并留痕);pid.json/状态快照补 `transport`/`pipe`,管道模式下
-  `port: null`、`url` 指向资产镜像文档;镜像/隧道目标判定由 `serve === 'dsh'` 改为 `state.pipe !== null`。
+- `lib/index.js`:`launcherFlags()`(`--pipe` 必配 `--exthost-ipc`)+ `spawnOnce()`;pid.json/状态快照
+  记 `transport`/`pipe`、`url` 指向资产镜像文档;镜像/隧道目标判定统一为"有管道就转发"。
 - 顺带修掉一个真实竞态:apply 期的预启动与界面点击会并发进入 `start()`,两边写同一个管道名 → 第二个
-  launcher `EADDRINUSE`(端口模式同样存在,只是表现为"端口被占用")。`start()` 现在串行化。
-- 测试:`scripts/test-plugin-apply.mjs` 增参数断言;新增 `scripts/test-desktop-pipe.mjs`(桩 ctx → 真插件
-  → 真 IDE 起在管道上,断言 transport/pipe、管道 `/healthz`、**launcher 零 TCP 监听**、镜像注册、stop 收敛)。
-- `--exthost-ipc` 同时用于 web(`serve: dsh`)的管道启动:那里此前同样依赖句柄交接,现在也走管道泵。
+  launcher `EADDRINUSE`。`start()` 现在串行化。
+- **0.3.3 按用户要求"不要设计任何回退",删掉全部降级路径**:
+  ① 端口传输(第 15.2 节一度留的 `DSHCS_TRANSPORT=tcp` 开关与"管道 10s 未就绪就换端口重启"的分支);
+  ② `bin` 逃生舱(配置外部 code-server 可执行文件 / `out/node/entry.js` 退回旧模型);
+  ③ `serve: dsh` 在缺 `webServer` 时静默降级为 loopback。
+  连带删除 `host`/`port`/`bin` 配置项与 TCP 版 `healthCheck()`;任何一环不成立 → 显式 `error`,
+  错误文案给出可执行建议(例:`serve=dsh 需要 DSH 提供 webServer 服务…desktop profile 请用 serve: loopback`)。
+- 测试:`scripts/test-plugin-apply.mjs` 断言"管道是唯一传输、无 `--port`、`resolveTransport` 已移除";
+  `scripts/test-desktop-pipe.mjs`(桩 ctx → 真插件 → 真 IDE 起在管道上:transport/pipe、管道 `/healthz`、
+  **launcher 零 TCP 监听**、镜像注册、stop 收敛);`scripts/spike-dsh-e2e.mjs` 20 项(含场景 B
+  "serve=dsh 缺 webServer → 报错且不启动任何进程")。

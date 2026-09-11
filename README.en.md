@@ -133,10 +133,11 @@ state preserved (no full reload). Full evidence and probe scripts: `docs/analysi
 - In `loopback` mode every upgrade passes a **code-server-equivalent Origin check** (since 0.2.1): when an `Origin`
   header is present its host must equal `Host` (honouring `Forwarded: host=` / `X-Forwarded-Host`, like code-server),
   otherwise the handshake gets `403`; non-browser requests without `Origin` are allowed. Without that check any local
-  browser page could complete a handshake against `ws://127.0.0.1:<port>/stable-<commit>` and drive the IDE.
-- **Transport and fallback** (0.3.2): the IDE listens on a named pipe by default; if it is not ready within 10s the
-  host restarts once on the loopback port `8090` and records that in the status/log. Force the port path with
-  `DSHCS_TRANSPORT=tcp`. `host`/`port` are therefore only used on that fallback path.
+  browser page could complete a handshake and drive the IDE.
+- **One transport, no fallback** (0.3.3): the IDE listens on a named pipe and there is no port path at all —
+  no "restart on the loopback port" branch and no `DSHCS_TRANSPORT` switch. If the pipe cannot come up the status
+  goes straight to `error` with the launcher log tail; `bin` / `host` / `port` config keys were removed and are
+  ignored if still present.
 
 
 ## Zero ports (0.3.0 client-side, 0.3.2 server-side, desktop)
@@ -154,8 +155,6 @@ The desktop side **opens no TCP port at all**:
   itself: passing `--socket-path` makes the server create an internal named pipe and pump bytes with
   `_pipeSockets()`. The launcher therefore starts as `--pipe <name> --exthost-ipc <flag>` — pipe only, without
   the second flag, is the "IDE boots but the extension host never connects" trap.
-- **Fallback**: if the pipe is not ready within 10s the host restarts once on the loopback port (`8090`) and
-  records it in the status/log; `DSHCS_TRANSPORT=tcp` forces that path.
 - **Two client-side changes only**: a one-line `webSocketFactory` injection into the workbench bundle (done at
   serve time by the launcher; the on-disk VS Code tree stays pristine) plus a ~200 line raw-byte shim
   (`lib/pipe-ws.js`; with `skipWebSocketFrames=true` the server treats the connection as a plain byte stream,
@@ -370,8 +369,9 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
   the packages, then `npm rebuild --arch=x64` per package; the resulting PE machine types were verified
   (kerberos / sqlite3 / spdlog …).
 - Latest code-server requires **Node v24**.
-- If you don't need the self-contained install (e.g. a global code-server already exists), skip it:
-  the plugin falls back to a configured/PATH `bin` (see the "Config" table).
+- The plugin is self-contained: the VS Code tree comes from the platform-independent package (or a dev-time
+  `vendor/vscode`). There is no "fall back to an external code-server binary" path — the `bin` config key was
+  removed in 0.3.3.
 
 ### Upgrading the VS Code tree (upstream = a code-server release)
 
@@ -424,14 +424,16 @@ reports the tree version / `productPath` / server entry, VS Code inner dependenc
 
 | Key | Default | Description |
 |---|---|---|
-| `bin` | `code-server` (placeholder) | Launch priority: explicit `bin` in config > the tree package `@jinsiyu/dshcs-code-server/code-server/out/node/entry.js` > the old platform sub-packages `@jinsiyu/dshcs-code-server-<platform>-<arch>` > the in-package `vendor/code-server` > the old install root `.code-server-app` > plugin-internal `node_modules` > `code-server` on PATH. None present → startup error with troubleshooting hints |
-| `host` | `127.0.0.1` | Bind address; `auth: none` only allows loopback (localhost/127.0.0.1/::1) |
-| `port` | `8090` | Port of the **fallback** port mode (the default pipe path does not use it); on conflict startup fails with diagnostics (no automatic port change) |
-| `auth` | `none` | `none` \| `password`; non-loopback host automatically requires password |
-| `passwordToken` | `''` | Token for password mode (passed to code-server via the `PASSWORD` env var) |
+| `serve` | `loopback` | `loopback` (IDE on a named pipe, client via mirror + tunnel) \| `dsh` (mounted on DSH's own `/code-server/*`, reusing DSH's Host/Origin + cookie protection). Requires `webServer`; **missing → startup error** (no fallback since 0.3.3) |
+| `auth` | `none` | Fixed to `none` (argon2 removed in 0.2.0; use `serve: dsh` for remote access) |
 | `userDataDir` | `$DSH_HOME/code-server/user-data` | User-data isolation directory |
 | `extensionsDir` | `$DSH_HOME/code-server/extensions` | Extensions directory |
-| `readyTimeoutMs` | `60000` | `/healthz` readiness probe timeout |
+| `locale` | `''` | UI language (empty = follow the browser), e.g. `zh-cn` |
+| `readyTimeoutMs` | `60000` | `/healthz` readiness probe timeout (on the named pipe) |
+
+> 0.3.3 removed the `bin` / `host` / `port` keys along with the two fallback paths they configured
+> (external code-server binary, loopback port). Values still present in a config file are ignored (no error,
+> no migration).
 
 User-level override example (write in `$DSH_HOME/profiles/web/cordis.patch.yml`, using the `- id: code-server` row):
 

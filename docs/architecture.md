@@ -29,15 +29,14 @@ IDE 仍然是 **code-server(= VS Code 服务端)自己的进程**,插件负责�
 │                                                                                    │
 │  子进程:lib/launcher.mjs(node <app>\resources\runtime\node)                        │
 │   └─ VS Code 服务端(import lib/vscode/out/server-main.js → createServer)          │
-│        ├─ http 服务:默认 \\.\pipe\dshcs-vscode-<host pid>(命名管道,0.3.2 起)        │
-│        │   (DSHCS_TRANSPORT=tcp 才退回 127.0.0.1:8090;web 模式一直是管道)             │
+│        ├─ http 服务:\\.\pipe\dshcs-vscode-<host pid>(命名管道;唯一传输)            │
 │        └─ 扩展宿主子进程:内部命名管道 + 字节泵(--socket-path,见 §6;            │
 │            默认的 child.send(socket) 句柄交接在 Windows 上需要真 TCP socket)        │
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-进程数为 3 层:host(含插件)→ IDE 子进程 → 扩展宿主子进程。**没有端口**:客户端侧零端口,
-服务端侧默认也不占 TCP(命名管道);`DSHCS_TRANSPORT=tcp` 时才有一个仅本机回环端口(见 §6)。
+进程数为 3 层:host(含插件)→ IDE 子进程 → 扩展宿主子进程。**两端都没有端口**:客户端零端口(镜像 + 隧道),
+服务端只监听命名管道。0.3.3 起**没有回退** —— 管道起不来就是 `error`(见 §6)。
 
 ## 3. 客户端的三条数据流
 
@@ -112,25 +111,26 @@ DSH 前端(deliverables chip / 正文提及 / 任何 openResource(dsh-resource:/
 | 组合里有 `webServer`? | 有 | 没有 |
 | IDE 资产路径 | DSH `webServer` 的 `/code-server/*` 同源挂载(prefix 路由 + 精确 upgrade 路由) | 资产镜像 `/api/code-server/asset/**` |
 | IDE 连接路径 | 浏览器原生 WebSocket → DSH upgrade 路由 → 命名管道 | 裸字节 shim → DSH 隧道 → 子进程监听器 |
-| 子进程监听 | 命名管道 | 命名管道(0.3.2 起;`DSHCS_TRANSPORT=tcp` 可退回 `127.0.0.1:8090`) |
+| 子进程监听 | 命名管道 | 命名管道(同一条) |
 | 资产镜像 / shim 注入 | **关闭**(`DSHCS_TUNNEL_MODE` 不设) | 开启 |
 | 客户端是否依赖端口 | 否(同源挂载) | 否(镜像 + 隧道) |
-| 是否占 TCP 端口 | 否 | 否(管道路径未就绪时自动回退一次回环端口) |
+| 是否占 TCP 端口 | 否 | 否(且没有端口回退) |
 
 判定发生在插件激活时:`ctx.get('webServer')` 有值即 web 形态;若 `webServer` 晚到,
-`ctx.inject(['webServer'], …)` 会关掉镜像并释放路由。
+`ctx.inject(['webServer'], …)` 会关掉镜像并释放路由。`serve: dsh` 配了却没有 `webServer`(或挂载失败)
+→ **启动直接报错**,不再静默改成 loopback(0.3.3)。
 
 ## 6. 端口与安全边界
 
-- **默认没有任何 TCP 监听**:子进程监听 `\\.\pipe\dshcs-vscode-<host pid>`(web 模式同),
+- **没有任何 TCP 监听**:子进程监听 `\\.\pipe\dshcs-vscode-<host pid>`(web 与 desktop 同),
   客户端不需要也不使用它 —— 它只服务两件事:镜像转发的 HTTP、以及把 IDE 连接交给扩展宿主。
 - **扩展宿主怎么接上**(§15 有源码级证据):VS Code 默认把 accept 出来的**真 socket 句柄**
   交给扩展宿主(`child.send(msg, socket)`),Windows 上只认 TCP 句柄(Duplex→`ERR_INVALID_HANDLE_TYPE`、
   命名管道→`ENOTSUP`);因此 launcher 给 server 传 `--socket-path` 翻转上游开关,让它改为自建
   内部命名管道 + `_pipeSockets()` 泵字节 —— 于是监听端用什么传输都行。launcher 参数
   `--pipe` 与 `--exthost-ipc` 必须成对出现(只给前者 = "IDE 起得来但扩展宿主连不上"的假成功)。
-- **回退**:管道在 10s 内不就绪时,host 自动用回环端口重启一次(仅本机、非 `0.0.0.0`),
-  并在状态/日志里留痕;`DSHCS_TRANSPORT=tcp` 可强制走这条路。
+- **没有回退**(0.3.3):不存在端口路径、没有 `DSHCS_TRANSPORT` 开关、没有"管道超时就换端口"的分支;
+  管道不就绪 → 状态 `error` + launcher 日志尾部。`bin` 逃生舱(外部 code-server 二进制)同时移除。
 - **跨源防护**:upgrade 请求带 `Origin` 时其 host 必须等于 `Host`(反代语义见 `Forwarded`/`X-Forwarded-Host`),
   否则 `403`(实测伪造 Origin → 403);该检查挂在 upgrade 最前。
 - **隧道鉴权**:每次激活随机 token,只经同源 `status` 下发给客户端;
@@ -145,7 +145,8 @@ DSH 前端(deliverables chip / 正文提及 / 任何 openResource(dsh-resource:/
    串行化(并发进入会双开 launcher —— 管道模式直接 `EADDRINUSE`)。
 2. 按需/预启动子进程:`launcher.mjs --tree … --user-data-dir … --extensions-dir … --pipe <name> --exthost-ipc <flag>`,
    注入 `DSHCS_*` 环境(信号文件路径、隧道 token、隧道日志、页面日志、HTML 标记、隧道模式)。
-3. 就绪:按传输轮询子进程 `/healthz`(管道用 `socketPath`);失败按状态机(stopped/starting/running/stopping/error)上报。
+3. 就绪:轮询子进程管道上的 `/healthz`(`socketPath`);失败按状态机(stopped/starting/running/stopping/error)上报,
+   **不做任何降级**(管道超时就是 error)。
 4. 运行中:客户端每轮 status 都拿到 `tunnel`/`assetMirror` 快照;iframe 地址带 `?s=<pid|startedAt>`,
    **IDE 重启后 URL 变化 → 自动重新导航**。
 5. 停止/退出:父进程消失 → 子进程自杀(watchdog);dispose 释放路由、镜像 disposer 与隧道。
@@ -182,11 +183,11 @@ DSH 前端(deliverables chip / 正文提及 / 任何 openResource(dsh-resource:/
 
 ## 10. 已知约束
 
-1. **监听必须存在,但不必是 TCP**(0.3.2 起默认命名管道,§6)。客户端零端口从 0.3.0 起已达成。
-2. 回退路径仍是固定端口 8090(仅当 `DSHCS_TRANSPORT=tcp` 或管道 10s 内不就绪);
-   要弱化指纹可改随机端口(launcher `--port 0` + host 从 `/healthz` 读真实端口)。
+1. **监听必须存在,但不必是 TCP**(命名管道,§6)。客户端零端口从 0.3.0 起已达成。
+2. **没有回退路径**(0.3.3 起):端口、`bin` 逃生舱、`serve: dsh` 的静默降级都已移除;
+   任何一环不成立都是显式 `error`,不再有"看起来还能用"的第二条路。
 3. 工作台 bundle 的注入依赖一个 ASCII 标记(`remoteAuthority:location.host}`)必须命中 1 次;
-   VS Code 升级后若标记消失,注入会**自动跳过并告警**(IDE 退回 loopback WS,不会变砖)。
+   VS Code 升级后若标记消失,注入会**跳过并告警**(此时客户端连不上,没有备用路径)。
 4. 两个非法文件名(空格/加号)不走逐文件路由,依赖 `/vscode-remote-resource` 端点。
 5. 自定义 scheme 下无 HTTP 缓存/CacheStorage/service worker,所有资产每次启动重新取
    (已用 `?v=` 标记 + 镜像转发应对;首屏体积仍受工作台 bundle 影响)。
@@ -195,21 +196,21 @@ DSH 前端(deliverables chip / 正文提及 / 任何 openResource(dsh-resource:/
 
 ## 11. 与"最初"的区别
 
-三个基线:**原版 code-server** → **0.1.x 插件(重构起点)** → **0.2.x(自建 launcher)** → **0.3.1/0.3.2(现在)**。
+四个基线:**原版 code-server** → **0.1.x 插件(重构起点)** → **0.2.x(自建 launcher)** → **0.3.1/0.3.2/0.3.3(现在)**。
 
-| | 原版 code-server | 0.1.x 插件 | 0.2.x | 0.3.1(客户端零端口) | 0.3.2(服务端零 TCP) |
-|---|---|---|---|---|---|
-| Node 服务层 | code-server 自己的 CLI/`main.js` | **原样当子进程跑**(黑盒) | 自建 `launcher.mjs` 取代它(直接 `createServer`/`handleRequest`/`handleUpgrade`) | 同 0.2.x | 同 0.2.x |
-| 客户端到 IDE 的通道 | 浏览器直连它的端口 | 同(iframe 指向 loopback) | web:DSH `webServer` 同源挂载;desktop:loopback | **两者都零端口**(资产镜像 + WS 隧道) | 同 0.3.1 |
-| IDE 连接(WS) | 浏览器原生 WebSocket | 同 | 同 | **裸字节 shim** → 父窗口中继 → DSH 管道 → 代理到 IDE 监听器 | 同 |
-| IDE 资源 | 它自己的静态服务 | 同 | 同 | **镜像到 `/api/code-server/asset/**`**(URL 空间原样) | 同 |
-| 认证 | 默认 password | `none` + Host/Origin 栅栏 | 同 + web 侧 `requestRejection` | 同 + **隧道随机 token** | 同 |
-| 扩展宿主连接 | 同进程内 | 同 0.2.x | 真 TCP socket 句柄交接(Windows 硬约束) | 同 0.2.x | **内部命名管道 + 字节泵**(`--socket-path`,上游自带开关) |
-| 设置卡 | — | 入口 / 依赖安装 / 环境检测 | 收敛到 2 项(认领范围、后台常驻) | 2 项 | 2 项 |
-| 打开文件 | — | — | 官方 `openFile` 认领地址 → 信号文件 → 内置扩展 `showTextDocument` | 同 | 同 |
-| 插件侧体量 | — | 依赖安装/argon2/vendoring 一大堆 | launcher ~500 行 + 客户端 37 KB | 再 + 镜像/隧道/shim;删掉死代码 | 再 + 传输切换与回退(约 60 行) |
-| 诊断 | 无 | 日志 tail | 日志 tail | 4 份日志 + `/healthz` 字段 + 4 个离线测试 + 本地端到端复现工具 | 再 + `/healthz` 的 `exthost`/`listen` 字段 + 管道端到端测试 |
-| 端口 | 一个监听 | 一个监听(web/desktop 都要) | web 无、desktop 一个 | **客户端零**;服务端一个(仅本机) | **两端都零 TCP 端口**(web/desktop 都是命名管道)
+| | 原版 code-server | 0.1.x 插件 | 0.2.x | 0.3.1(客户端零端口) | 0.3.2(服务端零 TCP) | 0.3.3(无回退) |
+|---|---|---|---|---|---|---|
+| Node 服务层 | code-server 自己的 CLI/`main.js` | **原样当子进程跑**(黑盒) | 自建 `launcher.mjs` 取代它(直接 `createServer`/`handleRequest`/`handleUpgrade`) | 同 0.2.x | 同 0.2.x | 同,且移除 `bin` 逃生舱(只剩自带 launcher) |
+| 客户端到 IDE 的通道 | 浏览器直连它的端口 | 同(iframe 指向 loopback) | web:DSH `webServer` 同源挂载;desktop:loopback | **两者都零端口**(资产镜像 + WS 隧道) | 同 0.3.1 | 同 |
+| IDE 连接(WS) | 浏览器原生 WebSocket | 同 | 同 | **裸字节 shim** → 父窗口中继 → DSH 管道 → 代理到 IDE 监听器 | 同 | 同 |
+| IDE 资源 | 它自己的静态服务 | 同 | 同 | **镜像到 `/api/code-server/asset/**`**(URL 空间原样) | 同 | 同 |
+| 认证 | 默认 password | `none` + Host/Origin 栅栏 | 同 + web 侧 `requestRejection` | 同 + **隧道随机 token** | 同 | 同 |
+| 扩展宿主连接 | 同进程内 | 同 0.2.x | 真 TCP socket 句柄交接(Windows 硬约束) | 同 0.2.x | **内部命名管道 + 字节泵**(`--socket-path`,上游自带开关) | 同 |
+| 设置卡 | — | 入口 / 依赖安装 / 环境检测 | 收敛到 2 项(认领范围、后台常驻) | 2 项 | 2 项 | 2 项 |
+| 打开文件 | — | — | 官方 `openFile` 认领地址 → 信号文件 → 内置扩展 `showTextDocument` | 同 | 同 | 同 |
+| 插件侧体量 | — | 依赖安装/argon2/vendoring 一大堆 | launcher ~500 行 + 客户端 37 KB | 再 + 镜像/隧道/shim;删掉死代码 | 再 + 传输切换(约 40 行) | **净减**:删掉端口/回退/bin 三条死路 |
+| 诊断 | 无 | 日志 tail | 日志 tail | 4 份日志 + `/healthz` 字段 + 4 个离线测试 + 本地端到端复现工具 | 再 + `/healthz` 的 `exthost`/`listen` 字段 + 管道端到端测试 | 同 |
+| 端口 | 一个监听 | 一个监听(web/desktop 都要) | web 无、desktop 一个 | **客户端零**;服务端一个(仅本机) | **两端都零 TCP 端口** | 同,且**没有端口回退** |
 
 **始终没变的**:
 
