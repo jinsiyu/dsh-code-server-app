@@ -1,6 +1,6 @@
 {
   "name": "dsh-code-server-app",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "description": "VS Code (from a code-server release) inside DSH: a right-sidebar tab driven by the plugin's own launcher over the in-process VS Code server (lib/launcher.mjs). The tab claims DSH file addresses (dsh-resource://file/**) by file type (setting claimExtensions), so the product's own produced-file chips, delivered-file previews and inline prose mentions open in the workbench. The IDE is a resident surface moved with Element.moveBefore instead of being remounted, so switching sidebar tabs no longer reloads it. Opening the tab switches the right sidebar to fullscreen by default (setting fullscreenOnOpen). Following a workspace switch is lightweight: the workbench re-navigates with the new ?folder= and the IDE process is not restarted (since 0.2.12). Requires a DSH with the right-sidebar services (sidebarRightTabs/sidebarRight, >= 0.1.5-alpha.1); older DSH versions get a single upgrade notice on the settings page and no other UI. Two serving modes: loopback port (default) or same-origin mount on DSH's own webServer (/code-server, protected by ctx.connection.requestRejection). No code-server Node layer, no argon2, no C++ toolchain.",
   "homepage": "https://github.com/jinsiyu/dsh-code-server-app",
   "repository": {
@@ -79,7 +79,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@jinsiyu/dshcs-vscode-server": "4.136.2",
+    "@jinsiyu/dshcs-vscode-server": "4.137.0",
     "@microsoft/1ds-core-js": "3.2.13",
     "@microsoft/1ds-post-js": "3.2.13",
     "@vscode/iconv-lite-umd": "0.7.1",
@@ -87,16 +87,16 @@
     "@vscode/sandbox-runtime": "0.0.1",
     "@vscode/tree-sitter-wasm": "0.3.1",
     "@vscode/vscode-languagedetection": "1.0.23",
-    "@xterm/addon-clipboard": "0.3.0-beta.301",
-    "@xterm/addon-image": "0.10.0-beta.299",
-    "@xterm/addon-ligatures": "0.11.0-beta.299",
-    "@xterm/addon-progress": "0.3.0-beta.299",
-    "@xterm/addon-search": "0.17.0-beta.299",
-    "@xterm/addon-serialize": "0.15.0-beta.299",
-    "@xterm/addon-unicode11": "0.10.0-beta.299",
-    "@xterm/addon-webgl": "0.20.0-beta.298",
-    "@xterm/headless": "6.1.0-beta.301",
-    "@xterm/xterm": "6.1.0-beta.302",
+    "@xterm/addon-clipboard": "0.3.0-beta.302",
+    "@xterm/addon-image": "0.10.0-beta.300",
+    "@xterm/addon-ligatures": "0.11.0-beta.300",
+    "@xterm/addon-progress": "0.3.0-beta.300",
+    "@xterm/addon-search": "0.17.0-beta.300",
+    "@xterm/addon-serialize": "0.15.0-beta.300",
+    "@xterm/addon-unicode11": "0.10.0-beta.300",
+    "@xterm/addon-webgl": "0.20.0-beta.299",
+    "@xterm/headless": "6.1.0-beta.302",
+    "@xterm/xterm": "6.1.0-beta.303",
     "cookie": "0.7.2",
     "detect-libc": "2.1.2",
     "http-proxy-agent": "7.0.0",
@@ -117,7 +117,7 @@
     "zod": "4.4.3"
   },
   "optionalDependencies": {
-    "@jinsiyu/dsh-code-server-runtime-win32-arm64": "^0.2.0",
-    "@jinsiyu/dsh-code-server-runtime-win32-x64": "^0.2.0"
+    "@jinsiyu/dsh-code-server-runtime-win32-arm64": "^0.2.13",
+    "@jinsiyu/dsh-code-server-runtime-win32-x64": "^0.2.13"
   }
 }

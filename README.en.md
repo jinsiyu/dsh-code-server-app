@@ -209,9 +209,12 @@ state preserved (no full reload). Full evidence and probe scripts: `docs/analysi
   "Install the plugin (script-free install; code-server bundled)" below — `pnpm install` → `pnpm run build:client` →
   `pnpm run vendor:vscode` → `pnpm pack` + `dsh plugin --profile web add`.
 
-> Verified locally (BM: Windows 11 ARM64): `code-server@4.136.2` (with Code 1.136.1) bundled in the plugin,
-> placed offline at activation → VS Code internal deps installed → started → healthz 200 →
-> cwd switch restart while running → stopped → fully recycled.
+> Verified locally (BM: Windows 11 ARM64): the whole tree/dependency chain is supplied by per-platform
+> sub-packages — the tree package `@jinsiyu/dshcs-vscode-server` (currently 4.137.0, a 50.8 MB tarball),
+> the pure-JS inner dependencies directly in the plugin's `dependencies`, and 16 prebuilt native modules
+> re-exported under their original names by the aggregator `@jinsiyu/dsh-code-server-runtime-win32-<arch>`
+> (picked by os/cpu) → healthz 200 → stopped → fully recycled.
+> (The 0.1.37-era "one big platform package" layout is gone — see "Upgrading the VS Code tree" below.)
 
 ## Packaging (how to build the tarball)
 
@@ -249,7 +252,7 @@ pnpm run promote -- <version>
 | Goal | Command |
 |---|---|
 | **Build from the latest upstream release** | `pnpm run vendor:latest` (= `--force`): pulls `code-server@latest`'s tree into `vendor/vscode`; afterwards you **must** re-run `repack:build` and republish every sub-package |
-| **Pin a version** | `pnpm run vendor:vscode -- --version 4.136.2` |
+| **Pin a version** | `pnpm run vendor:vscode -- --version 4.137.0` |
 | **Snapshot from an existing tree** | `pnpm run vendor:vscode -- --from <code-server dir>` (seconds) |
 | **Rebuild every sub-package** | `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack` (without `--from` it npm-installs and compiles the source tree itself — slow) |
 | **Rebuild only the tree/aggregator packages** | `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64 --pack` (reuses the natives already in `repack/build`) |
@@ -381,8 +384,17 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 ### Upgrading the VS Code tree (upstream = a code-server release)
 
 - **The version is decided at pack time**: `pnpm run vendor:latest` (= `--force`) pulls the tree of the npm **latest**
-  release; or use `pnpm run vendor:vscode -- --version 4.136.2` / `DSHCS_CODE_SERVER_VERSION`.
+  release; or use `pnpm run vendor:vscode -- --version 4.137.0` / `DSHCS_CODE_SERVER_VERSION`.
   With an existing `vendor/vscode`, a plain `pnpm pack` never upgrades (it is a no-op).
+  **Source-tree precedence (fixed in 0.2.13)**: an explicit `--from` uses that tree, while an explicit
+  `--force`/`--version` now **always goes to the registry** — before the fix a local source tree won
+  (`defaultSourceTree()` hit `vendor/code-server` or an installed profile tree first), so the documented
+  "`vendor:latest` takes latest from the registry" silently kept the old version (hit while upgrading to 0.2.13:
+  the bundled tree stayed at 4.136.2). A run with neither flag still reuses a local tree to save the download.
+- **Sync the inner dependency pins when the tree changes**: in `--reuse` mode the pure-JS install set is read from
+  the **plugin's package.json**, so update those pins from the new tree's `lib/vscode/package.json` first
+  (this time: 10 `@xterm/*` beta bumps). The rule is "only move a pin that no longer satisfies the new range",
+  which keeps already-newer pins such as `cookie`/`ws`/`tar`/`node-addon-api` from being downgraded.
 - **Check first**: `pnpm run vendor:check` prints the bundled version / upstream latest.
 - **A version bump means rebuilding and republishing the sub-packages** (all with the same script):
   1. `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack` → the new tree package
@@ -393,7 +405,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 - `productPath` (`<quality>-<commit>`, part of the client WebSocket path) is **computed from `lib/vscode/product.json`**,
   so upgrading the tree needs no code change — but the routes are registered at activation, so restart `dsh web` afterwards.
 - **No runtime auto-upgrade anymore**: nothing fetches latest at startup; the version is fully determined by the bundled artifact.
-- Bundled locally right now: the tree of `code-server@4.136.2` (VS Code 1.136.1, `productPath=stable-8d5f383f…`).
+- Bundled locally right now: the tree of `code-server@4.137.0` (VS Code 1.137.0, `productPath=stable-b11dabda…`).
 
 ### Compatibility with the old install locations
 

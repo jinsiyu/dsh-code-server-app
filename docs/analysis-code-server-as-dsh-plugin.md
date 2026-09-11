@@ -682,3 +682,25 @@ GET /          → 200 text/html len=4222
 - 回归:`scripts/test-workspace-switch.mjs` —— 用真实活进程当"IDE"(spawn 长活子进程 + 只回 200 的
   `/healthz` + pid.json)走真实路由,断言 cwd 跟随、pid 不变、进程存活、同目录幂等、无 cwd 不切换;
   实测把 `adoptWorkspace` 改回 `stop('restart')` 时 ①②④⑤ 必挂。
+
+### 14.5 0.2.13:树升级到 code-server 4.137.0(VS Code 1.137.0)+ 两处工具链修正
+
+- 版本:`vendor:check` 报内置 4.136.2 / 上游 4.137.0(2026-09-11 发布,changelog 仅 "Update to Code 1.137.0"
+  与 "Windows releases are now available");升级后 `productPath=stable-b11dabdaca0d3369986975be285db92c8795cea5`,
+  树 197.9 MB。
+- **升级前兼容性预检(只读,不重建 197MB 树)**:把 4.137.0 的 npm 包(53.4 MB)拉下来逐项核对 ——
+  `loadCodeWithNls` 的导出形态逐字同构(`process.env.CODE_SERVER_PARENT_PID||…;export{X as loadCodeWithNls}`)、
+  `createServer`/`handleRequest`/`handleUpgrade`/参数名全在、`workbench.html` 的资源引用两版逐字相同
+  (我们的 `?v=` 改写依赖它)、code-server 自身 20 个依赖无变化、树内 50 个依赖仅 13 处版本跳动且**原生包无变化**
+  ⇒ 判定为低风险,可走 `--reuse` 路径(不重新编译原生包)。事后证明预检准确。
+- **vendor 脚本源树优先级修正**:修正前 `defaultSourceTree()`(profile 里的旧树 → `vendor/code-server`)
+  会抢在 registry 之前,即使给了 `--force`/`--version` —— 这正是"内置树一直停在 4.136.2、`vendor:latest`
+  却没取到 4.137.0"的原因。现在:显式 `--from` 用给定树;显式 `--force`/`--version` 一定走 registry;
+  两者都没有才复用本机源树。
+- **依赖 pin 同步**:`--reuse` 的纯 JS 直装集是从插件 package.json 现读的,所以先按新树更新 pin。
+  用"仅当现有 pin 不满足新范围才动"的规则,得到 10 个 `@xterm/*` beta 跳号;
+  若无脑"去 ^ 取值"会把 `cookie 0.7.2→0.7.0`、`ws 8.21.0→8.19.0`、`tar 7.5.22→7.5.20`、
+  `node-addon-api 6.1.0→6.0.0` 四处**降级**(它们本来就满足新范围)—— 已避免。
+- 发布:`@jinsiyu/dshcs-vscode-server@4.137.0`(50.8 MB)+ 两个平台聚合包 `0.2.13`
+  (聚合包版本跟插件版本走,所以 bump 插件版本必须在 repack 之前);
+  x64 聚合包在 registry 上比 arm64 晚几分钟才可见(publish 返回 "being processed"),重查即可。

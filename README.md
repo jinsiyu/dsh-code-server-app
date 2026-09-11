@@ -205,10 +205,11 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
   "打包(如何出包)"执行 `pnpm install` → `pnpm run build:client` → `pnpm run vendor:vscode` →
   (发布预编译原生包)→ `pnpm pack` + `dsh plugin --profile web add` 即可。
 
-> 本机(BM: Windows 11 ARM64)实测:`code-server@4.136.2`(with Code 1.136.1)由平台子包
-> `@jinsiyu/dshcs-code-server-win32-arm64` 提供(主包 0.1.37 仅 105KB),
-> 35 个纯 JS 内部依赖 + 16 个预编译原生包(经平台聚合包装回原名)由 pnpm 一条命令装好 →
-> healthz 200 → 运行中切换 cwd 重启 → 停止 → 回收全链路验证。
+> 本机(BM: Windows 11 ARM64)实测:树/依赖全链路是"平台子包 + 聚合包"供给 ——
+> 树包 `@jinsiyu/dshcs-vscode-server`(当前 4.137.0,50.8 MB tgz)、纯 JS 内部依赖直接进插件
+> `dependencies`、16 个预编译原生包经平台聚合包 `@jinsiyu/dsh-code-server-runtime-win32-<arch>`
+> (按 os/cpu 自动选)装回原名 → healthz 200 → 停止 → 回收全链路验证。
+> (0.1.37 时代的主包形态已废弃,见下方"升级 VS Code 树"。)
 
 ## 打包(如何出包)
 
@@ -246,7 +247,7 @@ pnpm run promote -- <version>
 | 目标 | 命令 |
 |---|---|
 | **打最新版(上游 code-server 发行版)** | `pnpm run vendor:latest`(= `--force`):从 registry 取 `code-server@latest` 的树到 `vendor/vscode`;之后**必须**重跑 `repack:build` 并重发全部子包 |
-| **指定版本** | `pnpm run vendor:vscode -- --version 4.136.2` |
+| **指定版本** | `pnpm run vendor:vscode -- --version 4.137.0` |
 | **从已装好的树快照** | `pnpm run vendor:vscode -- --from <code-server 目录>`(秒级) |
 | **开发期让树可直接跑** | `pnpm run vendor:vscode -- --dev-links`(额外把 `lib/vscode/node_modules` 用 junction 补上) |
 | **完整重打子包** | `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack`(不给 `--from` 会自动 npm install 解包 + 编译,耗时) |
@@ -384,8 +385,15 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 ### 升级 VS Code 树(上游 = code-server 发行版)
 
 - **打包期决定版本**:`pnpm run vendor:latest`(= `--force`)取 npm **最新版 code-server** 的树并重建 `vendor/vscode`;
-  也可 `pnpm run vendor:vscode -- --version 4.136.2` 或设 `DSHCS_CODE_SERVER_VERSION`。
+  也可 `pnpm run vendor:vscode -- --version 4.137.0` 或设 `DSHCS_CODE_SERVER_VERSION`。
   已有 `vendor/vscode` 时,不带 `--force`/`--version` 不会升级(日常 `pnpm pack` 是 no-op)。
+  **源树优先级(0.2.13 修正)**:显式 `--from` 用给定树;显式 `--force`/`--version` **一定走 registry**
+  —— 修正前它们会被"本机已有源树"抢走(`defaultSourceTree()` 先命中 `vendor/code-server` 或 profile 里的旧树),
+  于是 README 写的"`vendor:latest` 从 registry 取 latest"实际拿不到新版本(0.2.13 升级时踩到:内置树一直停在 4.136.2);
+  只有既没 `--force` 也没 `--version` 时才复用本机源树省一次下载。
+- **换版本时同步树内依赖 pin**:`--reuse` 模式下纯 JS 直装集是从**插件 package.json 现读**的,
+  所以要先按新树的 `lib/vscode/package.json` 更新 pin(本次 10 个 `@xterm/*` 的 beta 跳号;
+  判定规则是"现有 pin 不满足新范围才动",避免把 `cookie`/`ws`/`tar`/`node-addon-api` 这类已有更高版本降级)。
 - **先查再升**:`pnpm run vendor:check` 打印「内置版本 / 上游 latest」。
 - **换版本后重新出子包并发布**(全部由同一个脚本):
   1. `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack` → 新的树包
@@ -395,7 +403,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 - `productPath`(`<quality>-<commit>`,客户端 WS 路径的组成)**从 `lib/vscode/product.json` 现算**,
   升级树后无需改代码 —— 但也意味着切版本后必须重启 dsh web(路由在激活期注册)。
 - **不再有运行期自动升级**:不会在启动时联网取 latest;版本完全由内置产物决定。
-- 本机当前内置:`code-server@4.136.2` 的树(VS Code 1.136.1,`productPath=stable-8d5f383f…`)。
+- 本机当前内置:`code-server@4.137.0` 的树(VS Code 1.137.0,`productPath=stable-b11dabda…`)。
 
 ### 兼容旧安装位
 

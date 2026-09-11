@@ -200,14 +200,19 @@ async function main() {
   }
 
   const skip = existing !== null && !FORCE && FROM === null && PINNED === null;
+  // 源树优先级(0.2.13 修正):显式 `--from` 用给定树;显式 `--force`/`--version` 表示"就是要换版本"
+  // → 只认 registry;其余情况才复用本机已有源树(省一次 53MB 下载)。
+  // 修正前:`--force`/`--version` 也会被本机源树抢先,导致 README 写的
+  // 「vendor:latest(= --force)从 registry 取 latest」实际拿不到新版本(本次升级踩到)。
+  const localSource = FROM === null && !FORCE && PINNED === null ? defaultSourceTree() : null;
   let codeServerVersion = existing;
   let sourceKind = 'registry';
   let sourceTree = null;
 
   if (skip) {
     console.log(`[vendor] vendor/vscode 已存在(code-server@${existing});跳过(用 --force 重建)`);
-  } else if (FROM !== null || (sourceTree = defaultSourceTree()) !== null) {
-    const src = FROM ?? sourceTree;
+  } else if (FROM !== null || localSource !== null) {
+    const src = FROM ?? localSource;
     codeServerVersion = readJson(join(src, 'package.json'))?.version ?? null;
     if (codeServerVersion === null) throw new Error(`--from ${src} 不是一棵 code-server 树`);
     console.log(`[vendor] 源树 ${src}(code-server@${codeServerVersion})→ vendor/vscode/`);
