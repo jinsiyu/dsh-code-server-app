@@ -457,7 +457,9 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
     - **解析**(没有锁文件可校验时,如 `pnpm clean --lockfile` 之后):**认**这份名单,而且 pnpm 自己会往
       `pnpm-workspace.yaml` 追加条目(安装日志会打印 *"Added N entries to minimumReleaseAgeExclude…"*)。
   - 因此桌面端装**刚发布**(<24h)版本的可行路径是 **从"没有锁文件"的干净起点安装**:
-    1. `pnpm clean --lockfile`(**注意:它会连 `node_modules` 一起删**,profile 变成待重装状态);
+    1. `pnpm clean --lockfile`(**注意:它会连 `node_modules` 一起删**,profile 变成待重装状态;应用若正在运行,
+       这会**同时打断它自己的工具链**——host 的 shell 沙箱 runner 与 `tsx` 都从这个 profile 树里解析,
+       删掉后每次 shell 调用都在 `ERR_MODULE_NOT_FOUND` 上失败,重装完才恢复,2026-09-11 实测);
     2. 用应用自带的 runtime 在 profile 目录里 `add <spec> --save-exact --trust-lockfile`
        (运行时/仓库/配置目录都在 `~/.dsh/desktop/pnpm/{store,cache,state,config,home}`,`--config.userconfig=…/config/npmrc`,
        否则会出现 `ERR_PNPM_UNEXPECTED_STORE` / `…UNEXPECTED_VIRTUAL_STORE`);

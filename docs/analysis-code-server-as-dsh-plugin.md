@@ -467,6 +467,10 @@ GET /          → 200 text/html len=4222
 1. 备份 active profile 的 `package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml`。
 2. 在 profile 里 `pnpm clean --lockfile` —— **注意它会连 `node_modules` 一起删**(输出 "Removing node_modules"),
    profile 因此进入待重装状态;这一步是为了让事务/安装从"没有锁文件"的起点开始,从而走解析阶段。
+   **副作用(2026-09-11 实测)**:应用正在运行时,host 自己的 shell 沙箱 runner
+   (`@deepseek-ai/dsh-sandbox-windows-acl/src/runner.ts`)与 `tsx` 正是从这棵 profile 树解析的 —— 删掉之后
+   每条 shell 调用都在 `ERR_MODULE_NOT_FOUND` 上失败(先在 cwd 找 `tsx`,再退回祖先树里没有 `src/` 的已发布副本);
+   按第 3 步重装回同一棵 266 包的树后立即恢复(与 `~/.dsh/desktop/rollback/profile` 快照的顶层包集合逐项一致)。
 3. 用应用自带 runtime 在 profile 目录执行
    `add dsh-code-server-app@0.2.4 --save-exact --trust-lockfile`
    (store/cache/state/config/home 都在 `~/.dsh/desktop/pnpm/**`;直接用 profile 自己的 store 才不会

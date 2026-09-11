@@ -452,7 +452,9 @@ Host/Origin fence and browser auth); in the desktop profile `apps/desktop-host` 
     - **resolution** (no lockfile to verify, e.g. after `pnpm clean --lockfile`): the list *is* honoured, and pnpm even appends
       entries itself (the install log prints *"Added N entries to minimumReleaseAgeExclude…"*);
   - so the working recipe for a **just-published** (<24 h) version on desktop is to start from a clean, lockfile-free profile:
-    1. `pnpm clean --lockfile` (**note: it also deletes `node_modules`**, leaving the profile to be reinstalled);
+    1. `pnpm clean --lockfile` (**note: it also deletes `node_modules`**, leaving the profile to be reinstalled; while the app
+       is running this also **breaks the app's own tooling** — the host's shell sandbox runner and `tsx` both resolve through
+       this profile tree, so every shell call fails on `ERR_MODULE_NOT_FOUND` until the reinstall finishes, 2026-09-11);
     2. with the app's bundled runtime, run `add <spec> --save-exact --trust-lockfile` in the profile directory
        (runtime/store/config live under `~/.dsh/desktop/pnpm/{store,cache,state,config,home}`,
        `--config.userconfig=…/config/npmrc`, otherwise pnpm fails with `ERR_PNPM_UNEXPECTED_STORE` /
