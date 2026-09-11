@@ -299,7 +299,9 @@ let React = require('react')
       var forcedFullscreenRef = React.useRef(false)
       var visible = info.tab != null && info.tab.visible === true
       var fullscreen = info.sidebar != null && info.sidebar.fullscreen === true
-      var fullscreenOnOpen = status == null || status.fullscreenOnOpen !== false
+      // status 未到达(host 尚未应答)时按"未知"处理 → 不抢跑;值到达后由依赖变化补一次。
+      // 反过来(未知即当真)会在用户关掉设置、而 status 还在路上时误切一次全屏。
+      var fullscreenOnOpen = status != null && status.fullscreenOnOpen !== false
       // 触发时机 = 本标签"变得可见"的那一刻(打开、切回、重新展开侧栏),每个可见周期只切一次:
       // 之后用户点「退出全屏」不会被抢回去(退出全屏→再切走切回才会重新切全屏)。
       // layout effect:与面板同一次提交,按钮已在 DOM 里 → 不会先画一帧 push 再跳全屏。
