@@ -44,6 +44,7 @@ await test('枚举:形状正确(out/extensions/_static 三个来源 + singletons
   assert.ok(urls.includes('/_static/src/browser/media/favicon.ico'));
   assert.ok(urls.includes('/vscode-remote-resource'), 'NLS 用的无前缀端点必须在集合里');
   assert.ok(urls.includes(`/${PRODUCT}/vscode-remote-resource`), '工作台文件服务用的**带前缀**端点必须在集合里(2026-09-11 漏过:主题/语法/图标全读不到)');
+  assert.ok(urls.includes(`/index.html/${PRODUCT}/vscode-remote-resource`), '还要有"文档路径 + 产品路径"那种形态(工作台按 location.pathname 拼端点时会多出 index.html/ 段)');
   assert.ok(urls.includes('/manifest.json'));
 });
 
@@ -100,6 +101,19 @@ await test('转发:扩展资源端点(带前缀)原样带到上游并回传(主�
   const response = await route.fetch(new Request(`https://dsh.invalid${routePath}?path=%2Fc%3A%2Fext%2Ftheme.json`, { method: 'GET' }));
   assert.equal(response.status, 200);
   assert.equal(await response.text(), `echo:${upstreamPath}?path=%2Fc%3A%2Fext%2Ftheme.json`);
+});
+
+await test('转发:"文档路径 + 产品路径"形态要注册,且上游路径去掉 index.html 段', async () => {
+  const routePath = `${ASSET_BASE}/index.html/${PRODUCT}/vscode-remote-resource`;
+  const route = registered.get(routePath);
+  assert.ok(route !== undefined, '这条形态缺失 ⇒ 工作台按 location.pathname 拼出来的端点 404(颜色/图标/语法全丢)');
+  const response = await route.fetch(new Request(`https://dsh.invalid${routePath}?path=%2Fc%3A%2Fext%2Ftheme.json`, { method: 'GET' }));
+  assert.equal(response.status, 200);
+  assert.equal(
+    await response.text(),
+    `echo:/${PRODUCT}/vscode-remote-resource?path=%2Fc%3A%2Fext%2Ftheme.json`,
+    '转发给 IDE 前必须去掉 index.html/(IDE 只认 /<productPath>/…)',
+  );
 });
 
 await test('转发:同路径 + 同查询串到达上游,响应体原样回传', async () => {
