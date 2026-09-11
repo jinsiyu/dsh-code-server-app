@@ -111,8 +111,9 @@ let React = require('react')
 
     /** 构建 code-server 页面 URL(base + 会话标记 + ?folder=<cwd>,Windows 路径须为 /C:/ 形式)。
      *  cwd 为空时回退 status.cwd;两者皆无 → 裸根 URL。
-     *  阶段 2:host 提供资产镜像时优先用它的文档地址(同源 dsh-app://,子资源不再走 loopback);
-     *  镜像未注册成功则回退 status.url(loopback),与 0.2.x 行为一致。
+     *  阶段 2:host 提供资产镜像时用它的文档地址(同源 dsh-app://,子资源不走端口);
+     *  status.url 由 host 给出:desktop 就是镜像文档本身,web(serve=dsh)是 /code-server/。
+     *  镜像没注册成功时 desktop 没有备用文档来源 —— 这里仍按 url 拼,失败在页面层暴露。
      *  末尾的 `s=` 是"实例标记"(pid/启动时间):IDE 重启后 URL 变化 → iframe 会重新导航。
      *  没有它的话,IDE 未就绪时加载到的错误页(如镜像的 503 JSON)会一直粘在 iframe 上。 */
     function buildPageUrl(status, cwd) {
@@ -183,9 +184,7 @@ let React = require('react')
         : 'code-server 未运行'
       var modeHint = sameOrigin
         ? '当前以 DSH 同源路径 ' + ((status != null && status.url) || '/code-server/') + ' 提供(无独立端口)。'
-        : (status != null && status.transport === 'pipe'
-          ? '当前以本机命名管道提供(不占用任何 TCP 端口;客户端经 DSH 同源资产镜像 + 隧道访问)。'
-          : '当前以独立回环端口提供(端口 ' + (status != null && status.port != null ? status.port : '8090') + ' 被占用时请释放或修改 port 配置)。')
+        : '当前以本机命名管道提供(不占用任何 TCP 端口;客户端经 DSH 同源资产镜像 + 隧道访问)。'
       var residentHint = supportsMoveBefore
         ? '常驻面:可用(切标签/收起侧栏不重载)。'
         : '常驻面:当前浏览器不支持 Element.moveBefore —— 切标签会整页重载(升级浏览器后自动可用)。'

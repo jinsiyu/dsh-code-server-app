@@ -121,8 +121,6 @@ await plugin.apply(ctx, {
   keepResident: false,
   fileOpenScope: 'session',
   serve: 'loopback',
-  host: '127.0.0.1',
-  port: 18099,
   userDataDir,
 });
 
@@ -132,10 +130,9 @@ try {
   const statusRoute = routes.get('/api/code-server/status');
   assert.ok(startRoute !== undefined && statusRoute !== undefined, 'start/status 路由必须已注册');
 
-  await test('start:desktop 走命名管道(transport=pipe / port=null / url=资产镜像文档)', async () => {
+  await test('start:desktop 走命名管道(transport=pipe / 无 port 字段 / url=资产镜像文档)', async () => {
     const started = await jsonOf(await startRoute.fetch({ json: async () => ({}) }));
     assert.notEqual(started.status, 'error', `启动不应直接报错:${started.error ?? ''}`);
-    // 管道就绪最多 10s(超出会回退 TCP,那种情况下面会断言失败)
     const deadline = Date.now() + 90000;
     for (;;) {
       const current = await jsonOf(await statusRoute.fetch({}));
@@ -145,11 +142,12 @@ try {
     }
     assert.equal(status.status, 'running', `IDE 应就绪:${String(status.error ?? '').slice(0, 400)}`);
     console.log(`     pid=${status.pid} transport=${status.transport} pipe=${status.pipe}`);
-    assert.equal(status.transport, 'pipe', '0.3.2 起 desktop 默认走命名管道');
+    assert.equal(status.transport, 'pipe', '管道是唯一传输');
     assert.ok(typeof status.pipe === 'string' && status.pipe.includes('pipe'), `pipe 名应可读:${status.pipe}`);
-    assert.equal(status.port, null, '管道模式下不该再报端口');
+    assert.equal('port' in status, false, '0.3.3 起状态里不再有 port 字段(没有端口这条路)');
+    assert.equal('host' in status, false, '0.3.3 起状态里不再有 host 字段');
     assert.equal(status.serve, 'loopback');
-    assert.equal(status.url, '/api/code-server/asset/index.html', '管道模式的客户端文档必须来自同源资产镜像');
+    assert.equal(status.url, '/api/code-server/asset/index.html', '客户端的文档只能来自同源资产镜像');
   });
 
   await test('IDE 真的监听在命名管道上(/healthz)', async () => {

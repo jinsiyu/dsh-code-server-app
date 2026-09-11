@@ -113,28 +113,23 @@ await test('apply() 幂等性冒烟:再跑一次不抛错', async () => {
   rmSync(config.userDataDir, { recursive: true, force: true });
 });
 
-await test('launcherFlags()/resolveTransport():管道模式必须同时给 --exthost-ipc(§15 的假成功陷阱)', async () => {
+await test('launcherFlags():管道是唯一传输,--exthost-ipc 必须配对(§15 的假成功陷阱)', async () => {
   const plugin = await import('../lib/index.js');
   assert.equal(typeof plugin.launcherFlags, 'function', 'launcherFlags 必须导出(纯函数,便于测试)');
-  assert.equal(plugin.resolveTransport('dsh'), 'pipe', 'dsh 模式固定走管道(launcher 挂 webServer)');
 
   const pipe = '\\\\.\\pipe\\dshcs-vscode-1234';
   assert.deepEqual(
-    plugin.launcherFlags({ transport: 'pipe', pipe, host: '127.0.0.1', port: 8090 }),
+    plugin.launcherFlags({ pipe }),
     ['--pipe', pipe, '--exthost-ipc', `${pipe}-exthost`],
     'pipe 必须配对 --exthost-ipc:只给 pipe 会得到"IDE 起得来但扩展宿主连不上"的假成功',
   );
   assert.deepEqual(
-    plugin.launcherFlags({ transport: 'tcp', pipe: null, host: '127.0.0.1', port: 8090, locale: 'zh-cn' }),
-    ['--port', '8090', '--host', '127.0.0.1', '--locale', 'zh-cn'],
-    'tcp 回退只给端口参数,不带 --exthost-ipc',
+    plugin.launcherFlags({ pipe, locale: 'zh-cn' }),
+    ['--pipe', pipe, '--exthost-ipc', `${pipe}-exthost`, '--locale', 'zh-cn'],
   );
-
-  const before = process.env.DSHCS_TRANSPORT;
-  process.env.DSHCS_TRANSPORT = 'tcp';
-  assert.equal(plugin.resolveTransport('loopback'), 'tcp', 'DSHCS_TRANSPORT=tcp 是强制回退开关');
-  if (before === undefined) delete process.env.DSHCS_TRANSPORT;
-  else process.env.DSHCS_TRANSPORT = before;
+  // 0.3.3 起没有回退:不存在任何走端口的参数组合,也没有 DSHCS_TRANSPORT 之类的开关
+  assert.equal(plugin.launcherFlags({ pipe }).includes('--port'), false, '不该再有端口参数');
+  assert.equal(plugin.resolveTransport, undefined, 'resolveTransport 开关已移除');
 });
 
 console.log(`SUMMARY pass=${pass} fail=${fail}`);
