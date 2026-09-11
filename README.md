@@ -57,7 +57,7 @@
     含窄视口下的连带处理)。按钮找不到时保持原模式并 `console.warn` 一条,绝不影响面板渲染。
 - **IDE 常驻(0.2.2 起,默认开)**:切到别的标签/收起侧栏再回来**不再重载** code-server——
   未保存的编辑缓冲区、终端、调试会话都留在原处(见下方「为什么切标签不再重载」)。
-- 设置卡片只有**三个设置**:「**认领范围**」「**打开即全屏**」与「**后台常驻(切标签不重载)**」——没有其它行(0.2.7 起移除「入口」「依赖安装」「环境检测」)。
+- 设置卡片只有**三个设置**:「**认领类型**」「**打开即全屏**」与「**后台常驻(切标签不重载)**」——没有其它行(0.2.7 起移除「入口」「依赖安装」「环境检测」)。
   打开 IDE 用右侧栏「开始」页的 **Code Server 入口框**,或直接点官方的产物 chip / 交付卡片 / 正文文件名;
   诊断看 DSH host 日志里的 `[code-server]` 输出(`/api/code-server/status` 仍返回 `env` 供脚本排查)。
   旧版的 `windowedOpen`(窗口化打开)、`reserveComposer` 已在 0.2.6 移除:旧设置文档里残留的这两个键不会报错,只是被忽略(不再出现在 schema 里)。
@@ -82,12 +82,21 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 |---|---|---|
 | `patterns` | `['dsh-resource://file/**']` | 认领文件地址(含 `:` 的 pattern 按**整址** glob 匹配) |
 | `priority` | `'extension'` | 高于官方纯文本预览的 `fallback`——DSH 源码注释写明后者是"VS Code 文本编辑器在编辑器中的位次,任何更具体的类型都应当击败它" |
-| `canOpen` | 见下 | 按「认领范围」设置否决,未认领的地址由官方预览兜底 |
+| `canOpen` | 见下 | 按「认领类型」设置否决,未认领的地址由官方预览兜底 |
 | `title` | 地址末段(=文件名) | tab chip 显示文件名;页面 tab(`sidebar://code-server`)仍是 `Code Server` |
 
-- **认领范围**(设置卡片可切,`fileOpenScope`):
-  - `session`(默认)= 只认领 `dsh-resource://file/session/…`(会话里的产物、交付、正文提及、工具视图都走这条);
-  - `all` = 连不带会话的 `dsh-resource://file/absolute/…` 也认领("所有文件"模式)。
+- **认领类型**(设置卡片里的文本框,`claimExtensions`,0.2.11 起):
+  **不再区分作用域** —— `dsh-resource://file/session/…` 与 `…/file/absolute/…` 一视同仁,只看扩展名。
+  文本框语法(分号分隔,`,`/空白/换行也认;写 `py`、`.py`、`*.py` 等价;大小写不敏感):
+  - `*` = 其余类型也认领(兜底);
+  - `py` = 认领 `.py`;
+  - `!md` = 不认领 `.md`(**排除优先**于认领与 `*`);
+  - **默认** `*;!md;!markdown;!html;!htm;!png;!jpg;!jpeg;!gif;!webp;!bmp;!ico;!svg;!pdf`
+    = DSH 自带预览渲染得好的四类(markdown / html / 图片 / PDF)留给它,其余(代码、json/yaml、txt、日志、
+    无扩展名如 `Makefile`、未知扩展名)都进 IDE;清空文本框 = 不认领任何文件(只保留页面 tab)。
+  - 三种实际形态:纯白名单(`py;ts`,无 `*` → 其余不认领)、兜底(`*`)、兜底加排除(默认)。
+  - 语法、默认值与解析都在 `lib/claim-types.js`(host 的 `Config` 默认值与客户端 `canOpen` 共用同一份,
+    随包发布,不会两边漂移);单测 `scripts/test-claim-types.mjs`。
 - **tab body 怎么定位文件**:从 `useTabInfo().tab.navigation.address` 解析出会话与路径
   (`src/address.js`,与 DSH `parseFileAddress` 同语义),相对路径按该会话 cwd 展开成绝对路径,
   再把绝对路径 + 可选 `line` 交给 host 的 `/api/code-server/open-file`;内建扩展
@@ -140,7 +149,7 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 | **`loopback`(默认)** | 插件自己起一个回环端口(`host:port`),右侧栏 iframe 跨源直连;进程可被 adopt(DSH host 重启后接管) | 无 |
 | **`dsh`** | IDE 挂到 **DSH 自己的 HTTP 端口**上的 `/code-server/*`(HTTP prefix 路由)+ `/code-server/<quality>-<commit>`(WS 精确路由),转发到 launcher 的**命名管道**;**没有额外端口**;每条请求(含 WS 握手)先过 `ctx.connection.requestRejection()` —— 与 `/api` 同一套 Host/Origin fence + 浏览器 cookie 认证 | DSH 提供 `webServer` 服务(web profile);desktop 无此服务 → 自动回退 loopback |
 
-- 在 `cordis.patch.yml` 的 `config.serve`(或设置文档里的 `code-server.serve`)切换,下次启动生效 —— **设置卡片不提供这一行**(卡片只有认领范围/打开即全屏/后台常驻三个设置)。
+- 在 `cordis.patch.yml` 的 `config.serve`(或设置文档里的 `code-server.serve`)切换,下次启动生效 —— **设置卡片不提供这一行**(卡片只有认领类型/打开即全屏/后台常驻三个设置)。
 - `dsh` 模式的实际收益:单一 URL/单一端口(远程访问 DSH 即可用 IDE)、不再暴露额外回环端口、认证与 DSH 同级。
 - `dsh` 模式的两点**已知取舍**:
   1. iframe 与 DSH **同源** → 该模式下不再挂 `sandbox`(同源 + `allow-same-origin` 可被 frame 自行摘除,属"看起来有防护");
@@ -393,7 +402,7 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `fileOpenScope` | `session` | **认领范围**(0.2.5):`session` = 只认领会话作用域的文件地址(`dsh-resource://file/session/…`,即官方产物/交付/正文提及);`all` = 连无会话的绝对路径(`…/file/absolute/…`)也认领。未认领的地址由 DSH 自带预览兜底 |
+| `claimExtensions` | `*;!md;!markdown;!html;!htm;!png;!jpg;!jpeg;!gif;!webp;!bmp;!ico;!svg;!pdf` | **认领类型**(0.2.11,取代 0.2.5 的 `fileOpenScope`):按扩展名决定哪些文件交给 VS Code,分号分隔;`*` = 其余类型也认领,`!ext` = 不认领(排除优先)。默认把 DSH 预览渲染得好的四类(markdown/html/图片/PDF)留给它,其余全进 IDE;清空 = 不认领任何文件。**不再区分 session/absolute 作用域** |
 | `fullscreenOnOpen` | `true` | **打开即全屏**(0.2.9):打开 Code Server 标签(含点开文件)时自动把右侧栏切到全屏(铺满窗口);关闭则保持 DSH 默认的 push(与对话并排)。只影响打开那一刻,用户点「退出全屏」不会被抢回去 |
 | `keepResident` | `true` | **后台常驻**:开启后宿主启动即把 IDE 预加载到"停放区",切标签/收起侧栏不重载、首次打开免等待;关闭则只在打开面板时加载(省内存) |
 
@@ -404,7 +413,7 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 诊断信息不再进 UI —— `/api/code-server/status` 的 `env` 字段仍返回
 树版本 / `productPath` / server 入口、VS Code 内部依赖、**预编译原生包**(平台聚合包名 + 已解析模块数),需要时用脚本查或看 host 日志。
 
-> 卡片改动经 `scope.watch` 实时生效(host 端 status API 同步返回 `keepResident`、`fileOpenScope` 与
+> 卡片改动经 `scope.watch` 实时生效(host 端 status API 同步返回 `keepResident`、`claimExtensions` 与
 > `fullscreenOnOpen`,客户端立即生效);无需重启 dsh。**新增设置键后首次使用前需重启 dsh web**,
 > 让 host 重新注册设置命名空间(schema 含新键),否则新键的保存与校验不生效。
 
@@ -483,11 +492,11 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
     因此每次新版本在桌面端都会受这条策略约束。
 - **桌面端的客户端 bundle 会被 Electron 缓存,重启应用不保证换新**(2026-09 实测,0.2.5 踩到):
   - 现象:profile 里 `lib/client.js` 已是新版本,但渲染器仍跑旧代码——`%APPDATA%\@deepseek-ai\dsh-desktop\Code Cache\js`
-    里只有旧版本独有的字符串(如 `dshcs-artifacts`),新版本独有的字符串(如 `fileOpenScope`)一个都没有;
+    里只有旧版本独有的字符串(如 `dshcs-artifacts`),新版本独有的字符串(如 `claimExtensions` / `fullscreenOnOpen`)一个都没有;
     `Cache\` 里也存着一份引用 `dsh-code-server-app` 的旧响应体。官方插件同理(缓存里那份 `ui-deliverables`
     连当前的 `data-presented-files-row` 都没有)。
   - 诊断手法(字节级,注意别用按控制台编码读文件的 `Select-String`,中文标记会假阴性):
-    在 `Code Cache\js` 里搜本版本独有的**ASCII** 标记(我们用 `fileOpenScope`),命中即说明新 bundle 真的被编译过。
+    在 `Code Cache\js` 里搜本版本独有的**ASCII** 标记(0.2.11 起用 `claimExtensions`),命中即说明新 bundle 真的被编译过。
   - 修法:完全关闭应用后删 `Cache`、`Code Cache`、`GPUCache` 三个目录再启动(只清缓存,不动 profile/会话/设置):
     ```powershell
     Remove-Item -Recurse -Force "$env:APPDATA\@deepseek-ai\dsh-desktop\Cache","$env:APPDATA\@deepseek-ai\dsh-desktop\Code Cache","$env:APPDATA\@deepseek-ai\dsh-desktop\GPUCache"

@@ -16,12 +16,17 @@
 // 不预热 IDE,并上报 host /ui-mode 让它回收已自动预启动的实例。
 import {
   basenameOfAddress,
-  claimsAddress,
   isPageAddress,
   parseFileAddress,
   resolveFilePath,
-  SCOPE_SESSION,
 } from './address.js';
+import {
+  DEFAULT_CLAIM_EXTENSIONS,
+  claimsAddress,
+  describeClaimPolicy,
+  normalizeClaimExtensions,
+  parseClaimPolicy,
+} from '../lib/claim-types.js';
 import { requestFullscreenPanel } from './sidebar-mode.js';
 import {
   dockInto,
@@ -254,10 +259,14 @@ let React = require('react')
       })
     }
 
-    /** 当前认领范围策略(host 快照里的 fileOpenScope;未到达时保守用 session)。 */
-    function fileOpenScope() {
+    /** 当前认领类型策略(host 快照里的 claimExtensions)。
+     *  host 未应答时**不认领任何文件** —— 这时 IDE 也起不来,把点击交给 DSH 自带预览,
+     *  比"猜一个默认值"更诚实(host 一到,认领立即按设置生效)。 */
+    var NO_CLAIM_POLICY = parseClaimPolicy('')
+    function claimPolicy() {
       var status = state.status
-      return status != null && status.fileOpenScope === 'all' ? 'all' : SCOPE_SESSION
+      if (status == null || typeof status.claimExtensions !== 'string') return NO_CLAIM_POLICY
+      return parseClaimPolicy(status.claimExtensions)
     }
 
     /** 会话 cwd 查询(同步;把地址里的相对路径变成绝对路径要用)。 */
@@ -389,7 +398,7 @@ let React = require('react')
           // **认领文件地址**:官方 openFile(产物 chip、"交付"卡片预览、正文内联提及)以及任何
           // 第三方 openResource(fileAddress) 都会落到本 tab。含 `:` 的 pattern 按整址 glob 匹配。
           patterns: ['dsh-resource://file/**'],
-          canOpen: function (a) { return claimsAddress(parseFileAddress(a), fileOpenScope()) },
+          canOpen: function (a) { return claimsAddress(parseFileAddress(a), claimPolicy()) },
           // 文件 tab 用文件名当 chip 文本;页面 tab(openTab/openResource 指定 kind)仍是产品名
           title: function (a) {
             if (isPageAddress(a) || a === undefined || a === null || a === '') return 'Code Server'
@@ -460,9 +469,10 @@ let React = require('react')
       '.dshcs-check{display:flex;align-items:center;gap:8px;cursor:pointer}' +
       '.dshcs-check input{accent-color:var(--dsw-alias-brand-primary);width:15px;height:15px;margin:0;flex:none}' +
       '.dshcs-check input:disabled{cursor:default}' +
-      '.dshcs-select{display:inline-flex;align-items:center}' +
-      '.dshcs-select select{font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-3,transparent);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px 8px;min-width:220px;cursor:pointer}' +
-      '.dshcs-select select:disabled{opacity:.5;cursor:default}' +
+      '.dshcs-text{display:flex}' +
+      '.dshcs-text input{font:12px/1.5 ui-monospace,Consolas,monospace;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-3,transparent);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:5px 8px;width:100%;min-width:0}' +
+      '.dshcs-text input:disabled{opacity:.5;cursor:default}' +
+      '.dshcs-text input:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-1px}' +
       '.dshcs-badges{align-items:center;gap:8px;display:inline-flex}' +
       '.dshcs-badge{white-space:nowrap;background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-secondary);border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}' +
       '.dshcs-reset{font:inherit;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;padding:0;font-size:12px;line-height:1.5}' +
@@ -506,16 +516,14 @@ let React = require('react')
         React.createElement('span', { className: 'dshcs-hint' }, props.children)
       )
     }
-    /** 下拉选择(用于两三个离散取值,如"认领范围");观感与 csCheck 一致。 */
-    function csSelect(props) {
-      var options = Array.isArray(props.options) ? props.options : []
-      return React.createElement('label', { className: 'dshcs-select' },
-        React.createElement('select', {
-          value: props.value, disabled: props.disabled === true,
+    /** 单行文本输入(用于"认领类型"这类清单);观感与 csSelect 一致,宽度铺满字段行。 */
+    function csText(props) {
+      return React.createElement('label', { className: 'dshcs-text' },
+        React.createElement('input', {
+          type: 'text', value: props.value, disabled: props.disabled === true,
+          spellCheck: false, autoComplete: 'off', placeholder: props.placeholder,
           onChange: function (event) { props.onChange(event.target.value) },
-        }, options.map(function (opt) {
-          return React.createElement('option', { key: opt.value, value: opt.value }, opt.label)
-        }))
+        })
       )
     }
     function csBadges(props) {
@@ -599,7 +607,7 @@ let React = require('react')
       var user = snapshot.user
       var loaded = {
         keepResident: value.keepResident !== false,
-        fileOpenScope: value.fileOpenScope === 'all' ? 'all' : 'session',
+        claimExtensions: typeof value.claimExtensions === 'string' ? value.claimExtensions : DEFAULT_CLAIM_EXTENSIONS,
         fullscreenOnOpen: value.fullscreenOnOpen !== false,
       }
       // ---- 旧版 DSH(无右侧栏服务):本页是唯一的提示出口,不显示任何设置项 ----
@@ -623,10 +631,10 @@ let React = require('react')
         )
       }
       var overriddenKeep = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'keepResident')
-      var overriddenScope = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'fileOpenScope')
+      var overriddenClaim = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'claimExtensions')
       var overriddenFullscreen = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'fullscreenOnOpen')
       var dirty = draft !== null && (draft.keepResident !== loaded.keepResident
-        || draft.fileOpenScope !== loaded.fileOpenScope
+        || normalizeClaimExtensions(draft.claimExtensions) !== normalizeClaimExtensions(loaded.claimExtensions)
         || draft.fullscreenOnOpen !== loaded.fullscreenOnOpen)
       var saveDisabled = !dirty || saving
       var state = {
@@ -649,7 +657,7 @@ let React = require('react')
           try {
             var d = draft !== null ? draft : loaded
             await props.scope.set('keepResident', d.keepResident === true)
-            await props.scope.set('fileOpenScope', d.fileOpenScope === 'all' ? 'all' : 'session')
+            await props.scope.set('claimExtensions', normalizeClaimExtensions(d.claimExtensions))
             await props.scope.set('fullscreenOnOpen', d.fullscreenOnOpen === true)
             setDraft(null)
             syncStatusToStore()
@@ -666,11 +674,11 @@ let React = require('react')
           // unset 清除 user 覆盖层 → 回到 base 默认值;成功后镜像同步
           if (typeof props.scope.unset === 'function') {
             await props.scope.unset('keepResident')
-            await props.scope.unset('fileOpenScope')
+            await props.scope.unset('claimExtensions')
             await props.scope.unset('fullscreenOnOpen')
           } else {
             await props.scope.set('keepResident', value.keepResident === undefined || value.keepResident === null ? true : value.keepResident)
-            await props.scope.set('fileOpenScope', value.fileOpenScope === 'all' ? 'all' : 'session')
+            await props.scope.set('claimExtensions', typeof value.claimExtensions === 'string' ? normalizeClaimExtensions(value.claimExtensions) : DEFAULT_CLAIM_EXTENSIONS)
             await props.scope.set('fullscreenOnOpen', value.fullscreenOnOpen === undefined || value.fullscreenOnOpen === null ? true : value.fullscreenOnOpen)
           }
           setDraft(null)
@@ -682,19 +690,19 @@ let React = require('react')
       }
       return React.createElement(csCard, {
         title: 'Code Server',
-        description: '入口:右侧栏标签(DSH ≥ 0.1.5-alpha.1);认领范围决定哪些文件交给 Code Server 打开',
+        description: '入口:右侧栏标签(DSH ≥ 0.1.5-alpha.1);认领类型决定哪些文件交给 Code Server 打开',
         state: state,
         unsavedLabel: '未保存', readOnlyLabel: '本部署的设置为只读。',
         saveFailedLabel: '本部署没有接受这些值，已保留供你修改。',
         discardLabel: '放弃修改', saveLabel: '保存', savingLabel: '保存中…',
         onSave: doSave, onDiscard: function () { setDraft(null); setFailed(false) },
       },
-        // 卡片三个设置(0.2.9 起):认领范围 + 打开即全屏 + 后台常驻。入口/依赖安装/环境检测三行已移除
+        // 卡片三个设置(0.2.11 起):认领类型 + 打开即全屏 + 后台常驻。入口/依赖安装/环境检测三行已移除
         // (入口在右侧栏「开始」页的 guide 入口框;诊断看 host 日志里的 [code-server] 输出)。
         React.createElement('div', { className: 'dshcs-field' },
           React.createElement('div', { className: 'dshcs-fieldHead' },
-            React.createElement('span', { className: 'dshcs-fieldLabel' }, '认领范围(哪些文件交给 Code Server)'),
-            overriddenScope === true
+            React.createElement('span', { className: 'dshcs-fieldLabel' }, '认领类型(按扩展名,分号分隔)'),
+            overriddenClaim === true
               ? React.createElement(csBadges, {
                   overridden: true, disabled: snapshot.writable !== true,
                   overriddenLabel: '已覆盖', resetLabel: '恢复默认',
@@ -702,19 +710,20 @@ let React = require('react')
                 })
               : null
           ),
-          React.createElement(csSelect, {
-            value: draft !== null ? draft.fileOpenScope : loaded.fileOpenScope,
+          React.createElement(csText, {
+            value: draft !== null ? draft.claimExtensions : loaded.claimExtensions,
             disabled: snapshot.writable !== true,
-            options: [
-              { value: 'session', label: '仅会话内文件(推荐)' },
-              { value: 'all', label: '所有文件(含工作区外的绝对路径)' },
-            ],
-            onChange: function (v) { setDraft(function (prev) { return Object.assign({}, prev !== null ? prev : loaded, { fileOpenScope: v === 'all' ? 'all' : 'session' }) }); setFailed(false) },
+            placeholder: DEFAULT_CLAIM_EXTENSIONS,
+            onChange: function (v) { setDraft(function (prev) { return Object.assign({}, prev !== null ? prev : loaded, { claimExtensions: v }) }); setFailed(false) },
           }),
           React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 4 } },
-            '会话内文件 = DSH 用 `dsh-resource://file/session/…` 命名的文件(产物、交付、正文提及、工具视图);'
-            + '“所有文件”还会认领不带会话的绝对路径 `dsh-resource://file/absolute/…`。'
-            + '未被认领的地址由 DSH 自带预览兜底。')
+            '写扩展名(不带点,大小写随意);`*` = 其余类型也认领;`!ext` = 不认领(排除优先)。'
+            + '不再区分会话内/绝对路径 —— 所有 `dsh-resource://file/**` 一视同仁,未认领的落回 DSH 自带预览。'),
+          React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 2 } },
+            '实际规则:' + describeClaimPolicy(draft !== null ? draft.claimExtensions : loaded.claimExtensions)
+            + (normalizeClaimExtensions(draft !== null ? draft.claimExtensions : loaded.claimExtensions)
+              !== (draft !== null ? draft.claimExtensions : loaded.claimExtensions) ? '(保存后归一化)' : '')
+            + ' · 默认 ' + DEFAULT_CLAIM_EXTENSIONS)
         ),
         React.createElement('div', { className: 'dshcs-field' },
           React.createElement('div', { className: 'dshcs-fieldHead' },

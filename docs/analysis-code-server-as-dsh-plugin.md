@@ -620,3 +620,49 @@ GET /          → 200 text/html len=4222
 - 空态文案里"请到设置卡点「检测环境」"改为"查看 host 日志的 `[code-server]` 输出"。
 
 体积:客户端 37 721 → 33 765 B。回归新增三条断言(不含「依赖安装」「环境检测」「在右侧栏打开」)。
+
+## 14. 0.2.8–0.2.11:三个线上 bug、打开即全屏、认领类型
+
+0.3.x 那条线(命名管道传输 + 资源镜像)整体回退后,回到 0.2.7 基线继续走 0.2.x。
+
+### 14.1 0.2.8:排查确认的三个 bug
+
+| 编号 | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| B3 | IDE 未就绪时加载到的错误页(503/连接失败)一直粘在 iframe 上,点重启也不重新加载 | `buildPageUrl` 只拼 `?folder=<cwd>`:URL 不变 ⇒ 组件判定"同址"不导航 | URL 固定带实例标记 `?s=<pid|startedAt>` |
+| B6 | 预启动与用户点击并发时双开 launcher,第二个进程绑不上端口,状态被顶成 `error`("端口被占用") | `maybePrestart()` 与点击都走 `start()`,写同一份 `pid.json` | `start()` 串行化(一条 promise 链),第二个调用复用第一个的结果 |
+| B1 | 升级插件后渲染器仍跑旧 bundle(18MB 的 workbench.js/css 按稳定 URL 取缓存) | launcher 用 `url === '/'` 判断文档路由,而客户端永远带查询串(`?s=…&folder=…`)⇒ HTML 改写从未生效 | 路由统一按 `url.split('?')[0]` 匹配;HTML 缓冲改写给 `workbench.(js|css)`、`nls.messages.js` 加 `?v=<tag>`(tag = 插件版本 + 树) |
+
+回归:`scripts/test-launcher-routes.mjs`(5 项,修复前必挂)+ `scripts/test-plugin-apply.mjs`(桩 ctx 冒烟)。
+
+### 14.2 0.2.9 / 0.2.10:打开 Code Server 标签即把右侧栏切到全屏
+
+- 需求:打开的 IDE 只有铺满窗口才够用,设置项默认开。
+- **接口边界(实测源码)**:`ctx.sidebarRight` 只开放 `isExpanded`/`toggleExpanded`(展开/收起),
+  push ⟷ fullscreen 这个"模式"记在 `ui-sidebar-right` 自己的 store(`actions.setMode`),只发给它的
+  seat 内部组件;`ctx.layout.openRightbar(track, fullscreen)` 不是控制面,而是 seat **汇报**
+  presentation 的通道(上游注释:*the occupant reports it; nothing else writes it*)。
+- 因此实现是"复刻用户的动作":`closest('[data-sidebar-right-panel]')` 定位自己所在面板,点面板 chrome 上的
+  `[data-sidebar-right-mode="fullscreen"]`(`src/sidebar-mode.js`,六种结果都回报、绝不抛错)。
+  契约在两版上游源码里核对:0.1.5-rc.1(desktop)/ rc.2(web)都具备这两个属性,且 chrome 由
+  `DockSurface` 内联渲染(整包只有 tab 菜单走 `createPortal`)。
+- 触发时机 = 本标签"变得可见"的那一刻(打开/切回/重新展开),每个可见周期只切一次 ⇒
+  用户点「退出全屏」不会被抢回去。
+- 0.2.10 修 0.2.9 的一处抢跑:`status` 由 fetch 异步填充,原判据把"未知"当成"开" ⇒
+  页面刷新且标签被恢复时,即使设置关着也会切一次;改为 `status != null && status.fullscreenOnOpen !== false`
+  (未知不动作,值到达后由依赖变化补一次)。
+
+### 14.3 0.2.11:认领类型取代认领范围
+
+- 旧:`fileOpenScope`(`session` 默认 | `all`)—— 按**作用域**决定认领。
+- 新:`claimExtensions` —— **不区分作用域**(session/absolute 一视同仁),只按**扩展名**决定;
+  设置卡里是一个文本框,分号分隔(`,`/空白/换行也认;`py`、`.py`、`*.py` 等价;大小写不敏感):
+  `*` = 其余类型也认领,`!ext` = 不认领(**排除优先**),空文本 = 不认领任何文件。
+- 默认 `*;!md;!markdown;!html;!htm;!png;!jpg;!jpeg;!gif;!webp;!bmp;!ico;!svg;!pdf`:
+  把 DSH 自带预览(`ui-sidebar-documentpreview`,`priority: fallback`,内部按扩展名分派
+  markdown / html / 图片 / PDF / 代码高亮 / 纯文本)渲染得好的四类留给它,其余全进 IDE。
+  未知扩展名默认进 IDE(反过来的白名单会让 `.zig`/`.vue` 这类静默落到只读预览)。
+- 单一事实来源:`lib/claim-types.js`(host `Config` 默认值与客户端 `canOpen` 共用,随包发布),
+  单测 `scripts/test-claim-types.mjs`(9 项)。
+- 顺带:`ctx.sidebarRight.openTab(kind)`(guide 入口框那条路)不查 `canOpen`(`placeTab` 只要求 kind 已注册),
+  所以收紧 `canOpen` 不会影响页面 tab 的入口 —— 已在上游源码核对(rc.1 `client.js` 的 `placeTab`)。

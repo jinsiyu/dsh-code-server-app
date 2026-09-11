@@ -43,7 +43,7 @@ A static profile plugin (npm package with host + client bundle) that ships the *
     the narrow-viewport handling). When the button is missing it keeps the current mode and logs one `console.warn` — panel
     rendering is never affected.
 - **Resident IDE (0.2.2, on by default)**: switching to another tab or collapsing the sidebar and coming back **no longer reloads** code-server — unsaved editor buffers, terminals and debug sessions all stay put (see "Why switching tabs no longer reloads" below).
-- The settings card has exactly **three settings**: "**Claim scope**", "**Fullscreen on open**" and "Resident in background" — no other rows (0.2.7 removed the "Entry", "dependency install" and "environment check" rows).
+- The settings card has exactly **three settings**: "**Claim types**", "**Fullscreen on open**" and "Resident in background" — no other rows (0.2.7 removed the "Entry", "dependency install" and "environment check" rows).
   Open the IDE from the **Code Server box** on the sidebar's guide page, or by clicking DSH's own produced-file chips / delivered-file previews / inline file names;
   diagnostics stay out of the UI — the `[code-server]` lines in the DSH host log are the place to look (`/api/code-server/status` still returns `env` for scripts).
   The old `windowedOpen` (open in a window) and `reserveComposer` were **removed in 0.2.6**: leftover keys in an old settings document neither fail nor apply (they are no longer part of the schema).
@@ -68,12 +68,25 @@ This plugin registers:
 |---|---|---|
 | `patterns` | `['dsh-resource://file/**']` | claims file addresses (a pattern containing `:` is matched against the **whole address**) |
 | `priority` | `'extension'` | beats the built-in plain-text preview, which sits in `fallback` on purpose — DSH's own comment calls that band "the position VS Code's text editor holds among its editors", i.e. one any more specific type should beat |
-| `canOpen` | see below | vetoes by the "claim scope" setting; unclaimed addresses fall back to DSH's built-in preview |
+| `canOpen` | see below | vetoes by the "claim types" setting; unclaimed addresses fall back to DSH's built-in preview |
 | `title` | last address segment (= file name) | the tab chip shows the file name; a page tab (`sidebar://code-server`) still reads `Code Server` |
 
-- **Claim scope** (switchable in the settings card, `fileOpenScope`):
-  - `session` (default) — claim only `dsh-resource://file/session/…` (everything a session produces: deliverables, declared deliveries, prose mentions, tool views);
-  - `all` — also claim session-less `dsh-resource://file/absolute/…` addresses.
+- **Claim types** (a text box in the settings card, `claimExtensions`, since 0.2.11):
+  **scope is no longer a thing** — `dsh-resource://file/session/…` and `…/file/absolute/…` are treated alike,
+  and only the extension decides. Text-box grammar (semicolon-separated; `,`/whitespace/newlines also work;
+  `py`, `.py` and `*.py` are equivalent; case-insensitive):
+  - `*` — claim every other type too (catch-all);
+  - `py` — claim `.py`;
+  - `!md` — do **not** claim `.md` (**exclusion wins** over both an explicit claim and `*`);
+  - **default** `*;!md;!markdown;!html;!htm;!png;!jpg;!jpeg;!gif;!webp;!bmp;!ico;!svg;!pdf`
+    — the four categories DSH's own preview renders well (markdown / html / images / PDF) stay with it, everything
+    else (code, json/yaml, txt, logs, extension-less files such as `Makefile`, unknown extensions) goes to the IDE;
+    an empty box claims no files at all (page tabs only).
+  - Three practical shapes: a plain whitelist (`py;ts`, no `*` → nothing else is claimed), catch-all (`*`),
+    and catch-all plus exclusions (the default).
+  - Grammar, default and parsing all live in `lib/claim-types.js` (the host's `Config` default and the client's
+    `canOpen` share that single file, shipped in the package, so the two cannot drift apart);
+    unit tests: `scripts/test-claim-types.mjs`.
 - **How the tab body locates the file**: it parses `useTabInfo().tab.navigation.address`
   (`src/address.js`, same grammar as DSH's `parseFileAddress`), expands a workspace-relative path with that
   session's cwd, and posts the absolute path (plus optional `line`) to the host's
@@ -383,7 +396,7 @@ persisted via the official settings domain (`settingsScope`, namespace `code-ser
 
 | Key | Default | Description |
 |---|---|---|
-| `fileOpenScope` | `session` | **Claim scope** (0.2.5): `session` claims only session-scoped file addresses (`dsh-resource://file/session/…` — DSH's produced files, declared deliveries, prose mentions); `all` also claims session-less `…/file/absolute/…`. Unclaimed addresses fall back to DSH's built-in preview |
+| `claimExtensions` | `*;!md;!markdown;!html;!htm;!png;!jpg;!jpeg;!gif;!webp;!bmp;!ico;!svg;!pdf` | **Claim types** (0.2.11, replaces 0.2.5's `fileOpenScope`): decides by extension which files go to VS Code, semicolon-separated; `*` claims every other type, `!ext` excludes (exclusion wins). The default leaves the four categories DSH's preview renders well (markdown/html/images/PDF) to DSH and sends everything else to the IDE; an empty value claims nothing. **Scope (session vs absolute) is no longer distinguished** |
 | `fullscreenOnOpen` | `true` | **Fullscreen on open** (0.2.9): opening the Code Server tab (including clicking a file) switches the right sidebar to fullscreen (fills the window); off keeps DSH's default push mode (side by side with the conversation). Only the moment of opening is affected — a manual "Exit fullscreen" is never fought back |
 | `keepResident` | `true` | **Resident in background**: on, the host preloads the IDE into a parked surface right after start — switching tabs or collapsing the sidebar never reloads it and the first open needs no cold start; off loads it only when the panel is opened (saves memory) |
 
@@ -391,7 +404,7 @@ persisted via the official settings domain (`settingsScope`, namespace `code-ser
 settings document neither fail nor apply. `serve` remains a key in the settings namespace (usable from a settings document) but
 has **no card row** — see "Serving mode".)
 
-> Card changes take effect immediately via `scope.watch` (the host status API returns `keepResident`, `fileOpenScope` and
+> Card changes take effect immediately via `scope.watch` (the host status API returns `keepResident`, `claimExtensions` and
 > `fullscreenOnOpen`; the client applies them at once); no dsh restart needed. **After adding new setting keys, restart dsh web before first use**,
 > so the host re-registers the settings namespace (schema includes the new key); otherwise save/validation of the new key won't work.
 
@@ -482,12 +495,12 @@ Host/Origin fence and browser auth); in the desktop profile `apps/desktop-host` 
 - **Desktop client bundles are cached by Electron; restarting the app does not guarantee a new one** (measured 2026-09, hit while shipping 0.2.5):
   - symptom: `lib/client.js` in the profile is the new version, yet the renderer keeps running the old code —
     `%APPDATA%\@deepseek-ai\dsh-desktop\Code Cache\js` only contains strings unique to the old version (e.g. `dshcs-artifacts`)
-    and none unique to the new one (`fileOpenScope`), and `Cache\` still holds an old response body referencing
+    and none unique to the new one (`claimExtensions` / `fullscreenOnOpen`), and `Cache\` still holds an old response body referencing
     `dsh-code-server-app`. The same applies to first-party plugins (the cached `ui-deliverables` even lacks the current
     `data-presented-files-row` marker);
   - diagnosis (byte level — do **not** use `Select-String`, which reads files with the console encoding and gives false
     negatives on non-ASCII markers): search `Code Cache\js` for an **ASCII** marker unique to the new version
-    (ours is `fileOpenScope`); a hit proves the new bundle really was compiled;
+    (since 0.2.11 ours is `claimExtensions`); a hit proves the new bundle really was compiled;
   - fix: fully close the app, delete the `Cache`, `Code Cache` and `GPUCache` directories, then start it (cache only —
     profiles, sessions and settings are untouched):
     ```powershell

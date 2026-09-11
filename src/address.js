@@ -1,21 +1,20 @@
 /**
- * dsh-code-server — DSH 资源地址解析(0.2.5)
+ * dsh-code-server — DSH 资源地址解析(0.2.5;0.2.11 起不再区分认领作用域)
  *
  * 官方 `openFile(path, { line? })`(产物 chip、"交付"卡片预览、正文内联提及)最终都变成
  * `dsh-resource://file/…` 地址交给 `ctx.sidebarRight.openResource`,由注册了匹配 `patterns`
  * 的 tab 类型认领 —— 认领地址即是官方入口的文件查看器。地址语法对齐 DSH
  * `packages/util/workspace-path/src/file-address.ts`(session 作用域 / absolute 作用域、
  * 段做 component 编码、`:` 保持字面量、忽略查询串);页面 tab 记在 `sidebar://<kind>` 下。
- * 纯字符串处理,不碰文件系统 → 可离线单测(见 .spike/spike-legacy-ui.mjs)。
+ *
+ * 本模块只做"地址 → 路径"的解析;**认领与否按文件类型判断,见 lib/claim-types.js**
+ * (session 与 absolute 一视同仁)。纯字符串处理,不碰文件系统 → 可离线单测。
  */
 
 /** 文件地址前缀。 */
 const FILE_PREFIX = 'dsh-resource://file/'
 /** 右侧栏给"页面 tab"记的地址前缀(`sidebar://<kind>`)。 */
 const PAGE_PREFIX = 'sidebar://'
-/** 认领范围策略:'session' = 仅会话作用域;'all' = 也认领无会话的绝对路径。 */
-export const SCOPE_SESSION = 'session'
-const SCOPE_ALL = 'all'
 
 /** 是否为右侧栏的"页面 tab"地址(`sidebar://<kind>`)。 */
 export function isPageAddress(address) {
@@ -98,11 +97,4 @@ export function resolveFilePath(parsed, cwd) {
   var sep = cwd.indexOf('\\') !== -1 ? '\\' : '/'
   var root = cwd.replace(/[\\/]+$/, '')
   return root + sep + (sep === '\\' ? path.replace(/\//g, '\\') : path)
-}
-
-/** 是否认领这个地址(供 tab 类型的 `canOpen` 用)。 */
-export function claimsAddress(parsed, policy) {
-  if (parsed === null || parsed == null) return false
-  if (parsed.scope === 'session') return true
-  return policy === SCOPE_ALL
 }
