@@ -136,6 +136,28 @@ state preserved (no full reload). Full evidence and probe scripts: `docs/analysi
   browser page could complete a handshake against `ws://127.0.0.1:<port>/stable-<commit>` and drive the IDE.
 
 
+## Zero client-side ports (0.3.0, desktop)
+
+The desktop client **no longer depends on a loopback port**: the workbench document and every subresource are
+served through the `/api/code-server/asset/**` mirror (1295 exact routes forwarded to the IDE's own listener)
+and the WebSocket travels through the `/api/code-server/tunnel` byte tunnel — both over DSH's own channel, so
+the client never touches `127.0.0.1`.
+
+- **The server side is still VS Code's own HTTP/WS service** (loopback-only), invisible to the client. That is
+  a Windows constraint, not laziness: the extension host must receive a **real TCP socket handle** (VS Code
+  passes it with `child.send(msg, handle)`); a hand-made `Duplex` yields `ERR_INVALID_HANDLE_TYPE` and a named
+  pipe yields `write ENOTSUP` — both surface as "extension host terminated unexpectedly / clicking a file does
+  nothing".
+- **Two client-side changes only**: a one-line `webSocketFactory` injection into the workbench bundle (done at
+  serve time by the launcher; the on-disk VS Code tree stays pristine) plus a ~200 line raw-byte shim
+  (`lib/pipe-ws.js`; with `skipWebSocketFrames=true` the server treats the connection as a plain byte stream,
+  so the shim does no framing at all).
+- **Web behaviour is unchanged**: `serve: dsh` keeps using the DSH `webServer` same-origin mount; the mirror and
+  the shim injection are enabled only when the composition has no `webServer` (`DSHCS_TUNNEL_MODE`).
+- **Diagnostics**: `/healthz` (`tunnelMode` / `serveInjection` / `shimInjections`), `<user-data>/tunnel.log`,
+  `page-errors.log`, `client-diag.log`, plus `scripts/test-*.mjs` and `scripts/repro-tunnel.mjs` (local
+  end-to-end reproduction without the desktop app).
+
 ## Legacy DSH (unsupported since 0.2.3)
 
 **Behaviour**: when `sidebarRightTabs` / `sidebarRight` cannot be found, the plugin registers a single settings card:

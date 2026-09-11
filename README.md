@@ -141,6 +141,26 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
   (含 `Forwarded: host=` / `X-Forwarded-Host` 的反代语义),否则回 `403`;缺 `Origin` 的非浏览器请求放行。
   没有这道检查时,本机任意浏览器页面都能对 `ws://127.0.0.1:<port>/stable-<commit>` 完成握手并驱动 IDE。
 
+## 客户端零端口(0.3.0 起,desktop)
+
+桌面端**不再依赖 loopback 端口**:工作台的文档与全部子资源经 `/api/code-server/asset/**` 镜像
+(1295 条精确路由转发给 IDE 自己的监听器),WebSocket 经 `/api/code-server/tunnel` 字节隧道 ——
+两者都走 DSH 自己的通道,客户端一侧完全不碰 `127.0.0.1`。
+
+- **服务端仍是 VS Code 自己的 HTTP/WS 服务**(仅本机监听),客户端看不到它。这不是偷懒:Windows 上
+  扩展宿主必须拿到**真 TCP socket 句柄**(VS Code 用 `child.send(msg, handle)` 传),
+  自造 `Duplex` → `ERR_INVALID_HANDLE_TYPE`,命名管道 → `write ENOTSUP`;两种失败都表现为
+  "扩展远程主机意外终止 / 点击文件不跳转"。
+- **客户端只有两处改动**:工作台 bundle 的 `webSocketFactory` 注入(1 行,serve 时由 launcher 注入,
+  不改磁盘上的 VS Code 树)+ 约 200 行裸字节 shim(`lib/pipe-ws.js`;`skipWebSocketFrames=true`
+  下服务端把连接当纯字节流,shim 因此不做任何分帧)。
+- **web 侧行为不变**:`serve: dsh` 继续用 DSH `webServer` 的同源挂载;镜像与 shim 注入都只在
+  "组合里没有 `webServer`" 时启用(`DSHCS_TUNNEL_MODE`)。
+- **排障入口**:`/healthz` 的 `tunnelMode` / `serveInjection` / `shimInjections`;
+  `<user-data>/tunnel.log`(隧道事件与双向字节数)、`page-errors.log`(页面内错误)、
+  `client-diag.log`(客户端中继信标);仓库内 `scripts/test-*.mjs` 与
+  `scripts/repro-tunnel.mjs`(本地端到端复现,不需要桌面应用、不需要重启)。
+
 ## 旧版 DSH(0.2.3 起不再支持)
 
 **行为**:探测不到 `sidebarRightTabs` / `sidebarRight` 时,插件只注册一张设置卡片,内容是:

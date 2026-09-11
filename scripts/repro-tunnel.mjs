@@ -50,7 +50,15 @@ const child = spawn(process.execPath, [
 ], {
   // 沙箱下管道 spawn 会 EPERM,所以输出直接重定向到文件(不是管道)
   stdio: ['ignore', openSync(join(TMP, 'launcher.out.log'), 'a'), openSync(join(TMP, 'launcher.err.log'), 'a')],
-  env: { ...process.env, DSHCS_TUNNEL_TOKEN: TOKEN, DSHCS_TUNNEL_LOG: TUNNEL_LOG, DSHCS_PAGE_LOG: PAGE_LOG, DSHCS_HTML_TAG: 'repro' },
+  env: {
+    ...process.env,
+    DSHCS_TUNNEL_TOKEN: TOKEN,
+    DSHCS_TUNNEL_LOG: TUNNEL_LOG,
+    DSHCS_PAGE_LOG: PAGE_LOG,
+    DSHCS_HTML_TAG: 'repro',
+    // 模拟 desktop(有隧道)默认注入 shim;DSHCS_REPRO_NO_TUNNEL=1 则模拟 web(不注入)
+    ...(process.env.DSHCS_REPRO_NO_TUNNEL === '1' ? {} : { DSHCS_TUNNEL_MODE: '1' }),
+  },
 });
 l('launcher pid=', child.pid, 'port=', PORT, 'productPath=', productPath);
 function tail(name, lines = 20) {

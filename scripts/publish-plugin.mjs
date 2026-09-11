@@ -33,6 +33,34 @@ if (!existsSync(tgz)) {
   process.exit(1);
 }
 
+// 发布前门禁:运行时文件必须都已构建、且都在 package.json 的 files 里。
+// 2026-09-11 漏过 lib/pipe-ws.js(它此前只在 dev-deploy 时拷进 profile,工作区 lib/ 里没有 →
+// 别人装到的版本会退化成 loopback WS)。这里只做文件系统检查,不 spawn(沙箱里 spawn 管道会 EPERM)。
+const REQUIRED_FILES = [
+  'lib/index.js',
+  'lib/client.js',
+  'lib/launcher.mjs',
+  'lib/pipe-tunnel.mjs',
+  'lib/asset-mirror.mjs',
+  'lib/pipe-ws.js',
+  'lib/serve-dsh.mjs',
+  'lib/vendor.js',
+  'lib/native.js',
+];
+{
+  const missing = REQUIRED_FILES.filter((name) => !existsSync(join(pkgRoot, name)));
+  if (missing.length > 0) {
+    console.error(`[publish] 缺少运行时文件,拒绝发布:${missing.join(', ')}`);
+    console.error('[publish] 先运行 `node scripts/build-client.mjs`(生成 lib/client.js 与 lib/pipe-ws.js)。');
+    process.exit(1);
+  }
+  const notShipped = REQUIRED_FILES.filter((name) => !(manifest.files ?? []).includes(name));
+  if (notShipped.length > 0) {
+    console.error(`[publish] package.json 的 files 未包含:${notShipped.join(', ')}`);
+    process.exit(1);
+  }
+  console.log(`[publish] 运行时文件校验通过(${REQUIRED_FILES.length} 个齐全且都在 files 里)`);
+}
 const args = ['publish', relative(pkgRoot, tgz), '--access', 'public', '--tag', TAG];
 if (existsSync(workspaceNpmrc)) args.push('--userconfig', workspaceNpmrc);
 if (DRY_RUN) args.push('--dry-run');

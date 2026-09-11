@@ -28,4 +28,11 @@ const result = es.buildSync({
   logLevel: 'info',
 });
 
-console.log('build:client done -> lib/client.js', result.contents ? '' : '');
+// 裸字节 shim 也要随包发布(launcher 在 serve 时把它注入工作台 bundle):
+// 它不是 esbuild 产物,只是把 src/pipe-ws.js 拷成 lib/pipe-ws.js。
+fs.copyFileSync(
+  fileURLToPath(new URL('src/pipe-ws.js', root)),
+  fileURLToPath(new URL('lib/pipe-ws.js', root)),
+);
+
+console.log('build:client done -> lib/client.js + lib/pipe-ws.js');
