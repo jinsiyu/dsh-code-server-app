@@ -32,7 +32,9 @@ A static profile plugin (npm package with host + client bundle) that ships the *
   - upgrading DSH needs **no reinstall** — refresh the page and the card turns back into the full settings card.
 - The sidebar tab hosts the code-server page (iframe) and follows the current session workspace; the panel can be collapsed/split/floated/fullscreened by DSH's right sidebar.
 - **Resident IDE (0.2.2, on by default)**: switching to another tab or collapsing the sidebar and coming back **no longer reloads** code-server — unsaved editor buffers, terminals and debug sessions all stay put (see "Why switching tabs no longer reloads" below).
-- The settings card has exactly **two settings**: "**Claim scope**" and "Resident in background"; plus one "Entry" action row and two read-only info sections (dependency install, environment check).
+- The settings card has exactly **two settings**: "**Claim scope**" and "Resident in background" — no other rows (0.2.7 removed the "Entry", "dependency install" and "environment check" rows).
+  Open the IDE from the **Code Server box** on the sidebar's guide page, or by clicking DSH's own produced-file chips / delivered-file previews / inline file names;
+  diagnostics stay out of the UI — the `[code-server]` lines in the DSH host log are the place to look (`/api/code-server/status` still returns `env` for scripts).
   The old `windowedOpen` (open in a window) and `reserveComposer` were **removed in 0.2.6**: leftover keys in an old settings document neither fail nor apply (they are no longer part of the schema).
   To use the IDE in a browser tab, visit the loopback address `http://127.0.0.1:<port>/` (or DSH's `/code-server/` under `serve: dsh`).
 
@@ -381,10 +383,10 @@ has **no card row** — see "Serving mode".)
 > `fileOpenScope`; the client applies them at once); no dsh restart needed. **After adding new setting keys, restart dsh web before first use**,
 > so the host re-registers the settings namespace (schema includes the new key); otherwise save/validation of the new key won't work.
 
-The bottom of the card is **Environment check** (click "Check environment" to read the host `status.env`): entry,
-the tree version / `productPath` / server entry, VS Code inner dependencies, and **prebuilt native packages** (platform aggregator name +
-resolved module count). Since 0.1.36 there is no "Install environment" button — dependencies are installed by the
-package manager, and the card only reports the result.
+Since 0.2.7 the card has **no** "Entry", "dependency install" or "environment check" rows: the entry lives in the sidebar's
+guide page (and in DSH's own file clicks), and diagnostics stay out of the UI — the `/api/code-server/status` `env` field still
+reports the tree version / `productPath` / server entry, VS Code inner dependencies and **prebuilt native packages**
+(platform aggregator name + resolved module count) for scripts, and the DSH host log carries the `[code-server]` lines.
 
 ## Config (`config` in cordis.patch.yml; all have defaults)
 
