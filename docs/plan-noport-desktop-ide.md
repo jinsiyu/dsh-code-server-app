@@ -1,4 +1,4 @@
-开始# 方案 B:自建 VS Code 构建,桌面端零端口跑 IDE
+又开始# 方案 B:自建 VS Code 构建,桌面端零端口跑 IDE
 
 > 目标读者:本插件维护者。写完于 2026-09-11,基于 code-server 4.136.2 / VS Code 1.136.1
 > (`productPath=stable-8d5f383f301ca20681f5b6606b8207d9dc87bdd8`)与 DSH desktop 协议 v3。
@@ -356,3 +356,48 @@ VS Code 用 IPC `child.send(msg, handle)` 把连接句柄交给扩展宿主进�
 1. **补丁从"改磁盘文件"改为"serve 时改写"**:launcher 已在改写工作台 HTML,同样可在返回 `workbench.js` 时做那 1 行注入(带"命中数=1"断言)。不再动 pnpm 硬链接的树、不需要每 profile 打补丁、VS Code 升级只影响一个函数。
 2. shim / 隧道**只在管道方案里存在**,不参与 `serve: dsh`(web)路径。
 3. Phase 2(资产镜像 + 一文件一路由)继续:让工作台文档也来自 `dsh-app://`,那时隧道可同源 fetch,父窗口中继退化为可选优化。
+
+## 14. Phase 2 结果(2026-09-11):客户端文档与子资源都搬到 dsh-app://
+
+### 14.1 实现
+
+- `lib/asset-mirror.mjs`:启动时枚举 IDE 的 URL 空间(out/** 与 extensions/** → `/<productPath>/static/**`,
+  code-server 浏览器资源 → `/_static/**`,外加 `/vscode-remote-resource`、`/manifest.json` 等单点),
+  为每个**合法**路径注册一条精确路由(GET/HEAD),把同路径 + 同查询串转发给 IDE 自己的监听器,
+  响应流式回传;文档路由 `/api/code-server/asset/index.html` 映射到上游 `/`(继续吃 launcher 的 HTML 改写)。
+  真实树:**1297 枚举 / 1295 可注册 / 2 非法**(两个带空格与加号的语法文件名,它们走
+  `/vscode-remote-resource` 查询端点,不受影响)。注册耗时 **1–3 ms**(实测)。
+- `src/factory.js`:`buildPageUrl` 优先用 `assetMirror.document`(需 `enabled !== false` 且 `registered > 0`),
+  否则回退 `status.url`(loopback)——镜像失效时行为与 0.2.x 完全一致。
+
+### 14.2 关键侦察结论(省掉了全部引用重写)
+
+工作台**不含任何 origin-root 绝对资源路径**:HTML 里全是 `./…`、`stable-<commit>/static/out/…`;
+`location.origin` 只用于同源校验与"开新窗口"。所以只要文档挂在 `<base>/index.html`、URL 空间原样镜像,
+相对引用自然成立,`_VSCODE_FILE_ROOT` 也解析到镜像源下。
+
+### 14.3 实测证据(2026-09-11 14:18)
+
+| 证据 | 含义 |
+|---|---|
+| `/healthz`:`shimInjections: 1` | **serve 时注入在生产里真的生效**(磁盘 bundle 保持原版) |
+| `/healthz`:`recentUpgrades` 由 `/api/code-server/asset/index.html/stable-…` 变为 `/stable-…` | 文档确实来自镜像(WS 路径由 `location.pathname` 派生),剥前缀修复生效 |
+| `tunnel.log`:`out#9 n=1517 head=01000000` | 隧道在跑真实协议消息(0x01 常规消息) |
+| `page-errors.log`:空 | 镜像源下页面无 JS 错误 |
+| 用户确认 | IDE 正常可用(文件树/编辑器/终端/扩展) |
+
+### 14.4 两个坑(已修,commit 68d9bef)
+
+1. **错误页粘住**:IDE 未就绪时镜像返回 503 JSON,而它是**文档内容**;此后 URL 不变 →
+   `setSurfaceSrc` 判定同址不导航 → JSON 一直挂在 iframe 上。修:URL 加实例标记 `?s=<pid|startedAt>`,
+   IDE 就绪/重启后 URL 变化即自动重导航(顺带让"IDE 崩溃后 iframe 自动重载"成立)。
+2. **WS 路径被塞镜像前缀**:工作台用 `location.pathname + '/' + productPath` 拼 WS 地址 →
+   `/api/code-server/asset/index.html/stable-…`。修:launcher 转发前剥掉镜像前缀。
+
+### 14.5 现状与待办
+
+- **客户端**:文档 + 全部子资源来自 `dsh-app://app/api/code-server/asset/**`,WebSocket 走 DSH 隧道
+  → 客户端**不再触碰 loopback 端口**(阶段 2 目标达成)。
+- **服务端**:仍保留仅本机监听(Windows 句柄约束,见 §13.2),客户端不可见。
+- 待办:①镜像目前对 web(`serve: dsh`)也会注册路由,应收敛为只在 loopback 模式启用,避免动到
+  web 侧既有行为;②发布 0.3.0 到 `next`(阶段 1+2 已是实打实的功能版本)。
