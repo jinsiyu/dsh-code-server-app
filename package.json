@@ -1,7 +1,7 @@
 {
   "name": "dsh-code-server-app",
-  "version": "0.3.1",
-  "description": "VS Code (from a code-server release) inside DSH: a right-sidebar tab driven by the plugin's own launcher over the in-process VS Code server (lib/launcher.mjs). The tab claims DSH file addresses (dsh-resource://file/**), so the product's own produced-file chips, delivered-file previews and inline prose mentions open in the workbench. The IDE is a resident surface moved with Element.moveBefore instead of being remounted, so switching sidebar tabs no longer reloads it. Requires a DSH with the right-sidebar services (sidebarRightTabs/sidebarRight, >= 0.1.5-alpha.1); older DSH versions get a single upgrade notice on the settings page and no other UI. Two serving modes: loopback port (default) or same-origin mount on DSH's own webServer (/code-server, protected by ctx.connection.requestRejection). No code-server Node layer, no argon2, no C++ toolchain.",
+  "version": "0.3.2",
+  "description": "VS Code (from a code-server release) inside DSH: a right-sidebar tab driven by the plugin's own launcher over the in-process VS Code server (lib/launcher.mjs). The tab claims DSH file addresses (dsh-resource://file/**), so the product's own produced-file chips, delivered-file previews and inline prose mentions open in the workbench. The IDE is a resident surface moved with Element.moveBefore instead of being remounted, so switching sidebar tabs no longer reloads it. Requires a DSH with the right-sidebar services (sidebarRightTabs/sidebarRight, >= 0.1.5-alpha.1); older DSH versions get a single upgrade notice on the settings page and no other UI. Serving: a local named pipe by default (0.3.2+ desktop opens no TCP port at all; DSHCS_TRANSPORT=tcp forces the old loopback port), or a same-origin mount on DSH's own webServer (/code-server, protected by ctx.connection.requestRejection). Since 0.3.0 the desktop client loads the workbench document and its assets from a same-origin mirror (/api/code-server/asset/**) and runs its WebSocket over a byte tunnel (/api/code-server/tunnel), so the client itself never touches the pipe or the port. No code-server Node layer, no argon2, no C++ toolchain.",
   "homepage": "https://github.com/jinsiyu/dsh-code-server-app",
   "repository": {
     "type": "git",
@@ -69,7 +69,9 @@
     "publish:plugin": "node scripts/publish-plugin.mjs",
     "promote": "node scripts/promote.mjs",
     "prepack": "node scripts/vendor-vscode-server.mjs",
-    "build:client": "node scripts/build-client.mjs"
+    "build:client": "node scripts/build-client.mjs",
+    "test:apply": "node scripts/test-plugin-apply.mjs",
+    "test:desktop-pipe": "node scripts/test-desktop-pipe.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
