@@ -37,7 +37,10 @@ const SHIM_SOURCE = readFileSync(SHIM_PATH, 'utf8');
 
 const MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const WS_URL = 'ws://app:0/stable-abc123?reconnectionToken=xyz&skipWebSocketFrames=false';
-const EXPECTED_PATH = '/stable-abc123?reconnectionToken=xyz&skipWebSocketFrames=false';
+// The shim is a raw-byte client (no VS Code deflate frame layer), so it must ask the
+// server to skip ITS frame layer too. Regression guard for the reconnect storm:
+// with skipWebSocketFrames=false the server wraps the socket and the client cannot parse it.
+const EXPECTED_PATH = '/stable-abc123?reconnectionToken=xyz&skipWebSocketFrames=true';
 const DECODER = new TextDecoder('utf-8');
 
 /* ------------------------------------------------------------------ *
@@ -425,7 +428,7 @@ await test('handshake: tunnel open request is posted and onOpen fires once', asy
   assert.equal(server.openMessages.length, 1, 'parent should receive one open message');
   const open = server.openMessages[0];
   assert.equal(open.kind, 'open');
-  assert.equal(open.path, EXPECTED_PATH, 'path must be pathname + search');
+  assert.equal(open.path, EXPECTED_PATH, 'path must be pathname + search, with skipWebSocketFrames forced to true');
   assert.equal(open.version, '13', 'version must be 13');
   assert.equal(open.debugLabel, 'label-a');
   assert.equal(typeof open.id, 'string');

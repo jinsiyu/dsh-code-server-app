@@ -229,6 +229,20 @@
     return slash >= 0 ? rest.slice(slash) : '/';
   }
 
+  // This shim is a raw-byte client: it speaks RFC6455 plus VS Code's protocol
+  // with NO extra frame layer. The real browser client passes
+  // skipWebSocketFrames=false because its own WebSocketNodeSocket implements
+  // that layer (deflate framing); the server honours the flag by wrapping the
+  // socket the same way. Asking for true keeps both sides raw.
+  // Verified in the shipped server bundle:
+  //   c.get("skipWebSocketFrames")==="true" && (s=!0) -> oN(req, socket, {skipWebSocketFrames: s, ...})
+  function forceSkipFrames(path) {
+    if (/[?&]skipWebSocketFrames=/.test(path)) {
+      return path.replace(/skipWebSocketFrames=(?:true|false)/, 'skipWebSocketFrames=true');
+    }
+    return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'skipWebSocketFrames=true';
+  }
+
   function createPipeWebSocket(url, debugLabel) {
     var path;
     if (typeof URL === 'function') {
@@ -241,6 +255,7 @@
     } else {
       path = fallbackPath(url);
     }
+    path = forceSkipFrames(path);
 
     // 16 random bytes, base64 encoded (RFC6455 section 4.1).
     var handshakeKey = bytesToBase64(randomBytes(16));
