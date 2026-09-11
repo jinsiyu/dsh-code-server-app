@@ -183,7 +183,9 @@ let React = require('react')
         : 'code-server 未运行'
       var modeHint = sameOrigin
         ? '当前以 DSH 同源路径 ' + ((status != null && status.url) || '/code-server/') + ' 提供(无独立端口)。'
-        : '当前以独立回环端口提供(端口 ' + (status != null && status.port != null ? status.port : '8090') + ' 被占用时请释放或修改 port 配置)。'
+        : (status != null && status.transport === 'pipe'
+          ? '当前以本机命名管道提供(不占用任何 TCP 端口;客户端经 DSH 同源资产镜像 + 隧道访问)。'
+          : '当前以独立回环端口提供(端口 ' + (status != null && status.port != null ? status.port : '8090') + ' 被占用时请释放或修改 port 配置)。')
       var residentHint = supportsMoveBefore
         ? '常驻面:可用(切标签/收起侧栏不重载)。'
         : '常驻面:当前浏览器不支持 Element.moveBefore —— 切标签会整页重载(升级浏览器后自动可用)。'
