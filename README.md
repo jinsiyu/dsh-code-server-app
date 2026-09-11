@@ -126,7 +126,7 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 
 | 方式 | 说明 | 需要 |
 |---|---|---|
-| **`loopback`(默认)** | 插件自己起一个回环端口(`host:port`),右侧栏 iframe 跨源直连;进程可被 adopt(DSH host 重启后接管) | 无 |
+| **`loopback`(默认)** | 插件自己起 IDE 并把它接到**命名管道**(`\\.\pipe\dshcs-vscode-<pid>`,0.3.2 起;不占任何 TCP 端口),右侧栏经镜像 + 隧道访问;进程可被 adopt(DSH host 重启后接管) | 无 |
 | **`dsh`** | IDE 挂到 **DSH 自己的 HTTP 端口**上的 `/code-server/*`(HTTP prefix 路由)+ `/code-server/<quality>-<commit>`(WS 精确路由),转发到 launcher 的**命名管道**;**没有额外端口**;每条请求(含 WS 握手)先过 `ctx.connection.requestRejection()` —— 与 `/api` 同一套 Host/Origin fence + 浏览器 cookie 认证 | DSH 提供 `webServer` 服务(web profile);desktop 无此服务 → 自动回退 loopback |
 
 - 在 `cordis.patch.yml` 的 `config.serve`(或设置文档里的 `code-server.serve`)切换,下次启动生效 —— **设置卡片不提供这一行**(卡片只有认领范围/后台常驻两个设置)。
@@ -140,26 +140,31 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 - `loopback` 模式下 upgrade 会做 **code-server 同款 Origin 校验**(0.2.1 起):带 `Origin` 时其 host 必须等于 `Host`
   (含 `Forwarded: host=` / `X-Forwarded-Host` 的反代语义),否则回 `403`;缺 `Origin` 的非浏览器请求放行。
   没有这道检查时,本机任意浏览器页面都能对 `ws://127.0.0.1:<port>/stable-<commit>` 完成握手并驱动 IDE。
+- **传输与回退**(0.3.2):默认命名管道;若管道 10s 内不就绪,host 自动用回环端口 `8090` 重启一次并在状态/日志留痕。
+  强制走端口:`DSHCS_TRANSPORT=tcp`。
 
-## 客户端零端口(0.3.0 起,desktop)
+## 零端口(0.3.0 客户端 / 0.3.2 服务端,desktop)
 
-桌面端**不再依赖 loopback 端口**:工作台的文档与全部子资源经 `/api/code-server/asset/**` 镜像
-(1295 条精确路由转发给 IDE 自己的监听器),WebSocket 经 `/api/code-server/tunnel` 字节隧道 ——
-两者都走 DSH 自己的通道,客户端一侧完全不碰 `127.0.0.1`。
+桌面端**不占用任何 TCP 端口**:
 
-- **服务端仍是 VS Code 自己的 HTTP/WS 服务**(仅本机监听),客户端看不到它。这不是偷懒:Windows 上
-  扩展宿主必须拿到**真 TCP socket 句柄**(VS Code 用 `child.send(msg, handle)` 传),
-  自造 `Duplex` → `ERR_INVALID_HANDLE_TYPE`,命名管道 → `write ENOTSUP`;两种失败都表现为
-  "扩展远程主机意外终止 / 点击文件不跳转"。
+- **客户端(0.3.0 起)**:工作台的文档与全部子资源经 `/api/code-server/asset/**` 镜像
+  (1295 条精确路由转发给 IDE 自己的监听端),WebSocket 经 `/api/code-server/tunnel` 字节隧道 ——
+  两者都走 DSH 自己的通道,客户端一侧完全不碰 `127.0.0.1`。
+- **服务端(0.3.2 起)**:IDE 的 HTTP/WS 服务监听在命名管道上,资源管理器/`netstat` 里不再出现端口。
+  关键是让**扩展宿主**也走管道:VS Code 默认用 `child.send(msg, handle)` 把 accept 出来的**真 socket 句柄**
+  交给扩展宿主(Windows 只认 TCP 句柄:`Duplex` → `ERR_INVALID_HANDLE_TYPE`、命名管道 → `write ENOTSUP`),
+  而上游自带一个开关 —— 给 server 传 `--socket-path`,它就改为自建内部命名管道 + `_pipeSockets()` 泵字节。
+  launcher 因此以 `--pipe <name> --exthost-ipc <flag>` 成对启动(只给前者 = "IDE 起得来但扩展宿主连不上")。
 - **客户端只有两处改动**:工作台 bundle 的 `webSocketFactory` 注入(1 行,serve 时由 launcher 注入,
   不改磁盘上的 VS Code 树)+ 约 200 行裸字节 shim(`lib/pipe-ws.js`;`skipWebSocketFrames=true`
   下服务端把连接当纯字节流,shim 因此不做任何分帧)。
 - **web 侧行为不变**:`serve: dsh` 继续用 DSH `webServer` 的同源挂载;镜像与 shim 注入都只在
   "组合里没有 `webServer`" 时启用(`DSHCS_TUNNEL_MODE`)。
-- **排障入口**:`/healthz` 的 `tunnelMode` / `serveInjection` / `shimInjections`;
-  `<user-data>/tunnel.log`(隧道事件与双向字节数)、`page-errors.log`(页面内错误)、
-  `client-diag.log`(客户端中继信标);仓库内 `scripts/test-*.mjs` 与
-  `scripts/repro-tunnel.mjs`(本地端到端复现,不需要桌面应用、不需要重启)。
+- **排障入口**:`/healthz` 的 `transport`/`exthost`/`listen`/`tunnelMode`/`serveInjection`/`shimInjections`;
+  状态快照里的 `transport`/`pipe`/`port`;`<user-data>/tunnel.log`(隧道事件与双向字节数)、
+  `page-errors.log`(页面内错误)、`client-diag.log`(客户端中继信标);仓库内
+  `scripts/test-plugin-apply.mjs`(含传输参数断言)、`scripts/test-desktop-pipe.mjs`(真 IDE 起在管道上的端到端)、
+  `scripts/test-*.mjs` 其余离线测试与 `scripts/repro-tunnel.mjs`(本地复现,不需要桌面应用、不需要重启)。
 
 ## 旧版 DSH(0.2.3 起不再支持)
 
@@ -420,10 +425,10 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `serve` | `loopback` | 服务方式:`loopback`(独立回环端口,iframe 跨源)→ `dsh`(挂到 DSH 自身端口的 `/code-server/*`,转发到命名管道,复用 DSH 的 Host/Origin + cookie 防护)。需 DSH 提供 `webServer`,缺失时自动回退 loopback |
+| `serve` | `loopback` | 服务方式:`loopback`(IDE 接到命名管道,客户端走镜像 + 隧道)→ `dsh`(挂到 DSH 自身端口的 `/code-server/*`,转发到同一条命名管道,复用 DSH 的 Host/Origin + cookie 防护)。需 DSH 提供 `webServer`,缺失时自动回退 loopback |
 | `bin` | `''`(空 = 用自带 launcher) | 逃生舱:显式指定外部 code-server 可执行文件 / `out/node/entry.js` 时退回旧模型(不经 `lib/launcher.mjs`) |
-| `host` | `127.0.0.1` | loopback 模式的绑定地址(仅允许回环) |
-| `port` | `8090` | loopback 模式的端口;被占用时启动失败并给出诊断(不自动换端口) |
+| `host` | `127.0.0.1` | **回退**端口模式(0.3.2 之前的行为)的绑定地址(仅允许回环);`DSHCS_TRANSPORT=tcp` 或管道不就绪时才会用到 |
+| `port` | `8090` | 同上:回退端口模式的端口;被占用时启动失败并给出诊断(不自动换端口)。默认管道路径**不使用**它 |
 | `auth` | `none` | 固定 `none`(0.2.0 起 argon2 已移除;需要对外访问请用 `serve: dsh`) |
 | `userDataDir` | `$DSH_HOME/code-server/user-data` | 用户数据隔离目录 |
 | `extensionsDir` | `$DSH_HOME/code-server/extensions` | 扩展目录 |
@@ -515,6 +520,9 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
   → 该模式下 Ports 面板的 **WebSocket** 转发不可用(HTTP 转发正常);需要时用 `serve: loopback`。
 - **`serve: dsh` 的 iframe 与 DSH 同源** → 该模式不挂 `sandbox`(同源 + `allow-same-origin` 可被 frame 自行摘除);
   `loopback` 模式跨源,`sandbox` 作为真防护保留。
+- **`serve: loopback` 的名字没变,但传输换了(0.3.2)**:该模式现在把 IDE 接到命名管道上(零 TCP 端口),
+  客户端经资产镜像 + 隧道访问;`host`/`port` 两个配置项只在回退路径(`DSHCS_TRANSPORT=tcp`,
+  或管道 10s 内不就绪)才生效。端口模式下既有的 Origin 校验与 Host/Origin 栅栏逻辑保留不变。
 - **跨会话单实例**:host 级共享一份 IDE;切换 cwd 需重启实例(右侧栏标签自动处理并提示)。
 - **旧版 DSH 不受支持(0.2.3 起)**:没有 `sidebarRightTabs`/`sidebarRight` 的 DSH 上,除设置页一条升级提示外无任何入口;
   旧版用户请留在 `0.2.2`(`dsh plugin --profile web add dsh-code-server-app@0.2.2`)。

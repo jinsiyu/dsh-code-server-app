@@ -119,7 +119,7 @@ state preserved (no full reload). Full evidence and probe scripts: `docs/analysi
 
 | Mode | What it does | Requires |
 |---|---|---|
-| **`loopback` (default)** | the plugin listens on its own loopback port (`host:port`) and the sidebar iframe connects cross-origin; the process can be adopted after a DSH host restart | nothing |
+| **`loopback` (default)** | the plugin starts the IDE and attaches it to a **named pipe** (`\\.\pipe\dshcs-vscode-<pid>`, since 0.3.2 — no TCP port at all); the sidebar reaches it through the asset mirror + byte tunnel; the process can be adopted after a DSH host restart | nothing |
 | **`dsh`** | the IDE is mounted on **DSH's own HTTP port** at `/code-server/*` (HTTP prefix route) plus `/code-server/<quality>-<commit>` (exact WebSocket route), forwarded to the launcher's **named pipe**; **no extra port**; every request (including the WS handshake) first passes `ctx.connection.requestRejection()` — the same Host/Origin fence and browser-cookie authentication as `/api` | DSH providing `webServer` (web profile); desktop falls back to loopback automatically |
 
 - Switch it in `config.serve` in `cordis.patch.yml` or in Settings → Plugins → Code Server (takes effect on the next start).
@@ -134,29 +134,39 @@ state preserved (no full reload). Full evidence and probe scripts: `docs/analysi
   header is present its host must equal `Host` (honouring `Forwarded: host=` / `X-Forwarded-Host`, like code-server),
   otherwise the handshake gets `403`; non-browser requests without `Origin` are allowed. Without that check any local
   browser page could complete a handshake against `ws://127.0.0.1:<port>/stable-<commit>` and drive the IDE.
+- **Transport and fallback** (0.3.2): the IDE listens on a named pipe by default; if it is not ready within 10s the
+  host restarts once on the loopback port `8090` and records that in the status/log. Force the port path with
+  `DSHCS_TRANSPORT=tcp`. `host`/`port` are therefore only used on that fallback path.
 
 
-## Zero client-side ports (0.3.0, desktop)
+## Zero ports (0.3.0 client-side, 0.3.2 server-side, desktop)
 
-The desktop client **no longer depends on a loopback port**: the workbench document and every subresource are
-served through the `/api/code-server/asset/**` mirror (1295 exact routes forwarded to the IDE's own listener)
-and the WebSocket travels through the `/api/code-server/tunnel` byte tunnel — both over DSH's own channel, so
-the client never touches `127.0.0.1`.
+The desktop side **opens no TCP port at all**:
 
-- **The server side is still VS Code's own HTTP/WS service** (loopback-only), invisible to the client. That is
-  a Windows constraint, not laziness: the extension host must receive a **real TCP socket handle** (VS Code
-  passes it with `child.send(msg, handle)`); a hand-made `Duplex` yields `ERR_INVALID_HANDLE_TYPE` and a named
-  pipe yields `write ENOTSUP` — both surface as "extension host terminated unexpectedly / clicking a file does
-  nothing".
+- **Client (since 0.3.0)**: the workbench document and every subresource are served through the
+  `/api/code-server/asset/**` mirror (1295 exact routes forwarded to the IDE's own listener) and the WebSocket
+  travels through the `/api/code-server/tunnel` byte tunnel — both over DSH's own channel, so the client never
+  touches `127.0.0.1`.
+- **Server (since 0.3.2)**: the IDE's HTTP/WS service listens on a named pipe, so no port shows up in Resource
+  Monitor / `netstat`. The key was letting the **extension host** use a pipe too: by default VS Code hands it the
+  **real socket handle** accepted from the listener (`child.send(msg, handle)`), and on Windows only TCP handles
+  are sendable (`Duplex` → `ERR_INVALID_HANDLE_TYPE`, named pipe → `write ENOTSUP`). Upstream ships the switch
+  itself: passing `--socket-path` makes the server create an internal named pipe and pump bytes with
+  `_pipeSockets()`. The launcher therefore starts as `--pipe <name> --exthost-ipc <flag>` — pipe only, without
+  the second flag, is the "IDE boots but the extension host never connects" trap.
+- **Fallback**: if the pipe is not ready within 10s the host restarts once on the loopback port (`8090`) and
+  records it in the status/log; `DSHCS_TRANSPORT=tcp` forces that path.
 - **Two client-side changes only**: a one-line `webSocketFactory` injection into the workbench bundle (done at
   serve time by the launcher; the on-disk VS Code tree stays pristine) plus a ~200 line raw-byte shim
   (`lib/pipe-ws.js`; with `skipWebSocketFrames=true` the server treats the connection as a plain byte stream,
   so the shim does no framing at all).
 - **Web behaviour is unchanged**: `serve: dsh` keeps using the DSH `webServer` same-origin mount; the mirror and
   the shim injection are enabled only when the composition has no `webServer` (`DSHCS_TUNNEL_MODE`).
-- **Diagnostics**: `/healthz` (`tunnelMode` / `serveInjection` / `shimInjections`), `<user-data>/tunnel.log`,
-  `page-errors.log`, `client-diag.log`, plus `scripts/test-*.mjs` and `scripts/repro-tunnel.mjs` (local
-  end-to-end reproduction without the desktop app).
+- **Diagnostics**: `/healthz` (`transport` / `exthost` / `listen` / `tunnelMode` / `serveInjection` /
+  `shimInjections`), `transport` / `pipe` / `port` in the status snapshot, `<user-data>/tunnel.log`,
+  `page-errors.log`, `client-diag.log`, plus `scripts/test-plugin-apply.mjs` (includes the transport-argument
+  assertions), `scripts/test-desktop-pipe.mjs` (end-to-end: a real IDE started on a pipe) and
+  `scripts/repro-tunnel.mjs` (local reproduction without the desktop app).
 
 ## Legacy DSH (unsupported since 0.2.3)
 
@@ -416,7 +426,7 @@ reports the tree version / `productPath` / server entry, VS Code inner dependenc
 |---|---|---|
 | `bin` | `code-server` (placeholder) | Launch priority: explicit `bin` in config > the tree package `@jinsiyu/dshcs-code-server/code-server/out/node/entry.js` > the old platform sub-packages `@jinsiyu/dshcs-code-server-<platform>-<arch>` > the in-package `vendor/code-server` > the old install root `.code-server-app` > plugin-internal `node_modules` > `code-server` on PATH. None present → startup error with troubleshooting hints |
 | `host` | `127.0.0.1` | Bind address; `auth: none` only allows loopback (localhost/127.0.0.1/::1) |
-| `port` | `8090` | Port; on conflict startup fails with diagnostics (no automatic port change) |
+| `port` | `8090` | Port of the **fallback** port mode (the default pipe path does not use it); on conflict startup fails with diagnostics (no automatic port change) |
 | `auth` | `none` | `none` \| `password`; non-loopback host automatically requires password |
 | `passwordToken` | `''` | Token for password mode (passed to code-server via the `PASSWORD` env var) |
 | `userDataDir` | `$DSH_HOME/code-server/user-data` | User-data isolation directory |
