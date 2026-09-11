@@ -124,7 +124,10 @@ globalThis.__DSH_WS_FACTORY__ = {
 - `/api/code-server/asset/out/…`(263 文件)、`/api/code-server/asset/extensions/…`(1020 文件):合计 1283 条,`Map` 级开销,注册耗时需实测(<100 ms 预期)。
 - 路由路径段允许 `[A-Za-z0-9_$.-]`(F10),恰好覆盖 1281 个文件;剩下 2 个(F14)在 repack 阶段改名(`Regular Expressions (JavaScript).tmLanguage` → `regular-expressions-javascript.tmLanguage`、`objective-c++.tmLanguage.json` → `objective-cpp.tmLanguage.json`)并同步改对应 `extensions/*/package.json` 的语法贡献路径。
 - **iframe 文档也走这条路由**:`src = <asset 路由>/out/vs/code/browser/workbench/workbench.html`。这样不用 `srcdoc`、不用 `<base>`,文档 URL 天生就在镜像树里,相对 `import()`、worker、`fetch` 全部自然解析。
-- 缓存:所有资产响应带 `cache-control: immutable`(或 `no-cache` + ETag);`workbench.js` 18 MB 是首屏大头,靠 Electron 的 HTTP `Cache` + `codeCache`(privilege 已开)二次启动走缓存。首屏冷启动耗时要量化。
+- 缓存:**自定义 scheme 下没有任何缓存可用**(Phase 0 实测,§8.1):三次 fetch 三次都打到 handler,`CacheStorage` 直接报 `Request scheme 'dshtest' is unsupported`,service worker 不可注册。因此
+  1. 不要指望 `cache-control`/ETag —— 每次渲染器加载都会重新取一遍资产;
+  2. 必须**预压缩**:把 `.gz`(或 brotli)变体与 `content-encoding` 一起发,`workbench.js` 18 MB → 约 5 MB;
+  3. 首屏只加载工作台实际请求的子集,冷启动字节数与耗时必须实测(§10 性能基线)。
 
 ### 5.2 HTML 重写(服务端已模板化,不需要改 VS Code)
 
@@ -140,7 +143,8 @@ code-server 的 `out/vs/code/browser/workbench/workbench.html` 是 2.4 KB 的模
 |---|---|
 | `/vscode-remote-resource?path=…`(服务端 bundle 里 3 处) | 单一路由 + query(**不**需要镜像),直接转给 code-server |
 | webview pre(`extensions/**` 之外的 `vs/workbench/contrib/webview/browser/pre/**`) | 已在 `out/` 镜像树内;注意 webview 内部 `fake.html`/service worker 的相对路径假设 |
-| worker + wasm(分词器 `oniguruma` 等) | **风险点**:`new Worker('dsh-app://app/api/code-server/asset/…')` 与 wasm 实例化在自定义 scheme 下是否被允许 → Phase 0 门禁 G2 |
+| worker + wasm(分词器 `oniguruma` 等) | Phase 0 已实测**全部可用**:经典 worker / module worker(worker 内再 `import './mod.js'` 也通)/ blob worker / `WebAssembly.instantiateStreaming` |
+| service worker / PWA | Phase 0 实测**不可注册**(`The URL protocol of the current origin is not supported`)。需确认工作台不依赖它:code-server 的 offline/PWA 部分(`vscode/out/browser/serviceWorker.js`)在桌面端必须禁用 |
 | NLS(`nls.messages.js` 1.0 MB) | 在 `out/` 镜像树内 |
 | codicon 字体、图标、主题 json | 同上 |
 
@@ -188,7 +192,7 @@ remoteAuthority:location.host}  →  remoteAuthority:location.host,webSocketFact
 
 | 阶段 | 内容 | 验收 | 回滚 | 估时 |
 |---|---|---|---|---|
-| **Phase 0 门禁** | G1 `dsh-app://` + `duplex:'half'` 流式请求体穿透 echo 测试(含背压观察);G2 自定义 scheme 下 `Worker` + wasm;G3 注入 `webSocketFactory`(B2 补丁)后,资产仍走 loopback、WS 走隧道,IDE 完整可用;G4 桌面载体上 `requestBody:'streaming'` 路由行为 | 三条全绿;任一条红 → 停,回 loopback,写结论 | 无(只读实验) | 0.5–1 天 |
+| **Phase 0 门禁** | G1 `dsh-app://` + `duplex:'half'` 流式请求体穿透 echo 测试(含背压观察);G2 自定义 scheme 下 `Worker` + wasm;G3 注入 `webSocketFactory`(B2 补丁)后,资产仍走 loopback、WS 走隧道,IDE 完整可用;G4 桌面载体上 `requestBody:'streaming'` 路由行为 | 三条全绿;任一条红 → 停,回 loopback,写结论 | 无(只读实验) | 0.5–1 天 ✅ 见 §8.1 |
 | **Phase 1 传输** | tunnel 路由 + `DshPipeWebSocket`(RFC6455)+ 合成 upgrade bridge + token;资产仍 loopback | IDE 可用且 DevTools 里没有任何 `ws://` 连接;断隧道能干净报错重连;连续 30 min 无泄漏 | 关掉 `serve: pipe` 即回 loopback | 2–3 天 |
 | **Phase 2 资源** | 镜像路由注册 + HTML 重写 + `_VSCODE_FILE_ROOT` + `/vscode-remote-resource` + 2 个改名 + 缓存头;含 G2 的 worker/wasm 兜底 | 全部资产走 `/api/…`;冷启动耗时与内存达标;扩展安装/终端/搜索/SCM 正常 | 资产切回 loopback | 4–6 天 |
 | **Phase 3 零监听** | `createServer` 不再 `listen()`;合成 req/res;`netstat` 验证无端口;错误/重启/退出路径 | **无任何 TCP 监听** 且功能全绿 | 恢复 `listen()` | 2–3 天 |
@@ -196,16 +200,61 @@ remoteAuthority:location.host}  →  remoteAuthority:location.host,webSocketFact
 
 合计约 **2–3 周**(单人、不含跟版维护)。若只做 B2 不做 B1,Phase 4 可压到 1–2 天。
 
+### 8.1 Phase 0 结果(2026-09-11,已跑完)
+
+**方法**:用应用自带的 Electron 二进制拼一个一次性 Electron(把 `DeepSeek Harness.exe` + 依赖 DLL/pak 复制到 `.spike/phase0/electron/`,把我们自己的 harness 放成 `resources/app/`),以完全相同的 scheme 权限(`standard/secure/supportFetchAPI/corsEnabled:false/stream/codeCache`)注册 `dshtest://` 并在真实渲染进程里跑用例。跑法见 §8.2。环境:`Chrome/152.0.7977.54 Electron/44.0.0`。
+
+| 用例 | 结果 | 关键数据 |
+|---|---|---|
+| G1 流式请求体(`duplex:'half'`) | ✅ | 三片分别在 **2 / 47 / 94 ms** 到达 handler(间隔 40 ms),真流式、未被缓冲;响应方向 2 / 71 / 136 ms 同样逐片 |
+| G1 省略 `duplex` | ✅ 如期报错 | `The 'duplex' member must be specified for a request with a streaming body` |
+| G1 8 MiB 上传 | ✅ | **172 ms** 完成,8388608 B 全到,共 **128 个分片 = 正好 64 KiB/片**,与 DSH 管道 `DESKTOP_PIPE_CHUNK_BYTES` 同粒度 |
+| G2 经典 worker | ✅ | 自定义 scheme 下可创建并可通信 |
+| G2 module worker | ✅ | worker 内再 `import './mod.js'` **也通**(返回 42) |
+| G2 blob worker / blob 模块 import | ✅ | 兜底路径可用 |
+| G2 动态 `import()` | ✅ | `import.meta.url` = scheme URL |
+| G2 wasm | ✅ | `instantiate(bytes)` 与 `instantiateStreaming(fetch(...))`(MIME `application/wasm`)都通过 |
+| G2 service worker | ❌ | `The URL protocol of the current origin ('dshtest://app') is not supported` |
+| 存储:localStorage / sessionStorage / indexedDB | ✅ | indexedDB 建库建表写读全通 |
+| 存储:CacheStorage | ❌ | `Cache.put` 报 `Request scheme 'dshtest' is unsupported` |
+| 存储:cookie | ⚠️ | 写入后 `document.cookie` 仍为空 |
+| 其它 | ✅ | `isSecureContext=true`、`crypto.subtle` 可用、`navigator.storage.estimate` 配额约 30 GB |
+| 协议级 HTTP 缓存 | ❌ | 同一 URL 连取三次,**三次都打到 handler**(`cache-control: max-age=600` 无效) |
+
+**结论:GO**,带两条设计修正:
+
+1. **G1/G2 两条存在性风险全部排除** —— 流式双向 + worker/wasm 在自定义 scheme 下都成立,方案 B 的传输层与资源层在平台侧没有拦路虎。
+2. **缓存必须自己扛**(新发现,原计划假设错误):自定义 scheme 下 HTTP 缓存、CacheStorage、service worker 三样都没有,冷启动每次都要重新取资产 → §5.1 改为预压缩 + 只取首屏子集,并把冷启动字节/耗时列入 Phase 2 验收。
+3. **工作台不得依赖 service worker**(code-server 的 PWA/offline 路径要在我们重写的 HTML/补丁里禁用)。
+4. G4(桌面载体 `requestBody:'streaming'`)按静态证据先判为通过:`apps/desktop-host/src/index.ts:335-341` 在请求体存在时以 `duplex:'half'` 构造真实 `Request`,`apps/desktop/src/host-process.ts:165` 明确"不缓冲转发请求体";G1 已证明渲染器→main 这半段是流式的。**端到端确认并入 Phase 1 的 tunnel 首次联调**。
+5. G3(注入 `webSocketFactory` 后 IDE 完整可用)本质上是 Phase 1 的第一个里程碑(需要 B2 补丁 + shim + 桥接),不单独做。
+
+### 8.2 复现方式
+
+```powershell
+# 1. 拼一次性 Electron(约 365 MB,读应用产物、写本仓库 .spike/,不碰用户在用安装)
+#    复制 <win-arm64-unpacked>\* 与 locales\ 到 .spike\phase0\electron\,exe 改名 electron.exe
+#    把 .spike\phase0\{package.json,main.cjs,probe.html,probe.js,worker*.js,mod.js,sw.js} 放进 electron\resources\app\
+# 2. 跑(必须在非受限沙箱下:Chromium 的 mojo 平台通道需要命名管道)
+.\.spike\phase0\electron\electron.exe --user-data-dir=.\.spike\phase0\userdata
+# 3. 报告:electron\resources\app\report.json(harness.log 是主进程侧日志)
+```
+
+> 注意:直接对应用自带的 exe 传 app 路径**不会**生效(打包产物仍加载自己的 `resources/app.asar`),所以必须走复制;受限沙箱下 Electron 起不来(`platform_channel.cc: Check failed: 拒绝访问`),要 `danger-full-access`。
+
+
+
 ## 9. 风险与缓解
 
 | 风险 | 级别 | 缓解 / 决策点 |
 |---|---|---|
-| 自定义 scheme 下 `Worker`/wasm 被拒(tokenizer 等) | **高(存在性)** | G2 必须先测;兜底:blob worker + 内联 wasm,或把相关特性降级;都不行 → 方案失败 |
-| `dsh-app://` 流式请求体不可用 | **高(存在性)** | G1;兜底:分块 POST(每 ≤64 KiB 一个请求)会显著增加延迟,只适合作为最后手段 |
+| ~~自定义 scheme 下 `Worker`/wasm 被拒~~ | **已排除** | Phase 0 G2 全绿(§8.1):经典 / module / blob worker、worker 内模块解析、wasm 两种实例化全通过 |
+| ~~`dsh-app://` 流式请求体不可用~~ | **已排除** | Phase 0 G1 全绿(§8.1):40 ms 间隔的片逐片到达 handler,8 MiB 上传 172 ms,分片正好 64 KiB |
+| **没有任何缓存**(协议级 HTTP 缓存 / CacheStorage / SW 三样都不可用) | 中高 | §5.1:预压缩(18 MB → ~5 MB)+ 只取首屏子集;冷启动字节与耗时进 Phase 2 验收 |
 | 管道全局背压拖慢 DSH UI | 中 | §4.4 四条缓解;Phase 2 量化 |
 | 1283 路由注册的启动开销 / 内存 | 中 | 实测;必要时只注册首屏所需子集 + 首访惰性注册(需保留一份可增删的注册表) |
-| 18 MB 首屏 bundle 的冷启动 | 中 | immutable 缓存 + Electron code cache;必要时拆分/预压缩 |
-| CSP、service worker、`fake.html` 等相对路径假设 | 中 | HTML 由我们重写,nonce/政策自定;webview pre 单独回归 |
+| 18 MB 首屏 bundle 的冷启动(且每次都重取) | 中 | 预压缩 + 拆首屏子集 + 实测;不能再假设缓存兜底 |
+| CSP、webview `fake.html` 等相对路径假设 | 中 | HTML 由我们重写,nonce/政策自定;webview pre 单独回归(service worker 已在 §8.1 判定不可用,直接禁用) |
 | 两个非法文件名 | 低 | repack 改名 + manifest 补丁(F14) |
 | 跟版维护(上游 seam 变动) | 中高 | B1 源码 patch + CI 断言"补丁命中数=1";每次跟版跑回归 |
 | 安全面(把 IDE 流量挂到 DSH API 通道) | 中 | 每次启动随机 token + 插件侧校验;不做跨会话复用 |
