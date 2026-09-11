@@ -25,6 +25,8 @@ const TMP = join(process.env.TEMP ?? '.', 'dshcs-repro-' + randomBytes(4).toStri
 const TUNNEL_LOG = join(TMP, 'tunnel.log');
 const PAGE_LOG = join(TMP, 'page.log');
 const KEEP = process.argv.includes('--keep');
+// 默认跑 profile 里部署的那份;DSHCS_REPRO_PLUGIN=<插件目录> 可直接跑工作区副本(快速迭代)
+const REPRO_PLUGIN = process.env.DSHCS_REPRO_PLUGIN ?? null;
 
 const l = (...a) => console.log('[repro]', ...a);
 function readLog() {
@@ -38,7 +40,7 @@ const productPath = `${product.quality ?? 'oss'}-${product.commit ?? 'dev'}`;
 
 // ---------- 1) 起 launcher ----------
 const child = spawn(process.execPath, [
-  join(PLUGIN, 'lib', 'launcher.mjs'),
+  join(REPRO_PLUGIN ?? PLUGIN, 'lib', 'launcher.mjs'),
   '--tree', TREE,
   '--user-data-dir', join(TMP, 'user-data'),
   '--extensions-dir', join(TMP, 'extensions'),
