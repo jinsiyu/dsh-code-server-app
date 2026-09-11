@@ -303,3 +303,56 @@ remoteAuthority:location.host}  →  remoteAuthority:location.host,webSocketFact
 - 桌面端现状(loopback + iframe)是**已验证可用**的兜底;本方案落地前不改变默认行为。
 - web profile 继续走 `serve: dsh`(挂 DSH `webServer`),零改动。
 - 本方案不改 DSH;若上游将来在桌面载体提供 raw route/upgrade 席位(方案 A),本方案的 Phase 2/3 可直接删掉,只留 Phase 1 的元数据部分。
+
+## 13. Phase 1 实况与最终传输设计(2026-09-11)
+
+### 13.1 最终形态
+
+```
+工作台文档(loopback)            父窗口(DSH 前端)              DSH host                    launcher 子进程
+ src/pipe-ws.js ──postMessage──▶ src/pipe-relay.js ──同源 POST──▶ /api/code-server/tunnel ──▶ 连 IDE 自己的监听器
+ (裸字节客户端)    ArrayBuffer     (双向流)         streaming    lib/pipe-tunnel.mjs         (写等价 upgrade 请求后双向搬字节)
+                                                                                                │
+                                                                                      VS Code 自己的 http/ws 服务端
+                                                                                      (真 TCP socket → 句柄可交给扩展宿主)
+```
+
+- **客户端不依赖任何端口**:它只把字节 `postMessage` 给父窗口(DSH 前端),父窗口走同源 `/api` 隧道。
+- **服务端零改造**:监听、accept、WS 握手、扩展宿主句柄传递全部由 VS Code 自己做;我们只把 upgrade 请求写进上游连接。
+- **客户端只有两处改动**:`webSocketFactory` 注入(工作台 bundle 1 行)+ 裸字节 shim(约 200 行)。
+- **必须强制 `skipWebSocketFrames=true`**:该标志下服务端把连接当纯字节流(与 Electron 的 MessagePort 传输同形);设 false 它会套一层 deflate 帧,裸客户端解析不了。
+
+### 13.2 Windows 句柄约束(为什么"进程内零监听"做不到)
+
+VS Code 用 IPC `child.send(msg, handle)` 把连接句柄交给扩展宿主进程,而 Windows 上**只有 TCP socket 句柄可发**:
+
+| 交给 handleUpgrade 的"socket" | 结果 |
+|---|---|
+| 自造 `Duplex` | `ERR_INVALID_HANDLE_TYPE: This handle type cannot be sent` |
+| 命名管道真实 socket | `write ENOTSUP`(uv_write2 不支持管道句柄) |
+| **监听器 accept 的 TCP socket** | ✓ 正常(原生 loopback 形态) |
+
+三者失败时的现象都是"**扩展远程主机在过去 5 分钟内意外终止**"、所有扩展不激活(内置 `dshcs-open-file` 因此不消费信号文件 → 点击文件不跳转)。结论:**launcher 保留一个仅本机的监听**作为 VS Code 的工作 socket,客户端仍然看不见它;§8 Phase 3 的"彻底不 listen()"在本平台不可达,已作废。
+
+### 13.3 阶段 1 踩过的 8 个坑(全部有回归资产)
+
+| # | 症状 | 根因 |
+|---|---|---|
+| 1 | 桌面端 `pnpm clean` 后 shell 全挂 | 删掉了 host 自己解析沙箱 runner/tsx 的那棵 profile 树 |
+| 2 | 能启动但白屏 | `http.ClientRequest` 只在首次 write/end 才发 header,而请求体要等 101 → 死锁(**flushHeaders**) |
+| 3 | 同上 | 合成 upgrade 缺 `req.ws` / `req.head`(loopback 路径有) |
+| 4 | 连接秒断、无限重连 | `skipWebSocketFrames=false` 让服务端套帧层,裸客户端解析不了 |
+| 5 | 101 出去后服务端一言不发 | 合成 socket 少了 `pause()`/`resume()`(入方向永不被读) |
+| 6 | 同上 | `_write` 等自身 `'drain'` = 自锁(应等下游) |
+| 7 | 扩展宿主终止(ERR_INVALID_HANDLE_TYPE) | 自造 Duplex 没有真实句柄 |
+| 8 | 扩展宿主终止(ENOTSUP) | 命名管道句柄在 Windows 上不可 IPC 传递 |
+
+回归资产:`scripts/test-pipe-tunnel.mjs`(host 转发 6 例,含防死锁)、`scripts/test-pipe-ws.mjs`(shim 11 例)、`scripts/repro-tunnel.mjs`(**本地端到端复现**:真 launcher + 真 VS Code 树 + 真 shim,不需要桌面应用/重启;`DSHCS_REPRO_PLUGIN=<工作区>` 可直接跑工作区副本)。
+
+### 13.4 方向决定:B(客户端零端口)
+
+在 A(全放权,客户端直连 loopback)/ B(接管客户端传输)/ C(两者都留)之间,用户选 **B**:继续只做管道方案,不引入客户端侧端口依赖。随之的收敛项(都是减法,待做):
+
+1. **补丁从"改磁盘文件"改为"serve 时改写"**:launcher 已在改写工作台 HTML,同样可在返回 `workbench.js` 时做那 1 行注入(带"命中数=1"断言)。不再动 pnpm 硬链接的树、不需要每 profile 打补丁、VS Code 升级只影响一个函数。
+2. shim / 隧道**只在管道方案里存在**,不参与 `serve: dsh`(web)路径。
+3. Phase 2(资产镜像 + 一文件一路由)继续:让工作台文档也来自 `dsh-app://`,那时隧道可同源 fetch,父窗口中继退化为可选优化。
