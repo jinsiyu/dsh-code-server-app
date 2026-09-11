@@ -524,6 +524,10 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
   客户端经资产镜像 + 隧道访问;0.3.3 起没有端口回退,`host`/`port` 配置项已移除。
   upgrade 的 Origin 校验与 Host/Origin 栅栏逻辑保留不变(只是目标从端口变成管道)。
 - **`serve: dsh` 需要 `webServer`,没有就报错**(0.2.0 起支持该模式;0.3.3 起不再静默回退 loopback)。
+- **"没有回退"的代价(0.3.3 的自觉取舍)**:命名管道是唯一路径 —— 若所在环境禁用了它(组策略/杀软/受限容器),
+  IDE 就是不可用,而不会退回端口。此时状态是 `error`,错误正文里带启动日志尾部;排障顺序:
+  ① 管道是否存在 `\\.\pipe\dshcs-vscode-<host pid>`;② `logTail` 里 launcher 的 `FATAL 监听失败`;
+  ③ 管道可用时 `/healthz` 是否 200。
 - **跨会话单实例**:host 级共享一份 IDE;切换 cwd 需重启实例(右侧栏标签自动处理并提示)。
 - **旧版 DSH 不受支持(0.2.3 起)**:没有 `sidebarRightTabs`/`sidebarRight` 的 DSH 上,除设置页一条升级提示外无任何入口;
   旧版用户请留在 `0.2.2`(`dsh plugin --profile web add dsh-code-server-app@0.2.2`)。
