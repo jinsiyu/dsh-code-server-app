@@ -401,3 +401,54 @@ VS Code 用 IPC `child.send(msg, handle)` 把连接句柄交给扩展宿主进�
 - **服务端**:仍保留仅本机监听(Windows 句柄约束,见 §13.2),客户端不可见。
 - 待办:①镜像目前对 web(`serve: dsh`)也会注册路由,应收敛为只在 loopback 模式启用,避免动到
   web 侧既有行为;②发布 0.3.0 到 `next`(阶段 1+2 已是实打实的功能版本)。
+
+## 15. Phase 3 侦察(2026-09-11):服务端也能不占 TCP 端口 —— 上游自带的命名管道路径
+
+§13.2 的结论是"Windows 上必须存在监听器,因为 VS Code 把 accept 出来的**真 TCP socket 句柄**交给
+扩展宿主"。现在的问题变成:这个监听器**是否可以不是 TCP**。答案是上游自己给了开关。
+
+### 15.1 上游源码证据(vendored 树 `out/server-main.js` + `out/vs/workbench/api/node/extensionHostProcess.js`)
+
+- 交接点:`_sendSocketToExtensionHost` → `extensionHostProcess.send(msg, socket)`,socket 从包装类
+  剥两层取真 `net.Socket`(Windows 上 `child.send` 只认真 socket 句柄 —— 这正是 §13.2 的根因)。
+- **Windows 特例**:`this._canSendSocket = !isWindows || !this._environmentService.args['socket-path']`。
+  即 Windows 上一旦给了 `--socket-path`,服务端就**不传句柄**,改为 `_listenOnPipe()` 自建一个内部命名
+  管道、把管道名写进扩展宿主 env,扩展宿主连进来后由 `_pipeSockets()` 双向泵字节。
+- 监听端本身也支持管道:`p.listen(r['socket-path'] ? { path } : { host, port })`。
+- 扩展宿主侧 `readExtHostConnection()` 三个分支:`type 3` = Electron **MessagePort**(桌面版路径)、
+  `type 2` = 等 `VSCODE_EXTHOST_IPC_SOCKET` 句柄(会打 `[reconnection-grace-time] … read …` 日志)、
+  其余 = `createConnection(pipeName)` 连管道并用裸 socket 包装(`extHost-renderer`)。
+- **与 VSCodium 无关**:`get_repo.sh` 直接 `git fetch Microsoft/vscode`,86 个补丁里触碰 remote/server 的
+  只有客户端校验开关(`00-remote-disable-client-validation.patch`,只加一个 boolean)、依赖、产品 URL、
+  `reh` 打包;没有一个改传输层 → 换 VSCodium 不会让端口消失。
+
+### 15.2 实现(`lib/launcher.mjs`)
+
+新增 `--exthost-ipc <path>`:仅把该值塞进 `codeArgs['socket-path']` 以**翻转上面那个开关**(不真的监听它);
+`/healthz` 增加 `exthost: socket|pipe` 与 `listen`。launcher 早在 `serve: dsh` 模式就支持 `--pipe <name>`
+监听管道,host 侧 `lib/asset-mirror.mjs` / `lib/pipe-tunnel.mjs` 也早已实现 `{ kind: 'pipe' }` 目标 —— 
+整条链路不缺组件,缺的只是"让扩展宿主也能走管道"这一下。
+
+### 15.3 验证矩阵(`.spike/pipe-ipc/probe.mjs`:真树 + 真 shim + 真隧道 + 真控制帧握手)
+
+探针自己实现 `[type:1][id:4][ack:4][len:4]` 协议帧,发 `{type:'auth'}` + 
+`{type:'connectionType', desiredConnectionType:2}`,从而**真的拉起扩展宿主**并对话。
+
+| 组 | 监听端 | 扩展宿主 | 握手/协议 | 后代 TCP 连接 | grace-time 日志 |
+|---|---|---|---|---|---|
+| A | TCP 端口 | 句柄传递(默认) | ✓ 336 B,含 sign/pause/resume/Regular/KeepAlive | 4 条(launcher 名下) | **有**(⇒ 走了 type 2 分支) |
+| B | TCP 端口 | 内部管道(`--exthost-ipc`) | ✓ 帧完全一致 | 4 条 | **无**(⇒ 走了管道分支) |
+| C | **命名管道**(`--pipe`) | 内部管道 | ✓ 帧完全一致 | **0 条** | 无 |
+
+- A/B 的差异只有那一行日志,而它只在 `type===2`(收句柄)分支里打印 ⇒ **B 确实是管道链路**,不是
+  netstat 分不清的句柄复制。
+- C 的日志前缀是 `[<unknown>][probe][ExtensionHostConnection]`(管道连接没有 remoteAddress),且
+  `healthz` 的 `listen` 就是管道名;`/healthz`、`/`、`workbench.js`(注入生效)、隧道 101 全部经管道完成。
+- 结论:**desktop 的 8090 可以彻底消失**(换成 `\\.\pipe\dshcs-vscode-<pid>`),host 侧协议不用改,
+  客户端本来就是零依赖端口。
+- 注意:探针必须在**非受限沙箱**下跑(受限模式下连接命名管道直接 EPERM)。
+
+### 15.4 待办
+
+把 desktop 启动方式从 `--port` 切到 `--pipe` + `--exthost-ipc`(含:管道起不来时回退 TCP、`state.pipe`
+与 pid/status/healthz/UI 文案跟上),再由用户重启桌面 App 验收。
