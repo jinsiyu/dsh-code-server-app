@@ -182,7 +182,7 @@ state preserved (no full reload). Full evidence and probe scripts: `docs/analysi
 
 ## code-server workspace and process lifecycle
 
-- code-server's workspace **follows the active DSH session/workspace**: switching sessions/workspaces while the IDE is open restarts code-server to the new directory
+- code-server's workspace **follows the active DSH session/workspace**: switching sessions/workspaces while the IDE is open moves code-server to the new directory
   (resolution order: current session cwd → session's workspace.path → recentWorkspace.path → first workspace.path);
   the opened directory is shown inside code-server (`?folder=<cwd>`, the page reloads when following a switch);
   implementation note: the iframe `src` must carry `?folder=<cwd>` — code-server's front-end remembers the "last workspace" and restores it by itself;
@@ -190,6 +190,19 @@ state preserved (no full reload). Full evidence and probe scripts: `docs/analysi
   **Windows path format (verified)**: the `folder` parameter must start with `/` and use forward slashes only, e.g. `/C:/Users/User/Desktop/biss`;
   a bare Windows path (`C:\...`) is parsed as a URI scheme and the drive letter is stripped (page shows `\Users\User\...` with an empty file tree),
   while `file:///C:/...` reports "Workspace does not exist".
+- **The switch is lightweight (since 0.2.12)**: a running instance is **not restarted** when the workspace changes — the host
+  only updates `state.cwd` and the workbench re-navigates with the new `?folder=` (the workspace directory was always the
+  client URL's business; the process cwd only affects the server's own relative-path resolution at spawn time). The switch is
+  much faster and no longer throws away the extension host, background tasks or server-side state.
+  - In `status`, `cwd` is the current workbench directory; `launchCwd` is the directory the **process was started with**
+    (diagnostics only; it does not change on a switch).
+  - The trade-off, stated plainly: background processes/terminals started by the IDE in the **old** directory are no longer
+    killed automatically (a full restart used to take them with it) — clean them up yourself if needed. That is the same coin
+    as "nothing is lost".
+  - The trigger does not depend on the tab being visible: **the tab body is not unmounted while the sidebar is collapsed**,
+    so it also follows in the background (behaviour deliberately kept in 0.2.12).
+  - Regression: `scripts/test-workspace-switch.mjs` (5 assertions: adopting an instance, cwd change keeps pid/status, the
+    process stays alive, same-directory idempotence, no-cwd does not switch; it fails again if the old behaviour returns).
 - Process lifecycle is managed by the host plugin: startup writes `$DSH_HOME/code-server/pid.json`, stop kills the tree (`taskkill /T` or process-group SIGKILL),
   crash/exit updates status live; after a DSH host restart the plugin **adopts** a still-running instance (verifies pid + `/healthz`), without duplicate start or killing unrelated processes;
 - `node_modules` and the pack-time artifact `vendor/` are git-ignored; after cloning, follow
@@ -447,7 +460,7 @@ Host/Origin fence and browser auth); in the desktop profile `apps/desktop-host` 
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/code-server/status` | `{ ok, running, status, host, port, pid, cwd, url, version, error, logTail, adopted }` (also `env` environment check and the `setup` compatibility field) |
-| POST | `/api/code-server/start` | body `{ cwd? }` (omit cwd to keep the current workspace); idempotent |
+| POST | `/api/code-server/start` | body `{ cwd? }` (omit cwd to keep the current workspace); idempotent; changing cwd while running only **switches the directory, without restarting the process** (0.2.12) |
 | POST | `/api/code-server/stop` | Stop and recycle the process tree |
 | POST | `/api/code-server/setup` | **Compatibility no-op**: since 0.1.36 dependencies are installed by the package manager, so this only re-runs the env self-check and returns |
 | POST | `/api/code-server/open-file` | body `{ file }` — writes the signal consumed by the built-in `dshcs-open-file` extension to open the file in code-server |
@@ -533,8 +546,7 @@ What remains on the plugin side:
   works). Use `serve: loopback` when you need it.
 - **`serve: dsh` shares DSH's origin**, so the iframe is not sandboxed there (same-origin plus `allow-same-origin` is
   escapable by the frame itself); in `loopback` mode the iframe is cross-origin and `sandbox` stays as real protection.
-- **Single instance across sessions**: one shared IDE per host; switching cwd requires a restart (the sidebar tab
-  handles it and hints).
+- **Single instance across sessions**: one shared IDE per host; switching cwd only re-navigates the workbench (since 0.2.12 no process restart, so the old directory's background terminals are not collected).
 - **Older DSH versions are unsupported (since 0.2.3)**: on a DSH without `sidebarRightTabs` / `sidebarRight` the plugin
   offers nothing but an upgrade notice on the settings page; older-DSH users should stay on `0.2.2`
   (`dsh plugin --profile web add dsh-code-server-app@0.2.2`).

@@ -666,3 +666,19 @@ GET /          → 200 text/html len=4222
   单测 `scripts/test-claim-types.mjs`(9 项)。
 - 顺带:`ctx.sidebarRight.openTab(kind)`(guide 入口框那条路)不查 `canOpen`(`placeTab` 只要求 kind 已注册),
   所以收紧 `canOpen` 不会影响页面 tab 的入口 —— 已在上游源码核对(rc.1 `client.js` 的 `placeTab`)。
+
+### 14.4 0.2.12:切工作区不再重启进程(轻量切换)
+
+- 现象(用户报):"切换工作区时,code-server 的工作区也在后台切换" —— 跟随本身是有意的(用户明确保留),
+  问题在**代价**:`startInner` 发现 `cwd !== state.cwd` 就 `stop('restart')` + 重新 launch,
+  整进程重启(扩展宿主/终端/服务端状态全丢);而侧栏收起时 panel 只是滑走 + `visibility:hidden`,
+  标签 body **没有卸载** ⇒ 这件事发生在用户看不见的后台。
+- 关键事实:工作区目录由**客户端 URL 的 `&folder=<绝对路径>`** 决定(`buildPageUrl`);服务进程的 cwd
+  只通过 spawn 的 `cwd`(→ launcher 的 `VSCODE_CWD`)影响它自己对相对路径的解析 ⇒ 换目录**不需要**重启进程。
+- 改法:`adoptWorkspace(cwd)` —— 运行中(含 `starting` 结算后已 running)只更新 `state.cwd` 并返回快照;
+  客户端侧 url 变化本来就会让常驻面重新导航(`ensureSurface` → `setSurfaceSrc`)。
+  新增 `status.launchCwd`(进程启动目录,诊断用;三条 adopt 路径都填),`stop` 时清空。
+- 代价(README 已明说):旧目录里由 IDE 拉起的后台进程/终端不再被自动收走(以前是"重启顺带杀掉")。
+- 回归:`scripts/test-workspace-switch.mjs` —— 用真实活进程当"IDE"(spawn 长活子进程 + 只回 200 的
+  `/healthz` + pid.json)走真实路由,断言 cwd 跟随、pid 不变、进程存活、同目录幂等、无 cwd 不切换;
+  实测把 `adoptWorkspace` 改回 `stop('restart')` 时 ①②④⑤ 必挂。

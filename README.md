@@ -182,7 +182,7 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 
 ## code-server 服务目录与进程生命周期
 
-- code-server 服务目录**跟随活动工作区/会话**:打开期间切换 DSH 会话/工作区,code-server 自动重启到新目录
+- code-server 服务目录**跟随活动工作区/会话**:打开期间切换 DSH 会话/工作区,code-server 自动切到新目录
   (解析优先级:当前会话 cwd → 会话所属 workspace.path → recentWorkspace.path → 首个 workspace.path);
   打开目录显示在 code-server 页面内(`?folder=<cwd>`,跟随切换时页面自动重新加载);
   实现要点:iframe src 必须带 `?folder=<cwd>`——code-server 前端会记住“最近工作区”并自行恢复,
@@ -190,6 +190,15 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
   **Windows 路径格式(实测)**:folder 参数必须以 `/` 开头且全部正斜杠,形如 `/C:/Users/User/Desktop/biss`;
   裸 Windows 路径(`C:\...`)会被前端当 URI scheme 而剥掉盘符(页面显示 `\Users\User\...` 且文件树为空),
   `file:///C:/...` 形式则报 “Workspace does not exist”。
+- **切换是"轻量"的(0.2.12 起)**:运行中切工作区**不重启 IDE 进程**,host 只把 `state.cwd` 改成新目录,
+  由 workbench 拿新的 `?folder=` 重新导航(工作区目录本来就由客户端 URL 决定,进程 cwd 只影响它自己
+  spawn 时的相对路径解析)。因此切换**不再丢**扩展宿主/后台任务/服务端状态,也快得多。
+  - `status` 里 `cwd` = 当前 workbench 目录;`launchCwd` = **进程启动时**的目录(诊断用,不随切换变化)。
+  - 代价(要说清楚):旧目录里**由 IDE 拉起的后台进程/终端不再被自动杀掉**(以前靠"整进程重启"顺带收走)——
+    需要时手动收;这也是"不丢状态"的同一枚硬币。
+  - 触发时机与本标签是否可见无关:**侧栏收起时标签 body 并不卸载**,所以后台也会跟随(0.2.12 明确保留此行为)。
+  - 回归:`scripts/test-workspace-switch.mjs`(5 项:接管实例、切目录不改 pid/不换状态、进程存活、
+    同目录幂等、无 cwd 不切换;改回旧行为必挂)。
 - process 生命周期由 host 插件管理:启动写 `$DSH_HOME/code-server/pid.json`,停止树级终止(taskkill /T 或进程组 SIGKILL),
   崩溃/退出实时更新状态;DSH host 重启后自动 adopt 仍在运行的实例(校验 pid + /healthz),不重复启动、不误杀别的进程;
 - `node_modules`、`vendor/` 与 `repack/` 已被 `.gitignore` 排除,推送/克隆仓库后按下方
@@ -449,8 +458,8 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/code-server/status` | `{ ok, running, status, host, port, pid, cwd, url, version, error, logTail, adopted }`(另含 `env` 环境检测与 `setup` 兼容字段) |
-| POST | `/api/code-server/start` | body `{ cwd? }`(省略 cwd 不切换工作目录);幂等 |
+| GET | `/api/code-server/status` | `{ ok, running, status, host, port, pid, cwd, launchCwd, url, version, error, logTail, adopted }`(另含 `env` 环境检测与 `setup` 兼容字段;`cwd` = 当前 workbench 目录,`launchCwd` = 进程启动目录) |
+| POST | `/api/code-server/start` | body `{ cwd? }`(省略 cwd 不切换工作目录);幂等;运行中切 cwd = **只换目录不重启进程**(0.2.12) |
 | POST | `/api/code-server/stop` | 停止并回收进程树 |
 | POST | `/api/code-server/setup` | **兼容空操作**:0.1.36 起依赖由包管理器安装,调用只重新自检 `env` 并返回 |
 | POST | `/api/code-server/open-file` | body `{ file }` — 写信号文件,由内置扩展 `dshcs-open-file` 在 code-server 中打开 |
@@ -514,7 +523,7 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
   → 该模式下 Ports 面板的 **WebSocket** 转发不可用(HTTP 转发正常);需要时用 `serve: loopback`。
 - **`serve: dsh` 的 iframe 与 DSH 同源** → 该模式不挂 `sandbox`(同源 + `allow-same-origin` 可被 frame 自行摘除);
   `loopback` 模式跨源,`sandbox` 作为真防护保留。
-- **跨会话单实例**:host 级共享一份 IDE;切换 cwd 需重启实例(右侧栏标签自动处理并提示)。
+- **跨会话单实例**:host 级共享一份 IDE;切换 cwd 只换 workbench 目录(0.2.12 起不重启进程,旧目录的后台终端不会被收走)。
 - **旧版 DSH 不受支持(0.2.3 起)**:没有 `sidebarRightTabs`/`sidebarRight` 的 DSH 上,除设置页一条升级提示外无任何入口;
   旧版用户请留在 `0.2.2`(`dsh plugin --profile web add dsh-code-server-app@0.2.2`)。
 - **侧栏标签切换**(0.2.2 起不再重载):DSH 右侧栏只渲染当前激活标签的 body,React 卸载会移走 iframe;

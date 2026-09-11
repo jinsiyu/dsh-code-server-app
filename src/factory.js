@@ -324,7 +324,9 @@ let React = require('react')
         }
       }, [visible, fullscreen, fullscreenOnOpen])
 
-      // 工作区跟随:对齐会话 cwd(未运行则启动;运行中切目录由 host 重启),成功后刷新 iframe
+      // 工作区跟随:对齐会话 cwd(未运行则启动;运行中 host 只改"当前 workbench 目录",**不重启进程**),
+      // 成功后 url 变化(reloadTick / folder 参数)让常驻面重新导航到新工作区。
+      // 触发时机是"本标签挂载期间 cwd 变化",与侧栏是否可见无关(收起侧栏时 body 并不卸载)。
       React.useEffect(function () {
         if (typeof cwd !== 'string' || cwd === '') return
         if (lastCwdRef.current === cwd) return

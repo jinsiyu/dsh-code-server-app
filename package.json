@@ -1,7 +1,7 @@
 {
   "name": "dsh-code-server-app",
-  "version": "0.2.11",
-  "description": "VS Code (from a code-server release) inside DSH: a right-sidebar tab driven by the plugin's own launcher over the in-process VS Code server (lib/launcher.mjs). The tab claims DSH file addresses (dsh-resource://file/**), so the product's own produced-file chips, delivered-file previews and inline prose mentions open in the workbench. The IDE is a resident surface moved with Element.moveBefore instead of being remounted, so switching sidebar tabs no longer reloads it. Opening the tab switches the right sidebar to fullscreen by default (setting fullscreenOnOpen). Requires a DSH with the right-sidebar services (sidebarRightTabs/sidebarRight, >= 0.1.5-alpha.1); older DSH versions get a single upgrade notice on the settings page and no other UI. Two serving modes: loopback port (default) or same-origin mount on DSH's own webServer (/code-server, protected by ctx.connection.requestRejection). No code-server Node layer, no argon2, no C++ toolchain.",
+  "version": "0.2.12",
+  "description": "VS Code (from a code-server release) inside DSH: a right-sidebar tab driven by the plugin's own launcher over the in-process VS Code server (lib/launcher.mjs). The tab claims DSH file addresses (dsh-resource://file/**) by file type (setting claimExtensions), so the product's own produced-file chips, delivered-file previews and inline prose mentions open in the workbench. The IDE is a resident surface moved with Element.moveBefore instead of being remounted, so switching sidebar tabs no longer reloads it. Opening the tab switches the right sidebar to fullscreen by default (setting fullscreenOnOpen). Following a workspace switch is lightweight: the workbench re-navigates with the new ?folder= and the IDE process is not restarted (since 0.2.12). Requires a DSH with the right-sidebar services (sidebarRightTabs/sidebarRight, >= 0.1.5-alpha.1); older DSH versions get a single upgrade notice on the settings page and no other UI. Two serving modes: loopback port (default) or same-origin mount on DSH's own webServer (/code-server, protected by ctx.connection.requestRejection). No code-server Node layer, no argon2, no C++ toolchain.",
   "homepage": "https://github.com/jinsiyu/dsh-code-server-app",
   "repository": {
     "type": "git",
@@ -71,7 +71,8 @@
     "test:apply": "node scripts/test-plugin-apply.mjs",
     "test:launcher-routes": "node scripts/test-launcher-routes.mjs",
     "test:fullscreen": "node scripts/test-sidebar-fullscreen.mjs",
-    "test:claim-types": "node scripts/test-claim-types.mjs"
+    "test:claim-types": "node scripts/test-claim-types.mjs",
+    "test:workspace-switch": "node scripts/test-workspace-switch.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
