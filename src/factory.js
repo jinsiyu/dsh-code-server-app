@@ -22,7 +22,7 @@ import {
   resolveFilePath,
   SCOPE_SESSION,
 } from './address.js';
-import { installPipeRelay } from './pipe-relay.js';
+import { installPipeRelay, diag as clientDiag } from './pipe-relay.js';
 import {
   dockInto,
   ensureSurface,
@@ -717,8 +717,11 @@ let React = require('react')
 
     function apply(ctx) {
       try {
+        clientDiag('apply-enter')
         internalApply(ctx)
+        clientDiag('apply-ok')
       } catch (err) {
+        clientDiag('apply-failed: ' + (err && err.message ? err.message : String(err)))
         console.error('[code-server] apply failed:', err && err.stack ? err.stack : String(err))
         try { document.title = 'CS-ERR ' + ((err && err.message) || String(err)) } catch (e) { /* ignore */ }
       }
@@ -726,6 +729,7 @@ let React = require('react')
     function internalApply(ctx) {
       // 阶段 1:IDE 的 WebSocket 字节经此中继走 /api 隧道(postMessage ↔ streaming POST)
       installPipeRelay()
+      clientDiag('relay-installed')
       var slots = ctx.get('slots')
       if (slots === undefined) {
         console.error('[code-server] slots service unavailable')

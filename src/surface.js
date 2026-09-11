@@ -166,12 +166,23 @@ export function ensureSurface(options) {
   return state.frame
 }
 
-/** 显式导航(工作区/端口变化时唯一的正常重载入口)。 */
+/** 显式导航(工作区/端口变化时唯一的正常重载入口)。
+ *  阶段 1 起给 URL 加 `?dshcs=<每次加载的标记>`:工作台 HTML 与其中的资源都是
+ *  长缓存(max-age=31536000),不加标记的话打过补丁的 bundle 永远拿不到。 */
 export function setSurfaceSrc(src) {
   if (state.frame === null || typeof src !== 'string' || src === '' || src === state.currentSrc) return
   state.currentSrc = src
-  state.frame.src = src
+  state.frame.src = withCacheTag(src)
   notify()
+}
+
+/** 每次插件加载一个标记(同一次加载内稳定,保证 currentSrc 比较仍然有效)。 */
+var SURFACE_TAG = String(Date.now())
+
+/** 只在 URL 没有查询串时补标记(不覆盖调用方自己的参数)。 */
+export function withCacheTag(src) {
+  if (typeof src !== 'string' || src === '' || src === 'about:blank') return src
+  return src.indexOf('?') >= 0 ? src : src + (src.indexOf('#') >= 0 ? '' : '') + '?dshcs=' + SURFACE_TAG
 }
 
 /** 陈旧合成表面修复:**同一 JS 任务内**关/开一次布局,逼浏览器重建 iframe 的合成表面。

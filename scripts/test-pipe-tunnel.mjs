@@ -10,7 +10,11 @@ let pass = 0;
 let fail = 0;
 async function test(name, fn) {
   try {
-    await fn();
+    // 每个用例 10s 上限:死锁类回归必须以 FAIL 结束,而不是把整个套件挂住
+    await Promise.race([
+      fn(),
+      new Promise((_r, rej) => setTimeout(() => rej(new Error('timeout 10s')), 10000)),
+    ]);
     pass += 1;
     console.log(`PASS ${name}`);
   } catch (error) {
@@ -113,6 +117,21 @@ await test('双向流式:响应先到,请求体逐片到,字节完整', async ()
   assert.deepEqual(seen.chunks, ['a', 'b', 'c']);
   assert.equal(seen.headers['x-dshcs-ws-key'], 'dGhlIHNhbXBsZSBub25jZQ==');
   assert.match(String(seen.headers['x-dshcs-ws-path']), /^\/stable-abc\?/);
+});
+
+await test('请求体静默时 header 先发出去(防死锁回归)', async () => {
+  // 真实场景:客户端要等 101 才发第一个字节,请求体一开始是静默的。
+  // Node 的 ClientRequest 只在第一次 write/end 才发 header —— 不 flushHeaders 就是死锁。
+  const silent = new ReadableStream({ start() { /* 永不产出,也永不关闭 */ } });
+  const started = Date.now();
+  const response = await tunnel.fetch(makeRequest({}, silent));
+  assert.equal(response.status, 200);
+  const reader = response.body.getReader();
+  const first = await reader.read();
+  const elapsed = Date.now() - started;
+  assert.ok(first.value !== undefined, '应立刻拿到服务端首片');
+  assert.ok(elapsed < 2000, `应立即响应(实测 ${elapsed}ms)`);
+  await reader.cancel();
 });
 
 await test('统计口径:opened/bytesIn/bytesOut 增长', async () => {

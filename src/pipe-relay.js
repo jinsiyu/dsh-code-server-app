@@ -18,9 +18,22 @@
 
 const MARK = 1;
 const STATUS_PATH = '/api/code-server/status';
+const DIAG_PATH = '/api/code-server/diag';
 
 /** 隧道是否可用(host 是否下发了 token/path)。 */
 let tunnelInfo = null;
+
+/** 诊断上报(阶段 1 排查用):任何一步出问题都能在 host 侧文件里看到。 */
+export function diag(entry) {
+  try {
+    void fetch(DIAG_PATH, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ at: Date.now(), ...entry }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch { /* 日志失败不影响功能 */ }
+}
 
 /** 已建立的隧道:id → { source, controller, closed }。 */
 const tunnels = new Map();
@@ -58,43 +71,67 @@ function transferable(chunk) {
 }
 
 async function openTunnel(source, message) {
+  diag({ kind: 'open-requested', id: message.id, path: String(message.path ?? '') });
   const info = await loadTunnelInfo();
   if (info === null) {
+    diag({ kind: 'no-tunnel-info' });
     post(source, { kind: 'error', id: message.id, message: 'tunnel unavailable' });
     return;
   }
+  diag({ kind: 'tunnel-info', path: String(info.path ?? ''), hasToken: typeof info.token === 'string' });
   let controller = null;
   const body = new ReadableStream({
     start(next) { controller = next; },
     cancel() { tunnels.delete(message.id); },
   });
-  const entry = { source, controller, closed: false, info };
+  const entry = { source, controller, closed: false, info, delivered: false };
   tunnels.set(message.id, entry);
 
-  let response;
-  try {
-    response = await fetch(info.path, {
-      method: 'POST',
-      duplex: 'half',
-      body,
-      headers: {
-        'content-type': 'application/octet-stream',
-        [info.header]: info.token,
-        'x-dshcs-ws-path': String(message.path ?? '/'),
-        'x-dshcs-ws-key': String(message.key ?? ''),
-        'x-dshcs-ws-version': String(message.version ?? '13'),
-      },
-    });
-  } catch (error) {
+  // IDE 可能正在启动/重启(实测:工作台加载比 IDE 就绪快,首次隧道会撞上 502/503)。
+  // 只要还没把任何字节交给 shim(shim 自己会缓存 pre-open 数据),就可以安全重建请求重试。
+  let response = null;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    if (entry.closed) { tunnels.delete(message.id); return; }
+    const stream = attempt === 0 ? body : new ReadableStream({ start(next) { entry.controller = next; } });
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const candidate = await fetch(info.path, {
+        method: 'POST',
+        duplex: 'half',
+        body: stream,
+        headers: {
+          'content-type': 'application/octet-stream',
+          [info.header]: info.token,
+          'x-dshcs-ws-path': String(message.path ?? '/'),
+          'x-dshcs-ws-key': String(message.key ?? ''),
+          'x-dshcs-ws-version': String(message.version ?? '13'),
+        },
+      });
+      if (candidate.ok && candidate.body !== null) { response = candidate; break; }
+      if (candidate.status !== 502 && candidate.status !== 503) {
+        tunnels.delete(message.id);
+        let detail = '';
+        try { detail = (await candidate.text()).slice(0, 300); } catch { /* 无体 */ }
+        diag({ kind: 'http-error', status: candidate.status, attempt, detail });
+        post(source, { kind: 'error', id: message.id, message: `tunnel HTTP ${candidate.status}` });
+        return;
+      }
+      let detail = '';
+      try { detail = (await candidate.text()).slice(0, 300); } catch { /* 无体 */ }
+      diag({ kind: 'retry', attempt, status: candidate.status, detail });
+    } catch (error) {
+      diag({ kind: 'retry', attempt, message: String(error && error.message ? error.message : error) });
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => setTimeout(resolve, 400 + attempt * 400));
+  }
+  if (response === null) {
     tunnels.delete(message.id);
-    post(source, { kind: 'error', id: message.id, message: `tunnel request failed: ${error && error.message ? error.message : error}` });
+    diag({ kind: 'giving-up' });
+    post(source, { kind: 'error', id: message.id, message: 'tunnel unavailable after retries' });
     return;
   }
-  if (!response.ok || response.body === null) {
-    tunnels.delete(message.id);
-    post(source, { kind: 'error', id: message.id, message: `tunnel HTTP ${response.status}` });
-    return;
-  }
+  diag({ kind: 'tunnel-open', status: response.status });
 
   const reader = response.body.getReader();
   try {
@@ -102,7 +139,10 @@ async function openTunnel(source, message) {
       const { done, value } = await reader.read();
       if (done) break;
       if (entry.closed) break;
-      if (value !== undefined) post(source, { kind: 'data', id: message.id, buf: transferable(value) }, [transferable(value)]);
+      if (value !== undefined) {
+        entry.delivered = true;
+        post(source, { kind: 'data', id: message.id, buf: transferable(value) }, [transferable(value)]);
+      }
     }
   } catch (error) {
     if (!entry.closed) post(source, { kind: 'error', id: message.id, message: String(error && error.message ? error.message : error) });
