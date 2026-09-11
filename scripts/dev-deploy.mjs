@@ -44,6 +44,13 @@ if (revert) {
 }
 
 const FILES = ['index.js', 'client.js', 'launcher.mjs', 'pipe-tunnel.mjs', 'asset-mirror.mjs', 'native.js', 'serve-dsh.mjs', 'vendor.js'];
+
+// 前置门禁:apply 冒烟测试。2026-09-11 漏了 import 导致桌面端整棵插件树加载失败
+// (node --check 只验语法、模块 import 也照常通过,只有真跑 apply 才暴露),所以部署前必须先过这一关。
+if (!revert) {
+  execFileSync(process.execPath, [join(root, 'scripts', 'test-plugin-apply.mjs')], { stdio: 'inherit' });
+}
+
 /** 裸字节 shim 源:launcher 在 serve 时注入工作台 bundle(见 lib/launcher.mjs)。 */
 const SHIM_SOURCE = join(root, 'src', 'pipe-ws.js');
 const SHIM_TARGET = join(pluginDir, 'lib', 'pipe-ws.js');
