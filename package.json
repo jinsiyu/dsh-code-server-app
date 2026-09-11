@@ -43,6 +43,7 @@
     "lib/launcher.mjs",
     "lib/serve-dsh.mjs",
     "lib/pipe-tunnel.mjs",
+    "lib/pipe-ws.js",
     "lib/vendor.js",
     "lib/native.js",
     "assets/favicon.ico",

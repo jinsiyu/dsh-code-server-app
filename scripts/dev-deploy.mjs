@@ -44,6 +44,14 @@ if (revert) {
 }
 
 const FILES = ['index.js', 'client.js', 'launcher.mjs', 'pipe-tunnel.mjs', 'native.js', 'serve-dsh.mjs', 'vendor.js'];
+/** 裸字节 shim 源:launcher 在 serve 时注入工作台 bundle(见 lib/launcher.mjs)。 */
+const SHIM_SOURCE = join(root, 'src', 'pipe-ws.js');
+const SHIM_TARGET = join(pluginDir, 'lib', 'pipe-ws.js');
+if (existsSync(SHIM_SOURCE)) {
+  rmSync(SHIM_TARGET, { force: true });
+  copyFileSync(SHIM_SOURCE, SHIM_TARGET);
+  console.log(`[deploy] lib/pipe-ws.js ${statSync(SHIM_SOURCE).size} B`);
+}
 mkdirSync(join(pluginDir, 'lib'), { recursive: true });
 for (const name of FILES) {
   const from = join(root, 'lib', name);
@@ -54,10 +62,17 @@ for (const name of FILES) {
   console.log(`[deploy] lib/${name} ${statSync(from).size} B`);
 }
 
-if (existsSync(workbench)) {
-  execFileSync(process.execPath, [join(root, 'scripts', 'patch-vscode-bundle.mjs'), workbench], { stdio: 'inherit' });
-} else {
-  console.log(`[deploy] 未找到工作台 bundle,跳过 B2 补丁:${workbench}`);
+// 磁盘补丁默认**不打**:launcher 现在在 serve 时注入(见 lib/launcher.mjs),
+// 不再需要改 pnpm 硬链接的 VS Code 树。`--patch-disk` 只是兜底/修复手段
+// (例如某个 profile 仍留着旧补丁时,可以用 --revert 还原)。
+if (argv.includes('--patch-disk')) {
+  if (existsSync(workbench)) {
+    execFileSync(process.execPath, [join(root, 'scripts', 'patch-vscode-bundle.mjs'), workbench], { stdio: 'inherit' });
+  } else {
+    console.log(`[deploy] 未找到工作台 bundle,跳过磁盘补丁:${workbench}`);
+  }
+} else if (existsSync(workbench) && readFileSync(workbench, 'utf8').includes('__DSHCS_PIPE_WS__')) {
+  console.log('[deploy] 注意:该 profile 的工作台 bundle 仍是打过磁盘补丁的版本(可用 --revert 还原;serve 时注入会识别并跳过)');
 }
 
 console.log(`[deploy] 完成(${profile})。host 半部改动需要重启应用生效;客户端 bundle 由 client-hmr 热替换(可能需刷新)。`);

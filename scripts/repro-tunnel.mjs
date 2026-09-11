@@ -82,6 +82,18 @@ async function waitHealth(timeoutMs) {
   }
 }
 
+function httpGet(path, timeoutMs = 120000) {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port: PORT, path, method: 'GET', timeout: timeoutMs }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout ' + path)); });
+    req.end();
+  });
+}
 const health = await waitHealth(60000);
 if (health === false) {
   console.error('launcher 未就绪(60s)');
@@ -94,6 +106,20 @@ if (health === false) {
   process.exit(1);
 }
 l('healthz ok');
+// ---------- 0) serve 时注入是否生效(磁盘补丁撤掉后应仍能看到注入)===
+const healthRaw = await httpGet('/healthz');
+l('healthz: ' + healthRaw.body.toString('utf8').trim());
+const htmlRes = await httpGet('/');
+const htmlText = htmlRes.body.toString('utf8');
+l('HTML: status=' + htmlRes.status + ' 诊断脚本=' + htmlText.includes('__dshcs/report') + ' ?v=' + htmlText.includes('?v='));
+const scriptMatch = /src="([^"]*workbench\.js[^"]*)"/.exec(htmlText);
+let jsPath = scriptMatch === null ? `/${productPath}/static/out/vs/code/browser/workbench/workbench.js` : scriptMatch[1];
+if (!jsPath.startsWith('/')) jsPath = '/' + jsPath; // HTML 里是相对路径,http.request 需要绝对路径
+const jsRes = await httpGet(jsPath);
+const jsText = jsRes.body.toString('utf8');
+l('workbench.js: status=' + jsRes.status + ' bytes=' + jsRes.body.length + ' 注入=' + jsText.includes('webSocketFactory:globalThis.__DSH_WS_FACTORY__}') + ' 哨兵=' + jsText.includes('__DSHCS_PIPE_WS__'));
+l(jsText.includes('webSocketFactory:globalThis.__DSH_WS_FACTORY__}') ? '✓ serve 时注入生效' : '✗ serve 时注入未生效');
+
 
 // ---------- 2) 把 src/pipe-ws.js 当作客户端跑起来,parent 侧桥接到隧道 POST ----------
 const shimSource = readFileSync(new URL('../src/pipe-ws.js', import.meta.url), 'utf8');
