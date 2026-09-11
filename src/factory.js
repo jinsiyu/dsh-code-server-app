@@ -108,17 +108,22 @@ let React = require('react')
       return undefined
     }
 
-    /** 构建 code-server 页面 URL(base + ?folder=<cwd>,Windows 路径须为 /C:/ 形式)。
-     *  cwd 为空时回退 status.cwd;两者皆无 → 裸根 URL。 */
+    /** 构建 code-server 页面 URL(base + 实例标记 + ?folder=<cwd>,Windows 路径须为 /C:/ 形式)。
+     *  cwd 为空时回退 status.cwd;两者皆无 → 只有实例标记。
+     *  末尾的 `s=` 是"实例标记"(pid/启动时间):IDE 重启后 URL 变化 → iframe 会自动重新导航。
+     *  **没有它的话**,IDE 未就绪时加载到的错误页(503/连接失败)会一直粘在 iframe 上,
+     *  即使用户点了重启也不会重新加载(0.2.x 的老毛病)。 */
     function buildPageUrl(status, cwd) {
       if (status == null || typeof status.url !== 'string' || status.url === '') return null
+      var tag = status.pid != null ? String(status.pid) : (status.startedAt != null ? String(status.startedAt) : '0')
+      var url = status.url + '?s=' + encodeURIComponent(tag)
       var dir = typeof cwd === 'string' && cwd !== '' ? cwd : (status != null && status.cwd != null ? status.cwd : null)
-      if (dir == null || dir === '') return status.url
+      if (dir == null || dir === '') return url
       var normalized = dir.replace(/\\/g, '/')
       var folder = normalized
       if (/^[A-Za-z]:\//.test(normalized)) folder = '/' + normalized
       else if (normalized.charCodeAt(0) !== 47) folder = '/' + normalized
-      return status.url + '?folder=' + encodeURIComponent(folder)
+      return url + '&folder=' + encodeURIComponent(folder)
     }
 
     /** 常驻 IDE 面组件(右侧栏标签 body 的唯一渲染者):只渲染"停靠位",iframe 由 surface.js 持有,
