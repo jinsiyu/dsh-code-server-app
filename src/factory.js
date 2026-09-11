@@ -39,7 +39,7 @@ let React = require('react')
     // ---------- 模块级共享 store:同步 status/busy + UI 载体状态 ----------
     var listeners = new Set()
     // sidebarUi:'unknown'(未探测)| 'modern'(右侧栏服务就绪)| 'legacy'(旧版 DSH,只提示)
-    var state = { status: null, busy: false, sidebarActive: false, sidebarUi: 'unknown', sidebarRegisterFailed: false }
+    var state = { status: null, busy: false, sidebarUi: 'unknown', sidebarRegisterFailed: false }
     function setState(patch) {
       state = Object.assign({}, state, patch)
       listeners.forEach(function (fn) { fn() })
@@ -183,7 +183,7 @@ let React = require('react')
           React.createElement('p', { className: 'dshcs-hint' },
             'VS Code 树随插件包内置、就地运行(无需全局安装、无需联网安装、无「安装环境」步骤);' +
             '内部依赖与预编译原生模块由包管理器在安装插件时一并装好(无需 C++ 工具链)。' +
-            '若此处长期未运行,请到 设置 → 插件 → Code Server 点「检测环境」查看原因。' +
+            '若此处长期未运行,请查看 DSH host 日志里的 [code-server] 输出(或在设置卡片里切换「后台常驻」触发一次启动)。' +
             modeHint + residentHint)
         ))
     }
@@ -237,8 +237,6 @@ let React = require('react')
     var LEGACY_REPORT_MS = 10000
     /** 服务已在注册表、但 ctx.inject 迟迟不回调时的兜底注册延迟。 */
     var SYNC_FALLBACK_MS = 1500
-    // 设置卡/guide 入口调用侧栏的桥接;legacy(旧版 DSH)时保持 null。
-    var sidebarBridge = { openTab: null }
 
     /** 侧栏入口图标:code-server 官方图标(内联 data URI,不依赖服务端路径)。 */
     function CodeServerIcon(props) {
@@ -391,21 +389,10 @@ let React = require('react')
         console.error('[code-server] slots 服务不可见:侧栏标签 body 未注册')
         return false
       }
-      sidebarBridge.openTab = function (params) {
-        try {
-          controller.openTab(CS_KIND, params != null ? { params: params } : undefined)
-          return true
-        } catch (e) {
-          // 无挂载 seat(无会话/侧栏未渲染)→ 调用方回退浏览器新标签页
-          console.warn('[code-server] sidebar openTab failed:', e != null && e.message != null ? e.message : String(e))
-          return false
-        }
-      }
-      // 卸载 / HMR 重载:清桥接并复位载体状态(legacy 判定由下一次 apply 重新做)
+      // 卸载 / HMR 重载:复位载体状态(legacy 判定由下一次 apply 重新做)
       sctx.effect(function () {
         return function () {
-          sidebarBridge.openTab = null
-          setState({ sidebarActive: false, sidebarUi: 'unknown' })
+          setState({ sidebarUi: 'unknown' })
         }
       }, 'code-server: sidebar mode reset')
       console.log('[code-server] right-sidebar tab registered (kind=' + CS_KIND + ')')
@@ -610,7 +597,6 @@ let React = require('react')
       }
       var overriddenKeep = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'keepResident')
       var overriddenScope = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'fileOpenScope')
-      var sidebarActive = liveStore != null && liveStore.sidebarActive === true
       var dirty = draft !== null && (draft.keepResident !== loaded.keepResident
         || draft.fileOpenScope !== loaded.fileOpenScope)
       var saveDisabled = !dirty || saving
@@ -662,44 +648,6 @@ let React = require('react')
         }
         setSaving(false)
       }
-      // ---- 环境检测(host /api/code-server/status.env;0.1.36 起没有安装步骤) ----
-      var [envInfo, setEnvInfo] = React.useState(null) // null=待检测 | { ok, entry, native, vscodeInner, innerDeps, nativeRuntime } | { error }
-      var [envBusy, setEnvBusy] = React.useState(false)
-      var envSection = React.createElement('div', { className: 'dshcs-field' },
-        React.createElement('div', { className: 'dshcs-fieldHead' },
-          React.createElement('span', { className: 'dshcs-fieldLabel' }, '环境检测'),
-          React.createElement('span', { className: 'dshcs-badges' },
-            React.createElement(csBtn, { variant: 'primary', disabled: envBusy, onClick: async function () {
-              setEnvBusy(true)
-              var s = await api('/code-server/status')
-              setEnvInfo(s != null && s.env != null ? s.env : { error: 'status 未返回 env' })
-              setEnvBusy(false)
-            } }, envBusy ? '检测中…' : '检测环境')
-          )
-        ),
-        envInfo != null
-          ? React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 6 } },
-              envInfo.error != null
-                ? React.createElement('span', null, '检测失败: ' + envInfo.error)
-                : React.createElement('span', null,
-                    '状态: ' + (envInfo.ok === true ? '✅ 就绪' : '❌ 不通过') +
-                    (envInfo.treeVersion != null ? ' · VS Code 树: ' + envInfo.treeVersion : '') +
-                    (envInfo.upToDate === false && envInfo.vendored != null ? '(内置 ' + envInfo.vendored + ') ' : '') +
-                    (envInfo.productPath != null ? ' · 客户端路径: ' + envInfo.productPath : '') +
-                    (envInfo.entry != null ? ' · 入口: ' + envInfo.entry : ' · 入口缺失') +
-                    ' · VS Code 内部依赖: ' + (envInfo.vscodeInner === true ? '✅' : '❌') +
-                    ' · 预编译原生包: ' + (envInfo.nativeRuntime != null && envInfo.nativeRuntime.packages > 0
-                      ? '✅ ' + envInfo.nativeRuntime.name + '@' + (envInfo.nativeRuntime.version != null ? envInfo.nativeRuntime.version : '?')
-                        + '(' + envInfo.nativeRuntime.packages + ' 包)'
-                      : '❌ 未安装(' + (envInfo.nativeRuntime != null && envInfo.nativeRuntime.name != null ? envInfo.nativeRuntime.name : '平台聚合包') + ')'))
-            )
-          : React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 6 } }, '点击"检测环境"查看 VS Code 树状态(依赖由包管理器安装,无需安装步骤)')
-        ,
-        React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 10, color: 'var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary))' } },
-          '运行位置: ' + (envInfo != null && envInfo.tree != null ? envInfo.tree : '<插件目录>\\vendor\\vscode') +
-          '\n卸载: dsh plugin --profile web remove dsh-code-server-app'
-        )
-      )
       return React.createElement(csCard, {
         title: 'Code Server',
         description: '入口:右侧栏标签(DSH ≥ 0.1.5-alpha.1);认领范围决定哪些文件交给 Code Server 打开',
@@ -709,22 +657,8 @@ let React = require('react')
         discardLabel: '放弃修改', saveLabel: '保存', savingLabel: '保存中…',
         onSave: doSave, onDiscard: function () { setDraft(null); setFailed(false) },
       },
-        // 入口:说明载体,并给一个直接打开侧栏标签的按钮
-        React.createElement('div', { className: 'dshcs-field' },
-          React.createElement('div', { className: 'dshcs-fieldHead' },
-            React.createElement('span', { className: 'dshcs-fieldLabel' }, '入口'),
-            React.createElement('span', { className: 'dshcs-badges' },
-              React.createElement(csBtn, {
-                disabled: sidebarActive !== true,
-                onClick: function () { if (sidebarBridge.openTab !== null) sidebarBridge.openTab(null) },
-              }, '在右侧栏打开')
-            )
-          ),
-          React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 6 } },
-            liveStore != null && liveStore.sidebarRegisterFailed === true
-              ? '⚠ 已探测到右侧栏服务,但标签注册失败(控制台有 [code-server] 报错);请修好后刷新页面。'
-              : '当前:右侧栏标签,并**认领文件地址**——DSH 官方的产物 chip、"交付"卡片预览、正文里的文件名点击都会在 Code Server 里打开。')
-        ),
+        // 卡片只有两个设置(0.2.7 起):认领范围 + 后台常驻。入口/依赖安装/环境检测三行已移除
+        // (入口在右侧栏「开始」页的 guide 入口框;诊断看 host 日志里的 [code-server] 输出)。
         React.createElement('div', { className: 'dshcs-field' },
           React.createElement('div', { className: 'dshcs-fieldHead' },
             React.createElement('span', { className: 'dshcs-fieldLabel' }, '认领范围(哪些文件交给 Code Server)'),
@@ -771,16 +705,7 @@ let React = require('react')
               ? '常驻面:' + (surfaceState.docked ? '已停靠' : (surfaceState.ready ? '已停放(后台运行中)' : '未启动'))
                 + (surfaceState.degraded ? ' · 本次发生过降级重载' : '')
               : '当前浏览器不支持 Element.moveBefore(Chromium <133)→ 常驻不可用,切标签仍会整页重载(升级浏览器后自动生效)')
-        ),
-        React.createElement('div', { className: 'dshcs-field' },
-          React.createElement('div', { className: 'dshcs-fieldHead' },
-            React.createElement('span', { className: 'dshcs-fieldLabel' }, '依赖安装'),
-            null
-          ),
-          React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 4 } },
-            '0.1.36 起 code-server 本体随插件包发布,VS Code 内部依赖与预编译原生模块(平台聚合包)全部由包管理器在 dsh plugin add 时安装,不再需要「安装环境」步骤。')
-        ),
-        envSection
+        )
       )
       } catch (e) {
         // 渲染异常:记日志不打断;官方插槽对异常有边界,卡片留空即可
@@ -842,7 +767,7 @@ let React = require('react')
           console.log('[code-server] 右侧栏服务晚到(经 ' + via + '):撤销旧版 DSH 判定')
           api('/code-server/ui-mode', { sidebar: true }).catch(function () { /* 仅优化 */ })
         }
-        setState({ sidebarActive: registered, sidebarUi: 'modern', sidebarRegisterFailed: registered !== true })
+        setState({ sidebarUi: 'modern', sidebarRegisterFailed: registered !== true })
         // 常驻预热:不渲染任何东西,宿主 running 时把 IDE 加载到停放区
         slots.inject('shell.overlay', () => slots.register(
           { name: 'shell.overlay', id: 'code-server', order: 70, label: 'Code Server' },
@@ -855,7 +780,7 @@ let React = require('react')
       }
 
       function onLegacyDsh(reportToHost) {
-        setState({ sidebarActive: false, sidebarUi: 'legacy' })
+        setState({ sidebarUi: 'legacy' })
         console.warn('[code-server] 未探测到右侧栏服务(sidebarRightTabs/sidebarRight):'
           + ' 本插件自 0.2.3 起不再兼容旧版 DSH —— 除「设置 → 插件 → Code Server」的提示外不提供任何入口,'
           + '也不预热 IDE。请升级 DSH。')
