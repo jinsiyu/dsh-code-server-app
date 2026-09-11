@@ -530,6 +530,10 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
   插件把 iframe 收成单例常驻面,用 `Element.moveBefore()`(状态保持型原子移动)在停靠位与文档级停放区之间搬,
   切标签/收起侧栏再回来**不重载**。不支持 `moveBefore` 的浏览器退回旧行为(`appendChild` → 整页重载),
   状态里以 `degraded` 明示;详见下方「为什么切标签不再重载」。
+- **一份 `DSH_HOME` 一份 IDE 记录**:`pid.json` 在 `$DSH_HOME/code-server`。同机同时跑 `dsh web` 与桌面 App 时,
+  两边会互相认到同一个实例(后启动的一方 adopt,任一方 stop 都会把它停掉)—— 这是"host 级共享一份 IDE"的既有语义,
+  端口时代同样存在,只是管道记录**跨进程可探活**、命中率更高。仓库里的端到端脚本因此**必须自带 `DSH_HOME`**:
+  `test-desktop-pipe.mjs` 与 `spike-dsh-e2e.mjs` 从 0.3.2 起自行隔离到临时目录,否则会接管并停掉你正在用的实例。
 - **远程访问**:`serve: dsh` 下浏览器只需能到达 DSH 本身(单一端口,认证与 `/api` 同级);
   `serve: loopback` 默认仅回环、`auth: none`,跨机访问请改用 `serve: dsh`
   (0.2.0 起不再支持 `auth: password`)。

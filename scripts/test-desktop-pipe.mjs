@@ -14,10 +14,17 @@
 // 用法:node scripts/test-desktop-pipe.mjs [--plugin <dir>] [--keep]
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { request } from 'node:http';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// **测试隔离(必做)**:插件的 dataRoot/pid.json 由 DSH_HOME 决定,默认与桌面 App 共用
+// ~/.dsh/code-server。不隔离的话,apply 期的 activation adopt 会探到**正在运行的 App 实例**
+// (管道记录跨进程可探活)并接管,随后的 stop 会把用户的 IDE 杀掉(2026-09-11 真实踩到)。
+// 必须在 import 插件之前改掉 DSH_HOME。
+process.env.DSH_HOME = join(tmpdir(), `dshcs-pipe-home-${process.pid}`);
+mkdirSync(join(process.env.DSH_HOME, 'code-server'), { recursive: true });
 
 const argv = process.argv.slice(2);
 const flagValue = (name, dflt) => {
