@@ -43,7 +43,7 @@ if (revert) {
   process.exit(0);
 }
 
-const FILES = ['index.js', 'client.js', 'launcher.mjs', 'pipe-tunnel.mjs', 'native.js', 'serve-dsh.mjs', 'vendor.js'];
+const FILES = ['index.js', 'client.js', 'launcher.mjs', 'pipe-tunnel.mjs', 'tunnel-socket.mjs', 'native.js', 'serve-dsh.mjs', 'vendor.js'];
 mkdirSync(join(pluginDir, 'lib'), { recursive: true });
 for (const name of FILES) {
   const from = join(root, 'lib', name);
