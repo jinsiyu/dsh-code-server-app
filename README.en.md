@@ -31,8 +31,19 @@ A static profile plugin (npm package with host + client bundle) that ships the *
   - reports `/api/code-server/ui-mode { sidebar:false }` to the host (after the 10 s grace above); the host then **recycles an instance it auto-prestarted** and stops prestarting (a user-started/adopted instance is never touched), and `{sidebar:true}` reverses that if the services show up later;
   - upgrading DSH needs **no reinstall** — refresh the page and the card turns back into the full settings card.
 - The sidebar tab hosts the code-server page (iframe) and follows the current session workspace; the panel can be collapsed/split/floated/fullscreened by DSH's right sidebar.
+- **Fullscreen on open (0.2.9, on by default)**: opening the Code Server tab (including clicking a produced-file chip / delivered-file preview / inline file name) switches the right sidebar from "side by side with the conversation" to **fullscreen** (fills the window) — an IDE is cramped in a narrow column.
+  It only affects that moment of opening: clicking the sidebar's own "Exit fullscreen" is never fought back; switching away and back, or opening another file tab, goes fullscreen again.
+  Turn it off in the settings card (`fullscreenOnOpen=false`) to stay side by side.
+  - How it is done: DSH does **not** expose the mode to plugins — `ctx.sidebarRight` only has `isExpanded`/`toggleExpanded`
+    (expand/collapse), while push ⟷ fullscreen is recorded in `ui-sidebar-right`'s own store (`actions.setMode`, handed only to
+    its own seat components). `ctx.layout.openRightbar(track, fullscreen)` is not a control either: it is the channel the seat
+    **reports** its presentation through (upstream comment: *the occupant reports it; nothing else writes it*).
+    So the plugin performs the user's own gesture: it locates its own panel with `closest('[data-sidebar-right-panel]')` and
+    clicks the panel chrome's `[data-sidebar-right-mode="fullscreen"]` button (the exact same path as a manual click, including
+    the narrow-viewport handling). When the button is missing it keeps the current mode and logs one `console.warn` — panel
+    rendering is never affected.
 - **Resident IDE (0.2.2, on by default)**: switching to another tab or collapsing the sidebar and coming back **no longer reloads** code-server — unsaved editor buffers, terminals and debug sessions all stay put (see "Why switching tabs no longer reloads" below).
-- The settings card has exactly **two settings**: "**Claim scope**" and "Resident in background" — no other rows (0.2.7 removed the "Entry", "dependency install" and "environment check" rows).
+- The settings card has exactly **three settings**: "**Claim scope**", "**Fullscreen on open**" and "Resident in background" — no other rows (0.2.7 removed the "Entry", "dependency install" and "environment check" rows).
   Open the IDE from the **Code Server box** on the sidebar's guide page, or by clicking DSH's own produced-file chips / delivered-file previews / inline file names;
   diagnostics stay out of the UI — the `[code-server]` lines in the DSH host log are the place to look (`/api/code-server/status` still returns `env` for scripts).
   The old `windowedOpen` (open in a window) and `reserveComposer` were **removed in 0.2.6**: leftover keys in an old settings document neither fail nor apply (they are no longer part of the schema).
@@ -373,14 +384,15 @@ persisted via the official settings domain (`settingsScope`, namespace `code-ser
 | Key | Default | Description |
 |---|---|---|
 | `fileOpenScope` | `session` | **Claim scope** (0.2.5): `session` claims only session-scoped file addresses (`dsh-resource://file/session/…` — DSH's produced files, declared deliveries, prose mentions); `all` also claims session-less `…/file/absolute/…`. Unclaimed addresses fall back to DSH's built-in preview |
+| `fullscreenOnOpen` | `true` | **Fullscreen on open** (0.2.9): opening the Code Server tab (including clicking a file) switches the right sidebar to fullscreen (fills the window); off keeps DSH's default push mode (side by side with the conversation). Only the moment of opening is affected — a manual "Exit fullscreen" is never fought back |
 | `keepResident` | `true` | **Resident in background**: on, the host preloads the IDE into a parked surface right after start — switching tabs or collapsing the sidebar never reloads it and the first open needs no cold start; off loads it only when the panel is opened (saves memory) |
 
-(Since 0.2.6 the card keeps only those two settings; `windowedOpen` and `reserveComposer` are gone — leftover keys in an old
+(Since 0.2.9 the card keeps only those three settings; `windowedOpen` and `reserveComposer` are gone — leftover keys in an old
 settings document neither fail nor apply. `serve` remains a key in the settings namespace (usable from a settings document) but
 has **no card row** — see "Serving mode".)
 
-> Card changes take effect immediately via `scope.watch` (the host status API returns `keepResident` and
-> `fileOpenScope`; the client applies them at once); no dsh restart needed. **After adding new setting keys, restart dsh web before first use**,
+> Card changes take effect immediately via `scope.watch` (the host status API returns `keepResident`, `fileOpenScope` and
+> `fullscreenOnOpen`; the client applies them at once); no dsh restart needed. **After adding new setting keys, restart dsh web before first use**,
 > so the host re-registers the settings namespace (schema includes the new key); otherwise save/validation of the new key won't work.
 
 Since 0.2.7 the card has **no** "Entry", "dependency install" or "environment check" rows: the entry lives in the sidebar's

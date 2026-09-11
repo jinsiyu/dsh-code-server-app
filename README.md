@@ -44,9 +44,20 @@
     并停止预启动(用户手动启动的实例不受影响);服务随后才出现时会再上报 `{sidebar:true}` 撤销;
   - 升级 DSH 后**无需重装插件**,刷新页面即可,本页会恢复为完整设置卡片。
 - 侧栏标签内即 code-server 页面(iframe),跟随当前会话工作区;面板可折叠/分屏/浮动/全屏(由 DSH 右侧栏提供)。
+- **打开即全屏(0.2.9 起,默认开)**:打开 Code Server 标签(含点开产物 chip / 交付卡片 / 正文文件名)时,
+  自动把右侧栏从"与对话并排"切到**全屏**(铺满窗口)——IDE 在窄栏里太挤。
+  只影响"打开那一刻":随时点右侧栏的「退出全屏」不会被抢回去;切走再切回、再次打开文件 tab 会重新切全屏。
+  不想要就在设置卡片里关掉(`fullscreenOnOpen=false`)。
+  - 实现说明:DSH **没有**把"模式"开放给插件 —— `ctx.sidebarRight` 只有 `isExpanded`/`toggleExpanded`(展开/收起),
+    push ⟷ fullscreen 记在 `ui-sidebar-right` 自己的 store 里(`actions.setMode`,只发给它的 seat 内部组件);
+    `ctx.layout.openRightbar(track, fullscreen)` 也不是控制面,而是 seat 用来**汇报** presentation 的通道
+    (上游源码注释:*the occupant reports it; nothing else writes it*)。
+    所以本插件做的是"用户那个动作本身":`closest('[data-sidebar-right-panel]')` 定位自己所在面板,
+    再点面板 chrome 上的 `[data-sidebar-right-mode="fullscreen"]` 按钮(与手点完全同一条路径,
+    含窄视口下的连带处理)。按钮找不到时保持原模式并 `console.warn` 一条,绝不影响面板渲染。
 - **IDE 常驻(0.2.2 起,默认开)**:切到别的标签/收起侧栏再回来**不再重载** code-server——
   未保存的编辑缓冲区、终端、调试会话都留在原处(见下方「为什么切标签不再重载」)。
-- 设置卡片只有**两个设置**:「**认领范围**」与「**后台常驻(切标签不重载)**」——没有其它行(0.2.7 起移除「入口」「依赖安装」「环境检测」)。
+- 设置卡片只有**三个设置**:「**认领范围**」「**打开即全屏**」与「**后台常驻(切标签不重载)**」——没有其它行(0.2.7 起移除「入口」「依赖安装」「环境检测」)。
   打开 IDE 用右侧栏「开始」页的 **Code Server 入口框**,或直接点官方的产物 chip / 交付卡片 / 正文文件名;
   诊断看 DSH host 日志里的 `[code-server]` 输出(`/api/code-server/status` 仍返回 `env` 供脚本排查)。
   旧版的 `windowedOpen`(窗口化打开)、`reserveComposer` 已在 0.2.6 移除:旧设置文档里残留的这两个键不会报错,只是被忽略(不再出现在 schema 里)。
@@ -129,7 +140,7 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 | **`loopback`(默认)** | 插件自己起一个回环端口(`host:port`),右侧栏 iframe 跨源直连;进程可被 adopt(DSH host 重启后接管) | 无 |
 | **`dsh`** | IDE 挂到 **DSH 自己的 HTTP 端口**上的 `/code-server/*`(HTTP prefix 路由)+ `/code-server/<quality>-<commit>`(WS 精确路由),转发到 launcher 的**命名管道**;**没有额外端口**;每条请求(含 WS 握手)先过 `ctx.connection.requestRejection()` —— 与 `/api` 同一套 Host/Origin fence + 浏览器 cookie 认证 | DSH 提供 `webServer` 服务(web profile);desktop 无此服务 → 自动回退 loopback |
 
-- 在 `cordis.patch.yml` 的 `config.serve`(或设置文档里的 `code-server.serve`)切换,下次启动生效 —— **设置卡片不提供这一行**(卡片只有认领范围/后台常驻两个设置)。
+- 在 `cordis.patch.yml` 的 `config.serve`(或设置文档里的 `code-server.serve`)切换,下次启动生效 —— **设置卡片不提供这一行**(卡片只有认领范围/打开即全屏/后台常驻三个设置)。
 - `dsh` 模式的实际收益:单一 URL/单一端口(远程访问 DSH 即可用 IDE)、不再暴露额外回环端口、认证与 DSH 同级。
 - `dsh` 模式的两点**已知取舍**:
   1. iframe 与 DSH **同源** → 该模式下不再挂 `sandbox`(同源 + `allow-same-origin` 可被 frame 自行摘除,属"看起来有防护");
@@ -383,17 +394,18 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `fileOpenScope` | `session` | **认领范围**(0.2.5):`session` = 只认领会话作用域的文件地址(`dsh-resource://file/session/…`,即官方产物/交付/正文提及);`all` = 连无会话的绝对路径(`…/file/absolute/…`)也认领。未认领的地址由 DSH 自带预览兜底 |
+| `fullscreenOnOpen` | `true` | **打开即全屏**(0.2.9):打开 Code Server 标签(含点开文件)时自动把右侧栏切到全屏(铺满窗口);关闭则保持 DSH 默认的 push(与对话并排)。只影响打开那一刻,用户点「退出全屏」不会被抢回去 |
 | `keepResident` | `true` | **后台常驻**:开启后宿主启动即把 IDE 预加载到"停放区",切标签/收起侧栏不重载、首次打开免等待;关闭则只在打开面板时加载(省内存) |
 
-(0.2.6 起卡片只留上面两个设置;`windowedOpen` 与 `reserveComposer` 已移除 —— 旧设置文档里残留的键既不报错也不生效。
+(0.2.9 起卡片只留上面三个设置;`windowedOpen` 与 `reserveComposer` 已移除 —— 旧设置文档里残留的键既不报错也不生效。
 `serve` 仍是设置命名空间里的键(便于用设置文档切换),但**没有卡片行**,见「服务方式」。)
 
 0.2.7 起卡片**没有**「入口」「依赖安装」「环境检测」三行:入口在右侧栏「开始」页的 Code Server 入口框(或官方的文件点击),
 诊断信息不再进 UI —— `/api/code-server/status` 的 `env` 字段仍返回
 树版本 / `productPath` / server 入口、VS Code 内部依赖、**预编译原生包**(平台聚合包名 + 已解析模块数),需要时用脚本查或看 host 日志。
 
-> 卡片改动经 `scope.watch` 实时生效(host 端 status API 同步返回 `keepResident` 与
-> `fileOpenScope`,客户端立即生效);无需重启 dsh。**新增设置键后首次使用前需重启 dsh web**,
+> 卡片改动经 `scope.watch` 实时生效(host 端 status API 同步返回 `keepResident`、`fileOpenScope` 与
+> `fullscreenOnOpen`,客户端立即生效);无需重启 dsh。**新增设置键后首次使用前需重启 dsh web**,
 > 让 host 重新注册设置命名空间(schema 含新键),否则新键的保存与校验不生效。
 
 ## 配置(cordis.patch.yml 的 `config`,均有默认值)

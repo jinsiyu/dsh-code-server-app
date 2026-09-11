@@ -64,6 +64,12 @@ await test('apply():桩 ctx 下能跑通(回归:apply 期的 ReferenceError / �
   assert.ok(routes.has('/api/code-server/status'), 'status 路由必须注册');
   assert.ok(routes.has('/api/code-server/start'), 'start 路由必须注册');
   assert.ok(routes.has('/api/code-server/stop'), 'stop 路由必须注册');
+  // 0.2.9「打开即全屏」:设置默认值必须在 schema 里,且必须出现在 status 快照里
+  // (客户端读 status.fullscreenOnOpen 决定打开标签时是否切全屏)。
+  const resolved = plugin.Config({});
+  assert.equal(resolved.fullscreenOnOpen, true, 'fullscreenOnOpen 默认应为 true');
+  const statusPayload = await (await routes.get('/api/code-server/status').fetch()).json();
+  assert.equal(statusPayload.fullscreenOnOpen, true, 'status 快照必须带 fullscreenOnOpen');
   console.log(`     (注册路由 ${routes.size} 条)`);
   rmSync(userDataDir, { recursive: true, force: true });
 });

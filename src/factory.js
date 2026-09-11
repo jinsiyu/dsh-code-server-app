@@ -22,6 +22,7 @@ import {
   resolveFilePath,
   SCOPE_SESSION,
 } from './address.js';
+import { requestFullscreenPanel } from './sidebar-mode.js';
 import {
   dockInto,
   ensureSurface,
@@ -293,6 +294,24 @@ let React = require('react')
         ? navigation.params.line : null
       var lastCwdRef = React.useRef(undefined)
       var [tick, setTick] = React.useState(0)
+      // 打开即全屏(设置 fullscreenOnOpen,默认开):右侧栏里跑 IDE,只有铺满窗口才够用。
+      var rootRef = React.useRef(null)
+      var forcedFullscreenRef = React.useRef(false)
+      var visible = info.tab != null && info.tab.visible === true
+      var fullscreen = info.sidebar != null && info.sidebar.fullscreen === true
+      var fullscreenOnOpen = status == null || status.fullscreenOnOpen !== false
+      // 触发时机 = 本标签"变得可见"的那一刻(打开、切回、重新展开侧栏),每个可见周期只切一次:
+      // 之后用户点「退出全屏」不会被抢回去(退出全屏→再切走切回才会重新切全屏)。
+      // layout effect:与面板同一次提交,按钮已在 DOM 里 → 不会先画一帧 push 再跳全屏。
+      React.useLayoutEffect(function () {
+        if (!visible) { forcedFullscreenRef.current = false; return }
+        if (!fullscreenOnOpen || fullscreen || forcedFullscreenRef.current) return
+        forcedFullscreenRef.current = true
+        var result = requestFullscreenPanel(rootRef.current)
+        if (result !== 'clicked') {
+          console.warn('[code-server] 未能自动切到全屏右侧栏(' + result + ');本次打开保持原模式')
+        }
+      }, [visible, fullscreen, fullscreenOnOpen])
 
       // 工作区跟随:对齐会话 cwd(未运行则启动;运行中切目录由 host 重启),成功后刷新 iframe
       React.useEffect(function () {
@@ -326,7 +345,7 @@ let React = require('react')
           .catch(function () { /* 忽略:由用户重试 */ })
       }, [revision, targetFile, line])
 
-      return React.createElement('div', { className: 'dshcs-tabroot', 'data-code-server-tab': 'body' },
+      return React.createElement('div', { className: 'dshcs-tabroot', 'data-code-server-tab': 'body', ref: rootRef },
         React.createElement(CodeServerSurface, {
           status: status, pageUrl: buildPageUrl(status, cwd), reloadTick: tick, owner: 'tab:' + tab.id,
         })
@@ -579,6 +598,7 @@ let React = require('react')
       var loaded = {
         keepResident: value.keepResident !== false,
         fileOpenScope: value.fileOpenScope === 'all' ? 'all' : 'session',
+        fullscreenOnOpen: value.fullscreenOnOpen !== false,
       }
       // ---- 旧版 DSH(无右侧栏服务):本页是唯一的提示出口,不显示任何设置项 ----
       if (liveStore != null && liveStore.sidebarUi === 'legacy') {
@@ -602,8 +622,10 @@ let React = require('react')
       }
       var overriddenKeep = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'keepResident')
       var overriddenScope = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'fileOpenScope')
+      var overriddenFullscreen = user !== undefined && user !== null && Object.prototype.hasOwnProperty.call(user, 'fullscreenOnOpen')
       var dirty = draft !== null && (draft.keepResident !== loaded.keepResident
-        || draft.fileOpenScope !== loaded.fileOpenScope)
+        || draft.fileOpenScope !== loaded.fileOpenScope
+        || draft.fullscreenOnOpen !== loaded.fullscreenOnOpen)
       var saveDisabled = !dirty || saving
       var state = {
         available: true,
@@ -626,6 +648,7 @@ let React = require('react')
             var d = draft !== null ? draft : loaded
             await props.scope.set('keepResident', d.keepResident === true)
             await props.scope.set('fileOpenScope', d.fileOpenScope === 'all' ? 'all' : 'session')
+            await props.scope.set('fullscreenOnOpen', d.fullscreenOnOpen === true)
             setDraft(null)
             syncStatusToStore()
           } catch (e) {
@@ -642,9 +665,11 @@ let React = require('react')
           if (typeof props.scope.unset === 'function') {
             await props.scope.unset('keepResident')
             await props.scope.unset('fileOpenScope')
+            await props.scope.unset('fullscreenOnOpen')
           } else {
             await props.scope.set('keepResident', value.keepResident === undefined || value.keepResident === null ? true : value.keepResident)
             await props.scope.set('fileOpenScope', value.fileOpenScope === 'all' ? 'all' : 'session')
+            await props.scope.set('fullscreenOnOpen', value.fullscreenOnOpen === undefined || value.fullscreenOnOpen === null ? true : value.fullscreenOnOpen)
           }
           setDraft(null)
           syncStatusToStore()
@@ -662,7 +687,7 @@ let React = require('react')
         discardLabel: '放弃修改', saveLabel: '保存', savingLabel: '保存中…',
         onSave: doSave, onDiscard: function () { setDraft(null); setFailed(false) },
       },
-        // 卡片只有两个设置(0.2.7 起):认领范围 + 后台常驻。入口/依赖安装/环境检测三行已移除
+        // 卡片三个设置(0.2.9 起):认领范围 + 打开即全屏 + 后台常驻。入口/依赖安装/环境检测三行已移除
         // (入口在右侧栏「开始」页的 guide 入口框;诊断看 host 日志里的 [code-server] 输出)。
         React.createElement('div', { className: 'dshcs-field' },
           React.createElement('div', { className: 'dshcs-fieldHead' },
@@ -688,6 +713,27 @@ let React = require('react')
             '会话内文件 = DSH 用 `dsh-resource://file/session/…` 命名的文件(产物、交付、正文提及、工具视图);'
             + '“所有文件”还会认领不带会话的绝对路径 `dsh-resource://file/absolute/…`。'
             + '未被认领的地址由 DSH 自带预览兜底。')
+        ),
+        React.createElement('div', { className: 'dshcs-field' },
+          React.createElement('div', { className: 'dshcs-fieldHead' },
+            React.createElement('span', { className: 'dshcs-fieldLabel' }, '打开即全屏(右侧栏铺满窗口)'),
+            overriddenFullscreen === true
+              ? React.createElement(csBadges, {
+                  overridden: true, disabled: snapshot.writable !== true,
+                  overriddenLabel: '已覆盖', resetLabel: '恢复默认',
+                  onReset: function () { doReset() },
+                })
+              : null
+          ),
+          React.createElement(csCheck, {
+            checked: draft !== null ? draft.fullscreenOnOpen : loaded.fullscreenOnOpen,
+            disabled: snapshot.writable !== true,
+            onChange: function (v) { setDraft(function (prev) { return Object.assign({}, prev !== null ? prev : loaded, { fullscreenOnOpen: v === true }) }); setFailed(false) },
+          }, '打开 Code Server 标签(含点开产物/交付文件)时,自动把右侧栏从"与对话并排"切到全屏;'
+            + '想同时看对话就关掉它,或随时点右侧栏的「退出全屏」—— 本次打开不会被抢回去'),
+          React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 4 } },
+            '只影响"打开那一刻":切走再切回、再次打开文件 tab 会重新切全屏;'
+            + 'DSH 未向插件开放模式接口,本项由点击右侧栏自身的「全屏」按钮实现。')
         ),
         React.createElement('div', { className: 'dshcs-field' },
           React.createElement('div', { className: 'dshcs-fieldHead' },
