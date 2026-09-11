@@ -71,7 +71,8 @@
     "prepack": "node scripts/vendor-vscode-server.mjs",
     "build:client": "node scripts/build-client.mjs",
     "test:apply": "node scripts/test-plugin-apply.mjs",
-    "test:desktop-pipe": "node scripts/test-desktop-pipe.mjs"
+    "test:desktop-pipe": "node scripts/test-desktop-pipe.mjs",
+    "test:launcher-routes": "node scripts/test-launcher-routes.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
