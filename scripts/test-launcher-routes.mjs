@@ -14,13 +14,44 @@ import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } 
 import { request } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(HERE, '..');
-const TREE = join(homedir(), '.dsh', 'profiles', 'desktop', 'node_modules', '@jinsiyu', 'dshcs-vscode-server', 'vscode');
-if (!existsSync(TREE)) {
-  console.log(`SKIP 找不到 VS Code 树(${TREE})`);
+
+/** 挑一棵**能真跑**的树。
+ *
+ *  为什么不用仓库自己的 dev 树:`vendor/vscode/lib/vscode/node_modules` 里的 `@vscode/spdlog` 等
+ *  原生依赖来自平台聚合包(可选依赖,只装在 profile 里)——仓库里没有它,`ensureRuntimeLayout()`
+ *  既找不到也就建不出 junction,而 **ESM 不认 NODE_PATH**,于是 launcher 会在 import 树入口时就
+ *  `ERR_MODULE_NOT_FOUND`(这是环境问题,不是 launcher 的问题)。
+ *  所以:优先用已安装 profile 的树,并借**已安装插件自己的** lib/native.js 把 junction 建齐
+ *  (它的 PACKAGE_ROOT 在 profile 里,才找得到聚合包);一个都不行才 SKIP。 */
+async function pickTree() {
+  for (const profile of ['desktop', 'web']) {
+    const profileRoot = join(homedir(), '.dsh', 'profiles', profile, 'node_modules');
+    const pluginDir = join(profileRoot, 'dsh-code-server-app');
+    const tree = join(profileRoot, '@jinsiyu', 'dshcs-vscode-server', 'vscode');
+    if (!existsSync(join(pluginDir, 'lib', 'native.js'))) continue;
+    if (!existsSync(join(tree, 'lib', 'vscode', 'out', 'server-main.js'))) continue;
+    try {
+      const native = await import(pathToFileURL(join(pluginDir, 'lib', 'native.js')).href);
+      native.ensureRuntimeLayout();
+    } catch (error) {
+      console.log(`     (${profile}: ensureRuntimeLayout 失败 ${error && error.message ? error.message : error})`);
+      continue;
+    }
+    if (existsSync(join(tree, 'lib', 'vscode', 'node_modules', '@vscode', 'spdlog'))) {
+      console.log(`     (使用 ${profile} profile 的树:${tree})`);
+      return tree;
+    }
+  }
+  return null;
+}
+
+const TREE = await pickTree();
+if (TREE === null) {
+  console.log('SKIP 找不到"内部依赖已建链接"的 VS Code 树;先在任一 profile 里启动一次 IDE 再跑本测试');
   process.exit(0);
 }
 const TMP = join(tmpdir(), `dshcs-routes-${process.pid}`);

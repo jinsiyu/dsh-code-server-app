@@ -1,7 +1,7 @@
 {
   "name": "dsh-code-server-app",
-  "version": "0.2.14",
-  "description": "VS Code (from a code-server release) inside DSH: a right-sidebar tab driven by the plugin's own launcher over the in-process VS Code server (lib/launcher.mjs). The tab claims DSH file addresses (dsh-resource://file/**) by file type (setting claimExtensions), so the product's own produced-file chips, delivered-file previews and inline prose mentions open in the workbench. The IDE is a resident surface moved with Element.moveBefore instead of being remounted, so switching sidebar tabs no longer reloads it. Opening the tab switches the right sidebar to fullscreen by default (setting fullscreenOnOpen). Following a workspace switch is lightweight: the workbench re-navigates with the new ?folder= and the IDE process is not restarted (since 0.2.12). Requires a DSH with the right-sidebar services (sidebarRightTabs/sidebarRight, >= 0.1.5-alpha.1); older DSH versions get a single upgrade notice on the settings page and no other UI. Two serving modes: loopback port (default) or same-origin mount on DSH's own webServer (/code-server, protected by ctx.connection.requestRejection). No code-server Node layer, no argon2, no C++ toolchain.",
+  "version": "0.3.9",
+  "description": "VS Code (from a code-server release) inside DSH: a right-sidebar tab driven by the plugin's own launcher over the in-process VS Code server (lib/launcher.mjs). Since 0.3.0 the bundle also ships an editor bridge (assets/extensions/dshcs-editor-bridge): a read-only channel between the in-tree VS Code extension host and DSH, giving the agent what only the editor knows (unsaved buffers, language-server diagnostics, the active selection) and letting editor gestures drive the session. The tab claims DSH file addresses (dsh-resource://file/**) by file type (setting claimExtensions), so the product's own produced-file chips, delivered-file previews and inline prose mentions open in the workbench. The IDE is a resident surface moved with Element.moveBefore instead of being remounted, so switching sidebar tabs no longer reloads it. Opening the tab switches the right sidebar to fullscreen by default (setting fullscreenOnOpen). Following a workspace switch is lightweight: the workbench re-navigates with the new ?folder= and the IDE process is not restarted (since 0.2.12). Requires a DSH with the right-sidebar services (sidebarRightTabs/sidebarRight, >= 0.1.5-alpha.1); older DSH versions get a single upgrade notice on the settings page and no other UI. Two serving modes: loopback port (default) or same-origin mount on DSH's own webServer (/code-server, protected by ctx.connection.requestRejection). No code-server Node layer, no argon2, no C++ toolchain.",
   "homepage": "https://github.com/jinsiyu/dsh-code-server-app",
   "repository": {
     "type": "git",
@@ -41,6 +41,11 @@
     "lib/index.js",
     "lib/client.js",
     "lib/claim-types.js",
+    "lib/bridge.mjs",
+    "lib/bridge-tools.mjs",
+    "lib/bridge-session.mjs",
+    "lib/bridge-observe.mjs",
+    "lib/dsh-resolve.mjs",
     "lib/launcher.mjs",
     "lib/serve-dsh.mjs",
     "lib/vendor.js",
@@ -48,6 +53,7 @@
     "assets/favicon.ico",
     "assets/favicon.svg",
     "assets/extensions/dshcs-open-file",
+    "assets/extensions/dshcs-editor-bridge",
     "scripts/vendor-vscode-server.mjs",
     "scripts/vendor-code-server.mjs",
     "scripts/vendor-repacks.mjs",
@@ -72,7 +78,9 @@
     "test:launcher-routes": "node scripts/test-launcher-routes.mjs",
     "test:fullscreen": "node scripts/test-sidebar-fullscreen.mjs",
     "test:claim-types": "node scripts/test-claim-types.mjs",
-    "test:workspace-switch": "node scripts/test-workspace-switch.mjs"
+    "test:workspace-switch": "node scripts/test-workspace-switch.mjs",
+    "test:bridge-routes": "node scripts/test-bridge-routes.mjs",
+    "test:bridge-extension": "node scripts/test-bridge-extension.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
@@ -107,6 +115,7 @@
     "node-addon-api": "6.1.0",
     "tar": "7.5.22",
     "tas-client": "0.4.3",
+    "tslib": "2.8.1",
     "typescript": "6.0.3",
     "vscode-oniguruma": "1.7.0",
     "vscode-regexpp": "3.1.0",

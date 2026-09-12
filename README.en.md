@@ -189,6 +189,84 @@ this plugin's threat model.
   browser page could complete a handshake against `ws://127.0.0.1:<port>/stable-<commit>` and drive the IDE.
 
 
+## Working with DSH: the editor bridge (since 0.3.0, on by default)
+
+Having the IDE next to DSH and having the agent **know what is going on in the editor** are two different
+things. The editor bridge covers the second half: it is a **read-only** channel that hands the agent what
+only the editor knows, and lets editor gestures drive the current session.
+
+| Direction | Capability | Mechanism |
+|---|---|---|
+| editor → agent | **unsaved buffers** (disk ≠ what the user sees), active file and selection, **language-server diagnostics** with `file:line`, source and code | agent tools `editor_context` / `editor_diagnostics`; plus a notice attached before writing a dirty file |
+| editor → DSH | select code → context menu **"DSH: ask about selection"** → the message lands in the current session (with `file:line` and a fenced block) | extension command `dsh-code-server.askAboutSelection` |
+| agent → editor | the agent changed a file → a **native diff** opens; if that buffer has unsaved changes you get a warning and **no overwrite** | host watches `tools/result`, the extension polls and opens the diff |
+
+- The tools are only registered while the bridge is live (so the model never sees an unusable tool), and the
+  system-prompt section renders only then too.
+- **Everything is read-only**: the bridge never writes files, applies edits, or runs commands. The agent's writes
+  still go through its own `fs` tools; the bridge only *knows about* them.
+- Status bar shows `$(plug) DSH` while connected (click it for the log in the "DSH Editor Bridge" output channel).
+
+### The channels (since 0.3.9 they live on DSH's webServer under `/code-server-bridge`)
+
+```
+extension → host   POST /code-server-bridge/sync    one round trip: push editor state + take pending events
+extension → host   POST /code-server-bridge/ask     push an editor question into the current session
+extension → host   GET  /code-server-bridge/health  unauthenticated liveness probe
+extension → host   POST /code-server-bridge/event   extension reports open/close etc. (host log tail)
+host → extension   <extensionsDir>/.dshcs-bridge/bridge.json   base URL + token, re-read by the extension every 5s
+```
+
+> **Why not under `/api` (fixed in 0.3.9)**: Connection puts a Host/Origin/cookie fence on `/api`
+> (`requestRejection` in `packages/client/connection/src/index.ts` → 401 without a cookie), while the bridge's
+> client is a **Node process inside the extension host** — it can never hold a browser cookie, so its requests were
+> rejected before ever reaching the plugin's route. Measured on 0.3.7: the extension polled
+> `/api/code-server/bridge/sync` and got either 405 (it reached the launcher/VS Code instead) or 401 (the /api
+> fence) — the bridge had never actually synced. It now mounts on DSH's own webServer with its own token as the
+> only gate. The cost: the bridge needs DSH to provide `webServer` — **the web profile has it, desktop does not**.
+> On desktop the host writes no `bridge.json` (dormant beats pointing at a dead address) and says so in the log;
+> **file opening is unaffected** (it uses the signal file and works in every mode).
+
+**Why state is pushed, not pulled**: the extension host is a child process of the VS Code server and **listens on
+no port** — the host cannot call into it. Editor state therefore rides the extension's own polling request, and
+the host caches it for the tools (at most one 600 ms cycle behind; older than 10 s and the tool says so instead
+of passing stale data off as fresh).
+
+**Why no SSE/WebSocket**: the extension host has no HTTP server of its own, and everything DSH can offer is
+request/response (the Connection fetch channel allows only `GET | HEAD | POST`; streaming would need the WS mux
+already owned by `dsh-api-gateway`). Polling also buys two useful properties: it is idempotent (a dropped event
+only costs one notification — the data always lives in the editor) and the cached state is inherently fresh.
+
+### Security model (four invariants; read before touching `lib/bridge.mjs`)
+
+The token lives in `<extensionsDir>/.dshcs-bridge/bridge.json`, **readable by any process of the same local
+user**, so:
+
+1. **`/code-server-bridge/*` is permanently read-only.** No route writes files, edits documents, or runs
+   commands. A leaked token is therefore bounded to "sees information that is in the editor" and **can never**
+   become arbitrary file writes or command execution. A whitelist assertion in `scripts/test-bridge-routes.mjs`
+   guards this.
+2. **Any request carrying `Origin` gets 403.** Browsers always send one (including a sandboxed iframe's literal
+   `Origin: null`); the Node extension host never does. Origin is checked **before** the token — otherwise the
+   bridge would be a "did you guess the token right" oracle for a web page.
+3. **Paths are confined to the editor's current workspace folders.**
+4. **Everything is bounded**: 200 diagnostics, 500-char messages, 256 KB request bodies, a 64-entry event ring.
+
+This layer stops "another local app or a browser page that got hold of the file". A malicious program running as
+the same user could read your files and the token anyway — that is outside this plugin's threat model, exactly
+as stated for the loopback port.
+
+### Turning it off / diagnostics
+
+| How | Effect |
+|---|---|
+| `config.editorBridge: false` in `cordis.patch.yml` | next start writes no `bridge.json` and registers no tools |
+| `code-server.editorBridge: false` in the settings document | **immediate**: config removed, tools unregistered, the extension goes dormant |
+| disable the `dshcs-editor-bridge` extension inside the IDE | the bridge simply becomes unavailable |
+
+Diagnostics: `GET /api/code-server/status` exposes
+`bridge: { enabled, live, toolsRegistered, supported, url, file }` — **never the token** (that only exists in the file).
+
 ## Legacy DSH (unsupported since 0.2.3)
 
 **Behaviour**: when `sidebarRightTabs` / `sidebarRight` cannot be found, the plugin registers a single settings card:
@@ -479,6 +557,7 @@ reports the tree version / `productPath` / server entry, VS Code inner dependenc
 | `userDataDir` | `$DSH_HOME/code-server/user-data` | User-data isolation directory |
 | `extensionsDir` | `$DSH_HOME/code-server/extensions` | Extensions directory |
 | `readyTimeoutMs` | `60000` | `/healthz` readiness probe timeout |
+| `editorBridge` | `true` | **Editor bridge** (since 0.3.0): the read-only channel between the in-tree `dshcs-editor-bridge` extension and the host (see "Working with DSH"). Off = no `bridge.json`, no `editor_context`/`editor_diagnostics`, the extension stays dormant. `code-server.editorBridge` in the settings document toggles it **live** |
 
 User-level override example (write in `$DSH_HOME/profiles/web/cordis.patch.yml`, using the `- id: code-server` row):
 
@@ -505,6 +584,13 @@ Host/Origin fence and browser auth); in the desktop profile `apps/desktop-host` 
 | POST | `/api/code-server/stop` | Stop and recycle the process tree |
 | POST | `/api/code-server/setup` | **Compatibility no-op**: since 0.1.36 dependencies are installed by the package manager, so this only re-runs the env self-check and returns |
 | POST | `/api/code-server/open-file` | body `{ file }` — writes the signal consumed by the built-in `dshcs-open-file` extension to open the file in code-server |
+| GET | `/code-server-bridge/health` | editor-bridge liveness (**unauthenticated**; no editor data). Mounted on DSH's webServer, not under `/api` |
+| POST | `/code-server-bridge/sync` | editor bridge: the extension pushes state (`{context, diagnostics, workspace, at}`) and takes back events; `?since=<seq>` is the event cursor. Requires `x-dshcs-bridge-token`, and **any Origin header is 403** |
+| POST | `/code-server-bridge/ask` | editor bridge: push an editor question into the current session (`{text, file?, lineStart?, lineEnd?, selection?, languageId?}`); **409** when no session can receive it |
+| POST | `/code-server-bridge/event` | editor bridge: extension reports open/close and similar (host log tail). Requires the token |
+
+> All four bridge routes carry their own token check — they **cannot** rely on DSH's cookie fence, because the
+> extension host has no browser cookie — and they are read-only by construction. See "Working with DSH" above.
 
 > The plugin no longer registers `/code-server/*` webServer-only routes, and the code-server icon is inlined as a data URI
 > in the client bundle — the client requests no plugin-owned HTTP resource at all.
@@ -576,6 +662,19 @@ What remains on the plugin side:
   installer re-syncs it whenever its content changes.
 
 ## Known limitations
+
+- **The editor bridge needs DSH to provide `webServer`** (corrected in 0.3.9): its client is a Node process inside
+  the extension host, which can only reach DSH over HTTP at DSH's own origin (the bridge mounts under
+  `BRIDGE_BASE` with its own token). **The web profile has webServer (both `serve: dsh` and loopback) → the bridge
+  works; desktop has none → it stays disabled** (`bridge.supported=false`, no `bridge.json` is written, one log
+  line explains it). **File opening is unaffected**: it uses the signal file and works regardless of mode.
+  Up to 0.3.7 the bridge was registered under `/api/code-server/bridge/*` and was killed by Connection's cookie
+  fence (401) — that was a bug.
+- **Bridged state can lag by up to 600 ms**, and the tools say "stale" rather than serving data older than 10 s.
+- **Unsaved buffers are reported, not taken over.** The agent still edits via its own `fs` tools, i.e. against
+  disk. What the bridge adds is a notice *before* writing a dirty file, a diff *after*, and a warning instead of
+  an overwrite. It does not decide whether the user saves — that would mean changing the agent's read path,
+  which is out of scope for this version.
 
 - ~~No sub-path~~ **no longer true (corrected with measurements in 0.2.0)**: the workbench HTML VS Code renders references
   **only relative URLs** (9 references measured, 0 absolute; `serverBasePath="."`, `rootEndpoint="."`), and the client

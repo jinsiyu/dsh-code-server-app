@@ -731,3 +731,296 @@ GET /          → 200 text/html len=4222
     (`hasWorkbench`、23 个样式表)、`workbench.js?v=` 生效、launcher 记录到前缀下的两次 WS 握手、无控制台错误
     —— 这是"不用 cookie"这条设计的关键证据;
   - `test-workspace-switch.mjs` 补写令牌文件(host 的探针/接管读它)。
+
+## 15. 0.3.x 编辑器桥(agent 与编辑器之间的只读通道)
+
+> **版本号为什么跳到 0.3.6**:能力本身落地为 0.3.0,但 0.3.0(随后 0.3.1)在 npm 上被拒:
+> `E400 Cannot publish over previously published version`,而同一时刻 `dist-tags` 的
+> `latest`/`next` 都还停在 0.2.14、packument 的 `versions` 里也没有任何 0.3.x 正式版 ——
+> 即"版本号已存在但不可见"。用户据此把这些版本删掉后,0.3.0/0.3.1 依旧是同样的 400
+> (npm 对已发布过的版本号不回收),于是按 patch 前进到 **0.3.6** 发布、随后又前移到 **0.3.7**
+> (见 15.8 的事故),`latest` 始终保持不动。下文说的"0.3.0 起"就是本节这套能力。
+
+- **需求(用户)**:"vscode 常见的 ai 辅助插件能做什么?我需要一个方案让 dsh 与 code-server 更紧密地协同"。
+  结论落在"补编辑器侧的高保真上下文与交互入口":code-server 的开源树里 Chat 外壳、agent 框架、审批、
+  MCP、终端工具、diff 审阅都在,缺的只有模型/agent loop —— 那是 DSH 已有的 —— 以及**只有编辑器才知道的
+  信息**(未保存缓冲区、语言服务器诊断、活动选区)。
+- **需求边界(用户选择)**:只做路线 A(上下文 + 交互闭环);`chatSessionsProvider` 原生智能体会话、
+  `languageModelChatProviders` 自带模型、行内补全、MCP gateway 全部**不做**,但保留接口位。
+
+### 15.1 一个被实测推翻的中间设计(值得记下来)
+
+第一版设计是"host 反向 GET 扩展的 HTTP 面"(`/bridge/context`、`/bridge/diagnostics`)。写出来才发现:
+**扩展宿主不监听任何端口** —— 它是 VS Code server 的子进程,只是一个 Node 进程。host 无从调用它。
+
+改成"扩展在轮询里把状态推上来"之后反而更简单:
+- 只剩四条路由(`health` / `sync` / `ask` / `event`),没有"两个方向的 HTTP"这种不对称;
+- 状态缓存天然最新(每趟轮询刷新一次),不需要 host 侧再维护"上一次拉取";
+- 事件与状态共用一趟来回(带上 `?since=` 拿事件),扩展侧不需要第二个定时器。
+
+代价是状态最多滞后一个轮询周期(600ms),以及需要一条"过期"判据(10s 没更新就明说,而不是把旧数据
+当新数据)。这两条都写进了 README 的已知限制。
+
+### 15.2 判定顺序:Origin 必须先于令牌(测试抓到的真实缺口)
+
+`bridgeGuard` 第一版写的是"带 Origin 且 origin !== '' 且 origin !== 'null' → 403"。写测试时用
+`new Request(url, { headers: { origin: 'null' } })` 做断言,结果是 401 而不是 403 —— 两个原因叠在一起:
+
+1. **undici 把 `origin` 当 forbidden header 归一化掉了**:`new Request(...)` 里根本读不到它。
+   所以这组断言只能用裸 headers 对象(测试里专门留了一条注释与一组裸 headers 用例)。
+2. 顺手修了一个真缺口:`Origin: null` 是**沙箱 iframe / data: 页面的字面量取值**,同样是浏览器,
+   必须拒。
+
+还确立了顺序本身的意义:Origin **先于**令牌判定。反过来的话,一个网页就能通过"401 还是 403"区分
+"令牌错了"与"Origin 不对",等于给它一个爆破 oracle。
+
+### 15.3 通道选择:为什么不是 SSE/WS,也不是 MCP
+
+- **`ctx.connection.fetch.register` 的 methods 只允许 `GET | HEAD | POST`**(`dsh-client-connection`
+  的 `ConnectionFetchRoute` 定义),流式要另走 WS mux,而 `/api/remote.mux` 已被 `dsh-api-gateway`
+  用 `rpc.intercept('/api', …)` 占住(再注册会抛)。
+- **MCP 反向不行**:`dsh-mcp-client` 只实现 `stdio` 与 `streamable-http`,且只有 `tools/list` +
+  `tools/call` 两个方向 —— 它能让编辑器**提供工具**,但**不能观察** agent 的活动,而"agent 改了哪个文件"
+  正是本项目要的。而且 MCP 需要额外配置一个 server 进程,而桥是零配置的。
+- **`ctx.on('tools/result')` 才是观察点**:它注册在根上下文,而 `dsh-scope` 的载体过滤是
+  `tag === undefined → true`(`dsh-scope/lib/index.js` 的 `scopeTarget`),所以**一个监听器能看到
+  所有 agent 与子 agent 的调用**,不需要为每个会话挂钩子。
+
+### 15.4 改动抽取的两条路径(profile 差异)
+
+同一件事在 DSH 里有两个工具来源,只做一条就会在别的 profile 上失灵:
+
+| 工具 | 结果元数据 | 抽取方式 |
+|---|---|---|
+| `dsh-tool-fs` 的 `write` / `edit` | 带 `FsDiffMeta {diffs: FileDiff[]}`(`presentationMeta` 产出) | 读 `result.meta.diffs[].path` |
+| `dsh-tool-str-replace-editor` | **不带 meta**(output schema 只有 `{type:'string'}` + `render`) | 从 `exec.arguments.file_path` / `.path` 取,并跳过 `command === 'view'`(只读) |
+
+当前 profile 只挂了 `tool-fs`(`dsh-base/cordis.patch.yml` 里没有 str-replace-editor 的行),
+但两条路径都实现了 —— 换 preset 时不会突然"agent 改了文件而编辑器毫无反应"。
+
+### 15.5 只读是硬约束,不是措辞
+
+令牌文件(`<extensionsDir>/.dshcs-bridge/bridge.json`)对本机同用户进程可读,所以命名空间的爆炸半径
+必须被封死。落地方式有三层:
+
+1. **代码上**:四条路由没有任何写文件/改文档/执行命令的能力;`/ask` 也只投递一条消息。
+2. **测试上**:`scripts/test-bridge-routes.mjs` 有一条白名单断言 —— `bridge/*` 下的路由必须**恰好**
+   是那四条,且路由名里不允许出现 `write|edit|exec|run|shell|apply|save|delete|remove|create`。
+   新增只读路由要显式改白名单(逼着人重新想一遍"这是只读的吗")。
+3. **文档上**:README 双语都写了四条不变量与"这一层挡什么、不挡什么"。
+
+### 15.6 未保存缓冲区:只提醒、只 diff,不接管
+
+agent 的读写仍然全部走它自己的 `fs` 工具(按磁盘内容),桥不介入数据面。所以"用户有未保存改动"这件事
+只能通过**降低伤害**来处理,三个点各管一段:
+
+| 时机 | 手段 | 实现 |
+|---|---|---|
+| 写之前 | 附一条提示(不阻断、不改入参) | `tools/pre-execute` 里 `exec.deferContext(...)`。**`PreToolDecision` 明确排除入参改写**(参数已进日志与展示),所以"提醒"是唯一正确的介入方式 |
+| 写之后 | 开原生 diff | 左栏是 `dshcs-old:` 只读虚拟文档(文本放内存 store,URI 只放 sha256 key —— 把整份文件塞进 URI query 会被 workbench 截断),右栏是**真实的 file: URI**,于是撤销/编辑全走 VS Code 常规路径 |
+| 冲突时 | 非模态告警,绝不覆盖 | 该文档 `isDirty` 时弹 `showWarningMessage`,选项只有"查看差异 / 忽略" |
+
+### 15.7 回归
+
+- `scripts/test-bridge-routes.mjs`(18 项):路由表 + 只读白名单、Origin 优先于令牌(含 `Origin: null`)、
+  401 与 503 的语义区分、令牌头名三处一致(host 常量 / 扩展常量 / 测试字面量)、status 快照不含令牌、
+  配置原子写与坏配置视为未配置、事件环形缓冲有界、上下文缓存新鲜度、请求体上限、`dsh-resolve` 不抛、
+  真 `defineTool` 注册两个工具并渲染,以及两条针对 15.8 事故的守卫(动态代理用例 + 源码级检查)。
+- `scripts/test-bridge-extension.mjs`(17 项):未保存缓冲区上报(含无标题占位)、诊断工作区收敛 /
+  排序 / 截断、`agent 改动行数不猜`(只有一侧时 `added/removed` 为 null)、diff 缓存 LRU、
+  扩展侧配置只接受回环 + 合法令牌、休眠时一个请求都不发、`sync` 带令牌头且游标前进、
+  写操作抽取三条路径、投递文本组装、无会话时 `NO_AGENT` 而不是抛异常、选中 agent 收到 `followup`。
+- **测试隔离**(踩过一次):第一版 `test-bridge-routes.mjs` 没设 `DSH_HOME`,于是 `apply()` adopt 了
+  开发机上**正在跑的那个实例**,断言全错、还改写了真实的 `bridge.json`。现在脚本把 `DSH_HOME` 指向
+  临时目录,并在最后加一条"隔离自检"断言真实配置一字未动。
+
+### 15.8 事故:0.3.6 让 dsh web 起不来(DSH 服务只能经 ctx.get 获取)
+
+- **现象**:把 0.3.6 装进 web profile 后 `dsh web` 直接退出,报
+  `dsh: plugin tree failed to load: failed to apply loader entry code-server (dsh-code-server-app)`,
+  底层是 `cannot get property "systemPrompt" without inject`。用户先把 `code-server` 行禁用它才启动起来。
+- **根因(一行代码)**:`lib/bridge-tools.mjs` 的 `registerEditorPrompt` 写的是
+  `ctx?.systemPrompt ?? ctx.get('systemPrompt')` —— cordis 的 Context 代理里 **属性访问是可能抛的**
+  (`cordis/src/reflect.ts:144` 构造 `cannot get property "x" without inject`,再由 `internal/get`
+  瀑布 / accessor / `reflect.get(prop, false)` 决定是否真的抛出去)。可选链只挡 `null`/`undefined`,
+  **挡不住抛错**,所以 `??` 右边的 `ctx.get()` 永远没机会执行。它又恰好在 `apply()` 里,
+  loader 判定 entry 应用失败 → 终止整棵插件树 → 进程退出。同一缺陷在
+  `lib/bridge-session.mjs` 的 `ctx?.agents` 上还有一份(那条在路由回调里,代价是 500)。
+- **判定依据(实测,不是推断)**:裸 `Context` 里属性访问未必抛(服务已 provide 时返回对象),
+  所以只读源码很容易低估——我第一轮探测就得到"不抛"的结论,直到确认 `ctx.get()` 走的是另一条路:
+  `ReflectService.get → _getImpl`,服务没提供时**返回 undefined、永不抛**。
+  工程结论:**`ctx.<service>` 只对已声明 `inject` 的服务安全;其余一律 `ctx.get()` + 判空。**
+- **修复(0.3.7)**:两个文件各加一个 `getService()`(`ctx.get` + try/catch),三处服务获取全部改走它;
+  `registerEditorPrompt` 对 `section()` 的调用也加了保护(注册失败只 `console.warn`,不影响其余能力)。
+- **回归怎么防(两条,一条动态一条静态)**:
+  ① 动态:一个**属性访问会抛**的代理上下文,跑过 `registerEditorPrompt` / `registerEditorTools` /
+  `registerBridgeObserver` / `deliverEditorPrompt` 四个入口,并断言全过程没有出现过属性访问;
+  ② 静态:直接扫源码,凡 `ctx.<服务名>` 写法一律判失败(列了 11 个已知服务名,注释与 import 跳过)。
+  **②是必需的**:①在裸 cordis 下抓不住原始写法(那时属性访问不抛),而这条错误的代价是**整机起不来**。
+  已实测:把旧写法注入回 `bridge-tools.mjs` → ②立刻 FAIL;还原 → PASS。
+- **教训(与 0.2.4 的 desktop 事故同类)**:桩 ctx 测试通过 ≠ 真环境通过。这类"加载期即刻致命"的写法
+  没有任何运行时兜底,必须静态检查 + 真环境冒烟**两者一起**守;也只有真启动一次才能发现它,
+  所以任何改动 `apply()` 路径的版本都必须先在隔离 DSH_HOME 里 boot 一次再发。
+
+## 16. 桌面端安装报 `resolves tslib outside its owned packages`(0.3.8)
+
+用户在 dsh-desktop 的插件管理里安装(裸包名 → 拉到 `latest` = 0.2.14)失败:
+
+```
+Error invoking remote method 'dsh-desktop:plugins-add': Error: desktop profile:
+dsh-code-server-app -> @microsoft/1ds-core-js -> @microsoft/applicationinsights-core-js
+resolves tslib outside its owned packages
+```
+
+### 16.1 复现(沿用 §11.1 的沙盒法)
+
+把真实 profile 的 `pnpm-workspace.yaml` 复制进沙盒,用**应用自带**的 runtime(node 24.17 / pnpm 11.7.0)
+跑同一条 `pnpm add`,再用应用自己的 `apps/desktop/src/profile-packages.ts` 原样校验(只读):
+
+```powershell
+# 只读诊断:应用自己的 validateDesktopPluginGraph + 一遍全闭包 inventory
+node .spike\desktop-install-0.3.8\inspect-graph.mjs `
+  "$env:USERPROFILE\.dsh\profiles\desktop" `
+  "<app>\resources\dsh" dsh-code-server-app
+```
+
+原样复现出用户那条报错。**但 inventory 显示闭包里还有别的硬伤** —— 下面三层原因要一起看。
+原始输出与全部探针脚本归档在 `.spike/desktop-install-0.3.8/`(见该目录 `summary.md`)。
+
+### 16.2 三层原因(先串成一条报错,修掉一层才露出下一层)
+
+| # | 层 | 现象 | 归属 |
+|---|---|---|---|
+| 1 | `tslib` 没装 | `@microsoft/applicationinsights-core-js@2.8.15` 把 `tslib` 声明为**非可选 peer**(`peerDependencies.tslib="*"`),而桌面 profile 的 workspace 写死 `autoInstallPeers: false` ⇒ 没人装它;Node 于是解析到 profile 外的 `~/.dsh/profiles/node_modules/tslib` ⇒ 校验器判"依赖越界" | 本插件(已修) |
+| 2 | 同一条 registry `add` 把可选运行树的**同平台**依赖一起跳过 | 0.2.14(peer `tslib` 未满足)→ `.modules.yaml` skipped **105** 条,node-pty/koffi/ssh2/cpu-features/@parcel/watcher/… 全缺;0.3.8(声明 tslib 后)→ **35** 条(全是正确的跨平台变体),包全齐。CLI 的 11.25.0 对两版都正常 ⇒ **① 的修复把 ② 一起消掉了** | 本插件(随 ① 一起修掉) |
+| 3 | 校验器解析不了与 Node 内建同名的依赖 | `packageFrom()` 用 `createRequire(...).resolve.paths(name)`;该 API 对**核心模块名**(`buffer`/`util`/`events`/`stream`/`string_decoder`/`process`…)返回 `null`,`?? []` 之后直接返回 undefined ⇒ 已装好的包被判 `requires missing buffer@^5.5.0` | 桌面端上游(**仍需修**) |
+
+**① 的修复(已落地并发布)**:把 peer 显式升为直接依赖 —— `"dependencies": { "tslib": "2.8.1", … }`,
+版本 0.3.7 → **0.3.8**(`next`)。运行时其实**没有任何代码** `require('tslib')`(实测该闭包 0 处 import),
+但桌面校验器判的是**声明闭包**,peer 也必须在 profile 内被满足。
+
+**② 的证据**(应用自带 pnpm 11.7.0、同一沙盒、同一命令、warm store,背靠背三跑):
+
+| 跑 | 版本 | `@jinsiyu/dshcs*` skipped | 总数 | node-pty/koffi/ssh2/cpu-features/@parcel/watcher | tslib |
+|---|---|---|---|---|---|
+| a1 | 0.2.14 | 17 | 105 | 全缺 | 缺 |
+| a2 | 0.3.8 | 8 | 35 | 全在 | 在 |
+| a3 | 0.2.14 | 17 | 105 | 全缺 | 缺 |
+
+即"缺包"这个现象由 **peer 未满足**触发,与 pnpm 版本叠加:11.25.0 下两版都正常(35 条),
+11.7.0 下只有声明了 tslib 的 0.3.8 正常。触发面还受安装方式影响(`add <tarball>` 与
+`install --frozen-lockfile` 都不触发),所以**不要**把 11.7.0 的行为单独当成根因。
+修好 ① 后 registry `add dsh-code-server-app@0.3.8` 在 11.7.0 与 11.25.0 下都得到完整 profile
+(已用发布版实测,两次都 +node-pty … +tslib),所以 **② 不需要额外改桌面端**。
+
+**③ 的证据**:一个"依赖全装齐 + ① 已修"的 profile,原版校验器仍 FAIL,报的就是
+`bl requires missing buffer@^5.5.0`;把 `packageFrom` 换成"先 `resolve.paths`,为 null 时逐级向上找 `node_modules`"
+后同一 profile **PASS**(窄版与宽版两种改法都实测 PASS)。本闭包命中两个核心模块名依赖:
+`buffer <- bl`、`string_decoder <- readable-stream`(链路:运行树 → kerberos → prebuild-install →
+tar-fs → tar-stream → bl),链路本身无法在插件侧消除,只能上游修:
+
+```diff
+ function packageFrom(anchor: string, name: string): string | undefined {
+   if (!PACKAGE_NAME.test(name)) throw new Error(`desktop profile: invalid package name ${name}`)
+-  for (const modules of createRequire(join(anchor, 'package.json')).resolve.paths(name) ?? []) {
++  // resolve.paths() returns null for names that are Node core modules (buffer, util, events, …):
++  // such a package is still an ordinary dependency, so walk the ancestor node_modules directories.
++  const searched = createRequire(join(anchor, 'package.json')).resolve.paths(name) ?? []
++  const candidates = [...searched]
++  if (searched.length === 0) {
++    for (let dir = anchor; ;) {
++      candidates.push(join(dir, 'node_modules'))
++      const parent = dirname(dir)
++      if (parent === dir) break
++      dir = parent
++    }
++  }
++  for (const modules of candidates) {
+     const path = join(modules, name)
+     if (existsSync(join(path, 'package.json'))) return realpathSync.native(path)
+   }
+   return undefined
+ }
+```
+
+补丁文件:`.spike/desktop-install-0.3.8/desktop-profile-packages-core-modules.patch`(`git apply`,从仓库根)。
+(等价修法:核心模块名直接视为已满足 —— 反正 Node 运行时用的就是内建实现。)
+**只要 ③ 没修,当前桌面构建就装不上这个插件**:③ 与插件版本无关,任何包含 `buffer` 这类依赖的闭包都会命中。
+
+### 16.3 现场恢复(profile 卡在 pending)
+
+失败的事务把 `~/.dsh/profiles/desktop` 留在"装了 0.2.14、但有 `desktop-packages-pending`"的半成品状态
+(那份 `node_modules` 缺 tslib 与运行树的一堆同平台包)。启动流程是:`backend.start()` →
+`assertProfileRuntime()` 抛 *"package preparation is incomplete"* → `applyRelease()` 走 pending 重建分支
+(删 `node_modules` + `install --frozen-lockfile`)→ `finishPackageOperation()` 里两次校验。所以:
+
+1. 先把 ③ 的补丁打进 harness 检出并重建桌面端(否则校验一定停在 `buffer`);
+2. 用应用自带 runtime 在 profile 目录把插件升到 0.3.8(§11.3 的做法:store/cache/state 都用
+   `~/.dsh/desktop/pnpm/**`,否则 `ERR_PNPM_UNEXPECTED_STORE` / `…UNEXPECTED_VIRTUAL_STORE`):
+   `add dsh-code-server-app@0.3.8 --save-exact --ignore-scripts`;
+3. 直接启动应用:pending 分支会重装并校验,通过后自己删掉标记。
+   (想先核对也可以在 profile 目录再跑一次 `install --frozen-lockfile --ignore-scripts`,
+   确认 `node_modules` 里 `tslib`/`node-pty`/`koffi`/`sqlite3` 都在。)
+4. 若仍停在 `buffer` → ③ 没生效;若停在 `requires missing @jinsiyu/dshcs-*` → 第 2 步的 `add` 没写进新锁文件。
+
+### 16.4 教训(写给下一次)
+
+- 桌面校验器判的是**声明闭包**,不是运行时真正 import 的子集:peer / optional 都要能追溯,哪怕一行都没用到。
+- 三层原因会串成**一条**报错:先报最先命中的(tslib),修掉才露出后两层 ⇒ "报错信息 = 根因"只对第一层成立,
+  必须把整个闭包跑一遍 inventory 才知道要修几处。
+- 同一个"缺包"现象别急着判给工具版本:A/B 只改**插件版本**(0.2.14 / 0.3.8)就能把 skipped 从 105 翻到 35;
+  pnpm 版本只是叠加条件(11.25.0 对两版都正常)。
+- 验收必须走**真实安装路径**:registry `add` + 应用自己的校验器。tarball 安装与 `--frozen-lockfile`
+  都会掩盖 registry `add` 才有的行为(本次两者都不触发 ②)。
+- 复现必须用**应用自带的 runtime 与 workspace 设置**(§11.1):store、reporter、安装方式都会改变结论。
+
+## 17. 0.3.9:修掉编辑器桥的两个真缺陷(桥从来没同步过 + 桥扩展装不全)
+
+> 起因:用户报"web profile 启动崩溃"。排查过程中核对 0.3.7 的桥实现,发现**两个独立缺陷**;
+> 两者都不会让进程崩,而是让"编辑器桥"这个功能整体静默失效 —— 恰好是"改坏了不会有人立刻发现"的类型。
+
+### 17.1 缺陷一:`/api` 上的桥路由永远到不了(被 Connection 的 cookie fence 401 掉)
+
+- 0.3.7 把四条桥路由注册在 `ctx.connection.fetch.register({ path: '/api/code-server/bridge/…' })`。
+- 但 DSH 的 Connection 插件给整个 `/api` 前缀装了 fence(`packages/client/connection/src/index.ts:124-137`):
+  `requestRejection(req)` → 不可信 Host 403 / **无浏览器 cookie 401**,而且发生在**分发到插件路由之前**。
+- 桥的客户端是 VS Code **扩展宿主里的 Node 进程** —— 它拿不到浏览器 cookie(这正是桥自带令牌的原因),
+  于是请求必然被 401 掉,`bridgeGuard` 根本没机会执行。
+- 实测(0.3.7,IDE 在 8090 上跑):扩展按配置里的 URL 发 `POST /api/code-server/bridge/sync?since=0`:
+  - 不带路径令牌 → **404**(launcher 自己的门);
+  - 带路径令牌 → **405**(请求穿透到 VS Code server,那里没有这条 POST 路由)。
+  两个方向都不是桥 ⇒ 桥从未同步过一次。
+- 另一个同等错误:`syncBridgeRuntime({host, port: state.port})` 把 **launcher 的** origin 写进了 `bridge.json`,
+  而 launcher 只服务 workbench、**没有任何 `/api` 路由**(`launcher.mjs` 里 grep `/api/` = 0 处)。
+- **修法(0.3.9)**:桥改挂 **DSH 自己的 webServer** 前缀 `${BRIDGE_BASE}` = `/code-server-bridge`,
+  鉴权完全由桥令牌承担(Origin→403 仍优先于令牌)。origin 由 `WebServer` 服务暴露的**实际端口**
+  算出(`packages/host/webserver/src/index.ts:149-151`,config.port=0 时是 OS 分配值)。
+  没有 webServer 的部署(desktop)**不写 bridge.json**(宁可休眠,不可指向死地址)并说明一次;
+  **文件打开不受影响**(走信号文件,与 serve 模式无关)。
+- 适配器细节:Node 路由 → Fetch 风格 handler 需要包一层,而 `new Request(url, {headers})` 会把
+  `origin` 当 **forbidden header 归一化掉** ⇒ guard 必须读原始 headers(适配器挂在 `request.dshcsRawHeaders` 上)。
+  测试里那条"Origin 必须穿过适配器仍然是 403"的用例就是钉这件事。
+
+### 17.2 缺陷二:桥扩展装不全(`lib/*.js` 没被拷进去)
+
+- `assets/extensions/dshcs-editor-bridge/` 里,`extension.js` 通过 `require('./lib/bridge-client.js' | './lib/context-model.js' | './lib/diff-model.js')`
+  使用三个纯逻辑模块(刻意不 require('vscode'),便于单测)。
+- 而 `installBundledExtensions` 的 `const files = ['package.json', 'extension.js']` 是**硬编码两项**、不递归 ⇒
+  装到 profile 的副本没有 `lib/`,扩展一加载就 `Cannot find module`,VS Code 只记一条
+  `Marked extension as removed dsh-code-server-app.dshcs-editor-bridge-0.1.0`
+  (实测日志里出现 6 次,界面毫无反应)。
+- **修法(0.3.9)**:改为**递归列出源目录**并同步(内容不同即覆盖,**源里已不存在的文件从目标删除**,
+  避免升级后旧 `lib/` 残留),仍然保留"清理放错位置副本"的行为。
+- 回归:`scripts/test-bridge-routes.mjs` 直接调 `installBundledExtensions`(它导出是为了可测 —— 安装发生在 start 里),
+  断言五个文件落地、内容一致、幂等、陈旧文件被清掉。
+
+### 17.3 顺带修正与遗留
+
+- `test-launcher-routes.mjs` 原本硬编码 desktop profile 的树,而 0.3.7 的安装把树换成新的(没有 junction)⇒
+  测试以 `ERR_MODULE_NOT_FOUND @vscode/spdlog` 失败(环境问题,不是 launcher 问题)。改为:优先挑一个
+  profile 的树,借**已安装插件自己的** `lib/native.js` 把 junction 建齐,一个都不行才 SKIP。
+- `lib/bridge.mjs` 的 `callBridge()` 是死代码(host 想反向调扩展,但扩展宿主根本没有 HTTP 面,
+  lib/ 里也无人调用)—— 本次**没删**,留给出桥定方向的人决定;新代码路径不依赖它。
+- 回归总览:7 个套件 70 项断言全绿(bridge-routes 21 / bridge-extension 17 / claim-types 9 /
+  launcher-routes 9 / sidebar-fullscreen 7 / workspace-switch 5 / plugin-apply 2)。
+

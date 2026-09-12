@@ -184,6 +184,83 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
   (含 `Forwarded: host=` / `X-Forwarded-Host` 的反代语义),否则回 `403`;缺 `Origin` 的非浏览器请求放行。
   没有这道检查时,本机任意浏览器页面都能对 `ws://127.0.0.1:<port>/stable-<commit>` 完成握手并驱动 IDE。
 
+## 与 DSH 的协同:编辑器桥(0.3.0 起,默认开)
+
+"IDE 就在旁边"和"agent 真的知道编辑器里发生了什么"是两件事。编辑器桥补的是后一半:**只读**地把
+只有编辑器才知道的信息交给 agent,并让用户在编辑器里的动作能反过来驱动当前会话。
+
+### 双向能力
+
+| 方向 | 能力 | 落地方式 |
+|---|---|---|
+| 编辑器 → agent | **未保存缓冲区**(磁盘内容 ≠ 用户所见)、活动文件与选区、**语言服务器诊断**(含 file:line、来源、code) | agent 工具 `editor_context` / `editor_diagnostics`;写脏文件前额外附一条提醒 |
+| 编辑器 → DSH | 选中代码 → 右键「DSH: 针对选中内容提问」→ 消息进入当前会话(带 `文件:行` 与代码块) | 扩展命令 `dsh-code-server.askAboutSelection`(编辑器右键菜单 + 命令面板) |
+| agent → 编辑器 | agent 改了哪个文件 → 开**原生 diff** 审阅;缓冲区有未保存改动时**告警而不覆盖** | host 观察 `tools/result`,扩展轮询后开 diff + 非模态告警 |
+
+- 工具只在桥就绪时注册(IDE 没起来时模型看不到"有个用不了的工具");提示词段落也只在桥存活时渲染。
+- **全部只读**:桥不写文件、不改文档、不执行命令。agent 的写操作仍然全部走它自己的 `fs` 工具,
+  桥只是"知道它写了什么"。
+- 编辑器侧的入口还有状态栏的 `$(plug) DSH`(连通时显示,点击打开日志),日志在输出面板
+  「DSH Editor Bridge」里 —— 出问题时先看它。
+
+### 三条通道(0.3.9 起走 DSH webServer 的 `/code-server-bridge`)
+
+```
+扩展 → host     POST /code-server-bridge/sync   一趟来回:上报编辑器状态 + 取回待处理事件
+扩展 → host     POST /code-server-bridge/ask    把编辑器里的提问投进当前会话
+扩展 → host     GET  /code-server-bridge/health 无鉴权探活(便于重启后一眼确认)
+扩展 → host     POST /code-server-bridge/event  扩展上报打开/关闭文件等(进 host 日志尾)
+host  → 扩展    <extensionsDir>/.dshcs-bridge/bridge.json  base URL + 令牌(扩展每 5s 重读)
+```
+
+> **为什么不在 `/api` 下(0.3.9 修正)**:Connection 给 `/api` 装了 Host/Origin/cookie fence
+> (`packages/client/connection/src/index.ts` 里 `requestRejection` → 无 cookie 即 401),而桥的客户端
+> 是扩展宿主里的 **Node 进程** —— 它永远拿不到浏览器 cookie,请求在到达插件路由之前就被挡掉了。
+> 实测(0.3.7):扩展按 `/api/code-server/bridge/sync` 轮询,要么 405(打到 launcher/VS Code)、
+> 要么 401(打到 DSH 的 /api fence),**桥从来没有真正同步过**。
+> 现在桥挂在 DSH 自己的 webServer 前缀下,鉴权完全由桥自己的令牌承担(见下)。
+> 代价:桥需要 DSH 提供 `webServer` —— **web profile 有,desktop 没有**。
+> desktop 下 host 不写 `bridge.json`(宁可休眠,不可指向死地址),并在日志里说明;
+> **文件打开不受影响**(它走信号文件,与 serve 模式无关)。
+
+**为什么状态是"推"而不是"拉"**:扩展宿主是 VS Code server 的一个子进程,**不监听任何端口** ——
+host 反向请求不到它。所以编辑器状态只能在扩展主动发起的那趟轮询里带上来,host 缓存后给工具读
+(缓存滞后最多一个轮询周期 600ms,超过 10s 没更新就判为过期,工具会明说"状态已过期");
+
+**为什么不用 SSE/WebSocket**:扩展宿主里没有 HTTP 服务器,而 DSH 侧能给的无非是请求/响应
+(Connection 的 fetch 通道只允许 `GET | HEAD | POST`,流式要另走已被 `dsh-api-gateway` 占用的 WS mux)。
+轮询反而给了两条好性质:幂等(丢一次事件只是少一次提示,数据本身永远在编辑器里),以及状态天然最新(每趟都刷新)。
+
+### 安全模型(四条不变量,改 `lib/bridge.mjs` 之前先读)
+
+桥的令牌写在 `<extensionsDir>/.dshcs-bridge/bridge.json`(**对本机同用户进程可读**),所以:
+
+1. **`/code-server-bridge/*` 永久只读。** 没有写文件、改文档、执行命令的路由。
+   令牌泄露的爆炸半径被封在"看到编辑器里的信息",**不会**变成任意文件写/任意命令执行。
+   `scripts/test-bridge-routes.mjs` 里有一条白名单断言盯着这件事(未知后缀一律 404)。
+2. **带 `Origin` 的请求一律 403。** 浏览器发起必带 Origin(含沙箱 iframe 的 `Origin: null`),
+   扩展宿主是 Node 进程、不带。判定顺序上 Origin **先于令牌** —— 否则等于给浏览器一个
+   "令牌猜对没有"的 oracle。
+   实现细节:Node 路由 → Fetch 适配器把**原始 headers** 挂在 request 上(`dshcsRawHeaders`),
+   因为 undici 的 `Request` 构造器会把 `origin` 当 forbidden header 归一化掉 —— 读 `request.headers`
+   会让这道 403 静默失效(测试里有这条实测记录)。
+3. **路径收敛在编辑器当前工作区**(`workspaceFolder` 之外的诊断直接丢弃)。
+4. **有界**:诊断默认 200 条 / 单条截断 500 字符 / 上报体上限 256KB / 事件环形缓冲 64 条。
+
+这一层挡的是"本机其它应用或浏览器页面拿到那个文件后乱调桥";**同用户的本地恶意程序**
+本来就能直接读你的文件与令牌文件 —— 那不在本插件的威胁模型内(与「回环端口的安全模型」同一句话)。
+
+### 开关与诊断
+
+| 怎么关 | 效果 |
+|---|---|
+| `cordis.patch.yml` 的 `config.editorBridge: false` | 下次启动不写 bridge.json、不注册工具 |
+| 设置文档里的 `code-server.editorBridge: false` | **即时生效**:删配置 + 注销工具,扩展随即休眠 |
+| 在 IDE 里禁用扩展 `dshcs-editor-bridge` | 桥自然不可用(工具会注册但立刻报"状态未上报";IDE 侧无任何动作) |
+
+诊断:`GET /api/code-server/status` 的 `bridge` 字段返回
+`{ enabled, live, toolsRegistered, supported, url, file }` —— **不含令牌**(令牌只在那个文件里)。
+
 ## 旧版 DSH(0.2.3 起不再支持)
 
 **行为**:探测不到 `sidebarRightTabs` / `sidebarRight` 时,插件只注册一张设置卡片,内容是:
@@ -283,6 +360,21 @@ pnpm run promote -- <version>
 > `pnpm pack` 的 `prepack` 会自动跑一次 `vendor-vscode-server` 脚本;`vendor/vscode` 已存在时它是
 > **秒级 no-op**,所以日常只改插件代码的话直接 `pnpm pack` 即可(不会偷偷升级 VS Code)。
 > 升级树必须显式 `pnpm run vendor:latest`(或 `--force`/`--version`),并重发子包。
+
+### 回归脚本(改完跑一遍)
+
+```powershell
+pnpm test:apply              # 桩 ctx 下跑通 apply(回归:apply 期的 ReferenceError)
+pnpm test:claim-types        # 认领类型语法与默认值
+pnpm test:bridge-routes      # 编辑器桥:路由表只读白名单 / Origin 与令牌的判定顺序 / 令牌头三处一致
+pnpm test:bridge-extension   # 编辑器桥扩展侧纯逻辑:未保存缓冲区上报、诊断排序截断、diff 判据、投递降级
+pnpm test:launcher-routes    # launcher 的 HTTP 面(起真进程,较慢)
+pnpm test:workspace-switch   # 切工作区不重启进程
+pnpm test:fullscreen         # 打开标签即全屏
+```
+
+> `test:bridge-routes` 会把 `DSH_HOME` 指向临时目录(否则它会 adopt 开发机上正在跑的那个实例,
+> 并改写真实的 `bridge.json`);脚本最后有一条"隔离自检"断言真实配置一字未动。
 
 ## 安装插件(一条命令;依赖全部由包管理器装好)
 
@@ -470,6 +562,7 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 | `extensionsDir` | `$DSH_HOME/code-server/extensions` | 扩展目录 |
 | `locale` | `''` | 界面语言(空 = 跟随浏览器),如 `zh-cn` |
 | `readyTimeoutMs` | `60000` | `/healthz` 就绪探测超时(TCP 或命名管道) |
+| `editorBridge` | `true` | **编辑器桥**(0.3.0 起):树内扩展 `dshcs-editor-bridge` 与 host 之间的只读通道(见「与 DSH 的协同」)。关掉 = 不写 `bridge.json`、不注册 `editor_context`/`editor_diagnostics`、扩展休眠。设置文档里的 `code-server.editorBridge` 可**即时**开关 |
 
 用户级覆盖示例(写在 `$DSH_HOME/profiles/web/cordis.patch.yml`,应使用 `- id: code-server` 行覆盖):
 
@@ -494,8 +587,15 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
 | POST | `/api/code-server/stop` | 停止并回收进程树 |
 | POST | `/api/code-server/setup` | **兼容空操作**:0.1.36 起依赖由包管理器安装,调用只重新自检 `env` 并返回 |
 | POST | `/api/code-server/open-file` | body `{ file }` — 写信号文件,由内置扩展 `dshcs-open-file` 在 code-server 中打开 |
+| GET | `/code-server-bridge/health` | 编辑器桥探活(**无鉴权**;只回答"桥活着吗",不含任何编辑器数据)。挂 DSH 的 webServer,不在 `/api` 下 |
+| POST | `/code-server-bridge/sync` | 编辑器桥:扩展上报状态(`{context, diagnostics, workspace, at}`)并取回事件;`?since=<seq>` 是事件游标。需 `x-dshcs-bridge-token`,**带 Origin 一律 403** |
+| POST | `/code-server-bridge/ask` | 编辑器桥:把编辑器里的提问投进当前会话(`{text, file?, lineStart?, lineEnd?, selection?, languageId?}`);没有可投递的会话时回 **409** |
+| POST | `/code-server-bridge/event` | 编辑器桥:扩展上报打开/关闭文件等(进 host 日志尾)。需令牌 |
 
-> 插件不再注册 `/code-server/*` 这类 webServer 专有路由;code-server 图标已内联为 data URI(client bundle 内),
+> 桥的四条路由都自带令牌鉴权(它们**不依赖** DSH 的 cookie fence —— 扩展宿主拿不到浏览器 cookie),
+> 且永远只读。这也是它们**不能**挂在 `/api` 下的原因(见「与 DSH 的协同」)。
+
+> 除桥之外,插件不再注册任何插件自有 HTTP 路由;code-server 图标已内联为 data URI(client bundle 内),
 > 因此客户端不请求任何插件自有 HTTP 资源。
 
 ## DSH Desktop(无 webServer)
@@ -544,6 +644,18 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
   - 影响面:不只本插件——**任何**客户端插件升级后都可能继续跑旧代码;发布后请按上面的标记法确认渲染器真的换了 bundle。
 
 ## 已知限制
+
+- **编辑器桥需要 DSH 提供 `webServer`**(0.3.9 修正):桥的客户端是扩展宿主里的 Node 进程,
+  它只能通过 HTTP 打到 DSH 自己的 origin(桥挂在 `BRIDGE_BASE` 前缀下,自带令牌鉴权)。
+  **web profile(`serve: dsh` 或 loopback 都行)有 webServer → 桥可用;desktop 没有 → 不启用**
+  (status 的 `bridge.supported=false`,host 不写 `bridge.json`,日志里说明一次)。
+  **文件打开不受影响**:它走信号文件,与 serve 模式和 webServer 都无关。
+  0.3.7 及以前把桥挂在 `/api/code-server/bridge/*`,被 Connection 的 cookie fence 401 挡死 —— 那是个 bug。
+- **桥的状态有最多 600ms 滞后**:扩展每 600ms 推一次;超过 10s 没更新时工具会明说"状态已过期"
+  而不是拿旧数据当新数据(例如用户在 IDE 里关掉面板之后)。
+- **未保存缓冲区是"上报"而不是"接管"**:agent 仍然通过它自己的 `fs` 工具按磁盘内容编辑。
+  桥能做的是**在写之前提醒**、**写之后给 diff**、**冲突时告警而不覆盖** ——
+  它不能替用户决定保存与否(那需要改动 agent 的读路径,不在本版本范围内)。
 
 - ~~子路径不支持~~ **已不成立(0.2.0 实测更正)**:VS Code 渲染出的 workbench HTML 里
   **资源引用全是相对路径**(实测 9 条引用中绝对路径 0 条,`serverBasePath="."`、`rootEndpoint="."`),

@@ -1,0 +1,58 @@
+{
+  "name": "dshcs-editor-bridge",
+  "displayName": "DSH Editor Bridge",
+  "description": "只读地把编辑器状态(未保存缓冲区、诊断、活动选区)提供给 DSH,并让编辑器里的动作驱动 DSH 会话。由 dsh-code-server-app 插件安装,可禁用。",
+  "version": "0.1.0",
+  "publisher": "dsh-code-server-app",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "dsh-code-server.askAboutSelection",
+        "title": "DSH: 针对选中内容提问",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh-code-server.askAboutFile",
+        "title": "DSH: 针对当前文件提问",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh-code-server.showBridgeLog",
+        "title": "DSH: 显示编辑器桥日志",
+        "category": "DSH"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "dsh-code-server.askAboutSelection",
+          "when": "editorHasSelection",
+          "group": "dsh@1"
+        },
+        {
+          "command": "dsh-code-server.askAboutFile",
+          "group": "dsh@2"
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "本扩展只向本机 DSH 读取/上报编辑器状态,不修改工作区文件。"
+    },
+    "virtualWorkspaces": true
+  }
+}

@@ -30,7 +30,21 @@
         locale: ''
         # 启动就绪探测超时(ms)。
         readyTimeoutMs: 60000
-        # 注:后台常驻(keepResident,默认 true)与认领范围(fileOpenScope,默认 session)由
+        #
+        # ---- 编辑器桥(0.3.0,默认开) ----
+        # 树内扩展 dshcs-editor-bridge 与 host 之间的**只读**通道(见 lib/bridge.mjs 顶部的
+        # 通道说明与安全不变量):
+        #   agent 侧:editor_context / editor_diagnostics 两个工具,拿到未保存缓冲区、语言服务器
+        #             诊断、活动选区 —— 这些只有编辑器知道;
+        #   编辑器侧:「问 DSH」右键命令把选区投进当前会话;agent 改文件后开原生 diff 审阅,
+        #             缓冲区有未保存改动时只告警、绝不覆盖。
+        # 关掉它 = 不写 bridge.json、不注册工具、扩展休眠。也可在设置文档里改实时的
+        # `code-server.editorBridge`(改完即时生效,无需重启)。
+        # 已知范围:`serve: dsh`(管道模式,无独立端口)下不支持桥 → 自动禁用,不影响其它功能。
+        editorBridge: true
+        # 注:「认领类型」(claimExtensions,默认把 markdown/html/图片/PDF 留给 DSH 自带预览)与
+        # 「打开即全屏」(fullscreenOnOpen)、「后台常驻」(keepResident)由
         # "设置 → 插件 → Code Server"卡片控制,持久化于官方 settings 域(命名空间 code-server),
-        # 卡片修改即时生效。服务方式(serve)没有卡片行:改这里的 config.serve 或设置文档。
+        # 卡片修改即时生效。服务方式(serve)与编辑器桥(editorBridge)没有卡片行:
+        # 改这里或设置文档(code-server.serve / code-server.editorBridge)。
         # 另:不再兼容旧版 DSH(无 sidebarRightTabs/sidebarRight 服务),旧版上仅给设置页提示。
