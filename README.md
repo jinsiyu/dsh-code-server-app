@@ -202,6 +202,11 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
   桥只是"知道它写了什么"。
 - 编辑器侧的入口还有状态栏的 `$(plug) DSH`(连通时显示,点击打开日志),日志在输出面板
   「DSH Editor Bridge」里 —— 出问题时先看它。
+- **扩展装在内置目录**(0.3.12 修正):`dshcs-editor-bridge` 与 `dshcs-open-file` 一样装进
+  `<树>/lib/vscode/extensions/`。0.3.0–0.3.11 装的是用户级目录,而 VS Code 服务端会把
+  "在用户扩展目录里、不在任何 profile 清单里"的扩展标进 `.obsolete`(日志 `Marked extension as removed`)
+  并永远跳过它 —— 每一轮启动都再标一次,**桥因此从来没有上报过状态**。
+  要关掉桥请用插件设置 `editorBridge=false`(不挂桥、不注册工具),不要再指望在扩展视图里卸载它。
 
 ### 三条通道(0.3.9 起走 DSH webServer 的 `/code-server-bridge`)
 
@@ -211,6 +216,7 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 扩展 → host     GET  /code-server-bridge/health 无鉴权探活(便于重启后一眼确认)
 扩展 → host     POST /code-server-bridge/event  扩展上报打开/关闭文件等(进 host 日志尾)
 host  → 扩展    <extensionsDir>/.dshcs-bridge/bridge.json  base URL + 令牌(扩展每 5s 重读)
+                (目录由 host 注入的 `DSHCS_EXTENSIONS_DIR` 告知 —— 扩展装在内置目录里,自己推不出来)
 ```
 
 > **为什么不在 `/api` 下(0.3.9 修正)**:Connection 给 `/api` 装了 Host/Origin/cookie fence
@@ -651,6 +657,9 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
   (status 的 `bridge.supported=false`,host 不写 `bridge.json`,日志里说明一次)。
   **文件打开不受影响**:它走信号文件,与 serve 模式和 webServer 都无关。
   0.3.7 及以前把桥挂在 `/api/code-server/bridge/*`,被 Connection 的 cookie fence 401 挡死 —— 那是个 bug。
+- **`/code-server-bridge/health` 的 `bridge` 字段不代表扩展在跑**(0.3.12 澄清):它只表示"桥的目标已就绪"。
+  扩展是否真的在跑,看 exthost 日志里有没有它的激活记录,或直接用 `editor_context` 试一次 ——
+  0.3.0–0.3.11 就是"health 说 bridge:true、扩展却从没被加载"的状态(原因见上:用户级安装被标 `.obsolete`)。
 - **桥的状态有最多 600ms 滞后**:扩展每 600ms 推一次;超过 10s 没更新时工具会明说"状态已过期"
   而不是拿旧数据当新数据(例如用户在 IDE 里关掉面板之后)。
 - **未保存缓冲区是"上报"而不是"接管"**:agent 仍然通过它自己的 `fs` 工具按磁盘内容编辑。

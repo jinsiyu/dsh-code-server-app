@@ -525,6 +525,14 @@ function main() {
     const m = readJson(join(dir, 'package.json'));
     delete m.scripts;
     delete m.files;
+    // 安装脚本已删,prebuild-install(上游原生包在 install 期下载预编译产物的 CLI)永远不会被调用,
+    // 属于纯死重量;留着它还会把 tar-fs → tar-stream → bl → buffer 与 readable-stream →
+    // string_decoder 拖进 profile —— dsh-desktop 的校验器用 require.resolve.paths() 解析依赖,
+    // 该 API 对与 Node 内建同名的包返回 null,于是"依赖装齐也报 requires missing buffer@^5.5.0"
+    // (见 docs/analysis-code-server-as-dsh-plugin.md 第 16 节)。
+    for (const fld of ['dependencies', 'optionalDependencies']) {
+      if (m[fld]) delete m[fld]['prebuild-install'];
+    }
     m.name = pkg.pkgName;
     m.version = pkg.version;
     if (pkg.platformSpecific) {

@@ -12,7 +12,7 @@
 //
 // 用法:node scripts/test-bridge-routes.mjs
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -200,15 +200,32 @@ await test('令牌头名与桥前缀三处一致(host 常量 / 扩展常量 / �
   assert.equal(ext.BRIDGE_FILENAME, 'bridge.json');
 });
 
-await test('扩展安装必须带全 lib/(0.3.7 只拷两个文件 → 桥扩展加载即失败)', async () => {
-  // 0.3.7 的真实事故:assets/extensions/dshcs-editor-bridge/ 里的纯逻辑放在 lib/ 下,
-  // 而 installBundledExtensions 的 files 是硬编码的 ['package.json','extension.js'] ⇒
-  // 装到 profile 的副本没有 lib/,extension.js 一 require('./lib/bridge-client.js') 就抛,
-  // VS Code 只记一条 `Marked extension as removed`,界面上毫无反应。
+await test('扩展安装必须带全 lib/,并且装进**内置**目录(用户级会被 VS Code 标成 removed)', async () => {
+  // 两次真实事故:
+  // ① 0.3.7:assets/extensions/dshcs-editor-bridge/ 里的纯逻辑放在 lib/ 下,而 installBundledExtensions
+  //    硬编码 files=['package.json','extension.js'] ⇒ 装出来的副本没有 lib/,extension.js 一
+  //    require('./lib/bridge-client.js') 就抛。
+  // ② 0.3.0–0.3.11:桥装在**用户级**目录。VS Code 服务端启动时 ExtensionsWatcher.initialize() →
+  //    deleteExtensionsNotInProfiles() 会把"在用户扩展目录里、不在任何 profile 的 extensions.json 里"
+  //    的扩展写进 <extensions-dir>/.obsolete(日志 `Marked extension as removed`),扫描器从此跳过它,
+  //    下一轮它又不在 profile 里 ⇒ 自锁,扩展永远不加载 ⇒ editor_context 永远报"还没有上报状态"。
+  //    所以现在两个扩展都装内置目录(<树>/lib/vscode/extensions),这里注入假树以免碰真实树。
   // 安装发生在 start 里,而本测试不起 IDE ⇒ 直接调导出的安装函数。
-  plugin.installBundledExtensions(extensionsDir, userDataDir);
+  const treeRoot = join(HOME, 'fake-tree');
+  const builtinDir = join(treeRoot, 'lib', 'vscode', 'extensions');
+  const legacyUserDir = join(extensionsDir, 'dshcs-editor-bridge');
+  // 树里本来就有 extensions/ 目录(真实树必然有);没有它 extensionTarget 会退回用户级
+  mkdirSync(builtinDir, { recursive: true });
+  // 造出 0.3.11 的现场:用户级目录里已有一份(差一个 lib/),.obsolete 里已有自锁标记
+  mkdirSync(legacyUserDir, { recursive: true });
+  writeFileSync(join(legacyUserDir, 'extension.js'), 'old', 'utf8');
+  writeFileSync(join(extensionsDir, '.obsolete'),
+    JSON.stringify({ 'dsh-code-server-app.dshcs-editor-bridge-0.1.0': true, 'other.publisher-ext-1.0.0': true }), 'utf8');
+
+  plugin.installBundledExtensions(extensionsDir, userDataDir, { treeRoot });
+
   const srcDir = new URL('../assets/extensions/dshcs-editor-bridge/', import.meta.url);
-  const dstDir = join(extensionsDir, 'dshcs-editor-bridge');
+  const dstDir = join(builtinDir, 'dshcs-editor-bridge');
   const expected = ['package.json', 'extension.js', 'lib/bridge-client.js', 'lib/context-model.js', 'lib/diff-model.js'];
   for (const rel of expected) {
     const dst = join(dstDir, rel);
@@ -218,13 +235,21 @@ await test('扩展安装必须带全 lib/(0.3.7 只拷两个文件 → 桥扩展
     assert.ok(a.equals(b), `${rel} 内容与源码不一致`);
   }
   assert.ok(existsSync(join(dstDir, 'lib')), 'lib/ 目录必须存在');
+  assert.equal(existsSync(legacyUserDir), false, '用户级的旧副本必须被清掉(否则两份打架、且会被标 removed)');
+  const obsolete = JSON.parse(readFileSync(join(extensionsDir, '.obsolete'), 'utf8'));
+  assert.equal(obsolete['dsh-code-server-app.dshcs-editor-bridge-0.1.0'], undefined, '自锁标记必须被清掉');
+  assert.equal(obsolete['other.publisher-ext-1.0.0'], true, '别的扩展的标记不能动');
   // 幂等:再装一次不该报错也不该改写内容
-  plugin.installBundledExtensions(extensionsDir, userDataDir);
+  plugin.installBundledExtensions(extensionsDir, userDataDir, { treeRoot });
   assert.ok(readFileSync(join(dstDir, 'lib/bridge-client.js')).equals(readFileSync(new URL('lib/bridge-client.js', srcDir))));
   // 源目录里没有的文件必须被清掉(升级后不留旧文件)
   writeFileSync(join(dstDir, 'stale-from-old-version.js'), 'old', 'utf8');
-  plugin.installBundledExtensions(extensionsDir, userDataDir);
+  plugin.installBundledExtensions(extensionsDir, userDataDir, { treeRoot });
   assert.equal(existsSync(join(dstDir, 'stale-from-old-version.js')), false, '陈旧文件应被清理');
+  // .obsolete 只剩别的扩展 → 文件保留;只有本插件的标记时 → 文件删掉
+  writeFileSync(join(extensionsDir, '.obsolete'), JSON.stringify({ 'dsh-code-server-app.dshcs-open-file-0.0.2': true }), 'utf8');
+  plugin.installBundledExtensions(extensionsDir, userDataDir, { treeRoot });
+  assert.equal(existsSync(join(extensionsDir, '.obsolete')), false, '只剩本插件的标记时应删掉整个文件');
 });
 
 await test('源码级:桥不再挂 /api,扩展侧路径由 BRIDGE_BASE 拼出', async () => {

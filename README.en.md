@@ -206,6 +206,12 @@ only the editor knows, and lets editor gestures drive the current session.
 - **Everything is read-only**: the bridge never writes files, applies edits, or runs commands. The agent's writes
   still go through its own `fs` tools; the bridge only *knows about* them.
 - Status bar shows `$(plug) DSH` while connected (click it for the log in the "DSH Editor Bridge" output channel).
+- **The extension ships as a built-in** (fixed in 0.3.12): `dshcs-editor-bridge` is installed into
+  `<tree>/lib/vscode/extensions/` next to `dshcs-open-file`. 0.3.0–0.3.11 installed it as a *user* extension
+  instead, and the VS Code server marks any extension that sits in the user extensions folder but in no profile
+  manifest as removed (`.obsolete`, log line `Marked extension as removed`) and then skips it forever — re-marked on
+  every start, so **the bridge never reported any state**. To turn the bridge off use the plugin setting
+  `editorBridge=false` (no mount, no tools) rather than uninstalling the extension from the Extensions view.
 
 ### The channels (since 0.3.9 they live on DSH's webServer under `/code-server-bridge`)
 
@@ -215,6 +221,8 @@ extension → host   POST /code-server-bridge/ask     push an editor question in
 extension → host   GET  /code-server-bridge/health  unauthenticated liveness probe
 extension → host   POST /code-server-bridge/event   extension reports open/close etc. (host log tail)
 host → extension   <extensionsDir>/.dshcs-bridge/bridge.json   base URL + token, re-read by the extension every 5s
+                   (the directory is announced via the host-injected `DSHCS_EXTENSIONS_DIR` — the extension lives in
+                   the built-in tree now, so it cannot derive it from its own path)
 ```
 
 > **Why not under `/api` (fixed in 0.3.9)**: Connection puts a Host/Origin/cookie fence on `/api`
@@ -670,6 +678,10 @@ What remains on the plugin side:
   line explains it). **File opening is unaffected**: it uses the signal file and works regardless of mode.
   Up to 0.3.7 the bridge was registered under `/api/code-server/bridge/*` and was killed by Connection's cookie
   fence (401) — that was a bug.
+- **`/code-server-bridge/health`'s `bridge` field does not mean the extension is running** (clarified in 0.3.12):
+  it only says the bridge *target* is configured. Whether the extension actually runs shows up in the exthost log
+  or by simply calling `editor_context` — 0.3.0–0.3.11 sat in the state "health says bridge:true, extension never
+  loaded" (cause above: the user-level install was marked `.obsolete`).
 - **Bridged state can lag by up to 600 ms**, and the tools say "stale" rather than serving data older than 10 s.
 - **Unsaved buffers are reported, not taken over.** The agent still edits via its own `fs` tools, i.e. against
   disk. What the bridge adds is a notice *before* writing a dirty file, a diff *after*, and a warning instead of

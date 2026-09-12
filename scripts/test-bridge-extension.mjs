@@ -12,7 +12,7 @@
 //
 // 用法:node scripts/test-bridge-extension.mjs
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -185,6 +185,40 @@ await test('桥配置:只接受本机回环 URL 与合法令牌(坏配置 = 休�
   assert.equal(good.url, 'http://127.0.0.1:8090');
   assert.equal(good.pid, 7);
   rmSync(dir, { recursive: true, force: true });
+});
+
+await test('配置目录解析:host 注入的 DSHCS_EXTENSIONS_DIR 优先于自身位置反推(0.3.12 修正)', () => {
+  // 0.3.12 起桥扩展装在内置目录(树里),与 <extensionsDir> 不同级 —— 只能靠 host 注入的 env 找到配置。
+  // 老代码在 extension.js 里自己算过 `resolve(__dirname,'..','..')`,比 <extensionsDir> 还高一级,
+  // 任何布局都读不到 bridge.json(桥永远休眠)。这里钉住"env 优先"与"只在这一处算"。
+  const dir = mkdtempSync(join(tmpdir(), 'dshcs-ext-env-'));
+  mkdirSync(join(dir, bridgeClient.BRIDGE_DIRNAME), { recursive: true });
+  writeFileSync(bridgeClient.bridgeFile(dir), JSON.stringify({ url: 'http://127.0.0.1:8123', token: 'b'.repeat(32), pid: 9 }), 'utf8');
+  const saved = process.env.DSHCS_EXTENSIONS_DIR;
+  try {
+    assert.equal(bridgeClient.defaultExtensionsDir(), join(import.meta.dirname, '..', 'assets', 'extensions'),
+      '没有 env 时按 <ext>/lib/ 上溯两级');
+    process.env.DSHCS_EXTENSIONS_DIR = dir;
+    assert.equal(bridgeClient.defaultExtensionsDir(), dir, 'env 必须优先');
+    const viaEnv = bridgeClient.readBridgeConfig();
+    assert.equal(viaEnv === null ? null : viaEnv.url, 'http://127.0.0.1:8123', '不带参数也要能按 env 读到配置');
+    const client = bridgeClient.createClient({ fetchImpl: () => { throw new Error('不该发请求'); } });
+    assert.equal(client.refresh() === null ? null : client.config.url, 'http://127.0.0.1:8123');
+  } finally {
+    if (saved === undefined) delete process.env.DSHCS_EXTENSIONS_DIR;
+    else process.env.DSHCS_EXTENSIONS_DIR = saved;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await test('源码级:扩展侧自己不再算配置目录(计算只留在 bridge-client 一处)', () => {
+  const source = readFileSync(new URL('../assets/extensions/dshcs-editor-bridge/extension.js', import.meta.url), 'utf8');
+  const offenders = source.split('\n')
+    .map((line, i) => [i + 1, line])
+    .filter(([, line]) => /resolve\(__dirname/.test(line) && !/^\s*(\*|\/\/)/.test(line));
+  assert.deepEqual(offenders.map(([n, l]) => `${n}: ${l.trim().slice(0, 80)}`), [],
+    'extension.js 不该自己反推目录(0.3.0–0.3.11 的那次上溯多了一级)');
+  assert.match(source, /createClient\(\)/, 'extension.js 必须走 createClient 的默认解析');
 });
 
 await test('客户端:休眠时 sync 不抛,也不发请求', async () => {

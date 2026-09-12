@@ -74,12 +74,6 @@ function log(message) {
   if (output !== null) output.appendLine(`[${new Date().toISOString()}] ${message}`);
 }
 
-/** 取扩展所在目录(桥配置与它同级:extensionsDir/.dshcs-bridge/)。 */
-function extensionDir() {
-  // __dirname = <extensionsDir>/dshcs-editor-bridge/lib  → 上溯两级即 extensionsDir
-  return path.resolve(__dirname, '..', '..');
-}
-
 /** 是否落在某个工作区文件夹内(不能把 workspaceFolder 之外的路径喂给 DSH)。 */
 function isInWorkspace(fsPath) {
   try {
@@ -462,7 +456,10 @@ function activate(context) {
     vscode.workspace.registerTextDocumentContentProvider('dshcs-old', oldSideProvider),
   );
 
-  client = createClient({ extensionsDir: extensionDir() });
+  // 配置目录由 bridge-client 统一解析(host 注入的 DSHCS_EXTENSIONS_DIR → 自身位置反推)。
+  // **不要在这里自己算**:0.3.0–0.3.11 那段 `resolve(__dirname,'..','..')` 比 <extensionsDir>
+  // 还高一级,任何布局都读不到 bridge.json ⇒ 桥一直休眠(见 docs 第 18 节)。
+  client = createClient();
   if (client.refresh() === null) {
     log('未找到桥配置(休眠)。DSH 插件启用编辑器桥并启动 IDE 后,这里会自动连上。');
   } else {

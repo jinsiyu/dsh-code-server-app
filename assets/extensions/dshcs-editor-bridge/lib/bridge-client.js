@@ -36,15 +36,32 @@ const CONFIG_REREAD_MS = 5000;
 
 const TOKEN_RE = /^[0-9A-Za-z_-]{16,128}$/;
 
-/** 桥配置路径;`extensionsDir` 可由调用方给(测试用),默认从 __dirname 反推。 */
+/** 桥配置所在目录(=`<extensionsDir>/.dshcs-bridge`)。
+ *
+ *  取值顺序(0.3.12 修正 —— 这里以前写错了,是"桥永远休眠"的另一半原因):
+ *   1. **host 注入的 `DSHCS_EXTENSIONS_DIR`**(launcher 的 env 会被扩展宿主继承,与 dshcs-open-file
+ *      用 `DSHCS_OPEN_FILE_SIGNAL` 是同一套做法)。0.3.12 起桥扩展装在**内置**目录(树里),
+ *      与 <extensionsDir> 不再同级,只能靠 host 告诉它;
+ *   2. 调用方显式给的 `extensionsDir`(测试用);
+ *   3. 从本文件反推:`<extensionsDir>/dshcs-editor-bridge/lib/` 上溯两级。
+ *      —— 注意 `extension.js` 曾自己算过一次,算成了三级(比 <extensionsDir> 还高一级),
+ *      即使按老的用户级布局也读不到配置。计算只留在这里一处。
+ */
+function defaultExtensionsDir() {
+  const fromEnv = process.env.DSHCS_EXTENSIONS_DIR;
+  if (typeof fromEnv === 'string' && fromEnv.trim() !== '') return fromEnv;
+  return path.resolve(__dirname, '..', '..');
+}
+
+/** 桥配置路径;`extensionsDir` 可由调用方给(测试用),默认见 `defaultExtensionsDir`。 */
 function bridgeFile(extensionsDir) {
-  const dir = extensionsDir ?? path.resolve(__dirname, '..', '..');
+  const dir = extensionsDir ?? defaultExtensionsDir();
   return path.join(dir, BRIDGE_DIRNAME, BRIDGE_FILENAME);
 }
 
 /** 扩展自己的小状态文件(since 游标),与桥配置同目录。 */
 function stateFile(extensionsDir) {
-  const dir = extensionsDir ?? path.resolve(__dirname, '..', '..');
+  const dir = extensionsDir ?? defaultExtensionsDir();
   return path.join(dir, BRIDGE_DIRNAME, STATE_FILENAME);
 }
 
@@ -236,6 +253,7 @@ module.exports = {
   CONFIG_REREAD_MS,
   REQUEST_TIMEOUT_MS,
   BridgeError,
+  defaultExtensionsDir,
   bridgeFile,
   stateFile,
   readBridgeConfig,

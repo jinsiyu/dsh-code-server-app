@@ -947,23 +947,86 @@ tar-fs → tar-stream → bl),链路本身无法在插件侧消除,只能上游�
 (等价修法:核心模块名直接视为已满足 —— 反正 Node 运行时用的就是内建实现。)
 **只要 ③ 没修,当前桌面构建就装不上这个插件**:③ 与插件版本无关,任何包含 `buffer` 这类依赖的闭包都会命中。
 
-### 16.3 现场恢复(profile 卡在 pending)
+### 16.3 现场恢复(profile 卡在 pending)—— 0.3.11 之后的最终步骤
 
-失败的事务把 `~/.dsh/profiles/desktop` 留在"装了 0.2.14、但有 `desktop-packages-pending`"的半成品状态
+失败的事务把 `~/.dsh/profiles/desktop` 留在"装了旧版、但有 `desktop-packages-pending`"的半成品状态
 (那份 `node_modules` 缺 tslib 与运行树的一堆同平台包)。启动流程是:`backend.start()` →
 `assertProfileRuntime()` 抛 *"package preparation is incomplete"* → `applyRelease()` 走 pending 重建分支
-(删 `node_modules` + `install --frozen-lockfile`)→ `finishPackageOperation()` 里两次校验。所以:
+(删 `node_modules` + `install --frozen-lockfile`)→ `finishPackageOperation()` 里两次校验。
+**0.3.11 之后不需要任何桌面端补丁**,只要把 profile 里的插件换上去:
 
-1. 先把 ③ 的补丁打进 harness 检出并重建桌面端(否则校验一定停在 `buffer`);
-2. 用应用自带 runtime 在 profile 目录把插件升到 0.3.8(§11.3 的做法:store/cache/state 都用
+1. 关掉桌面端,用应用自带 runtime 在 profile 目录升级插件(§11.3 的做法:store/cache/state 都用
    `~/.dsh/desktop/pnpm/**`,否则 `ERR_PNPM_UNEXPECTED_STORE` / `…UNEXPECTED_VIRTUAL_STORE`):
-   `add dsh-code-server-app@0.3.8 --save-exact --ignore-scripts`;
-3. 直接启动应用:pending 分支会重装并校验,通过后自己删掉标记。
-   (想先核对也可以在 profile 目录再跑一次 `install --frozen-lockfile --ignore-scripts`,
-   确认 `node_modules` 里 `tslib`/`node-pty`/`koffi`/`sqlite3` 都在。)
-4. 若仍停在 `buffer` → ③ 没生效;若停在 `requires missing @jinsiyu/dshcs-*` → 第 2 步的 `add` 没写进新锁文件。
+   `add dsh-code-server-app@0.3.11 --save-exact --ignore-scripts`;
+2. 直接启动应用:pending 分支会重装并校验,通过后自己删掉标记;
+3. 想先核对,就在 profile 目录再跑一次 `install --frozen-lockfile --ignore-scripts`,确认
+   `node_modules` 里 `tslib`/`node-pty`/`koffi`/`sqlite3` 都在,且没有 `prebuild-install`/`buffer`。
 
-### 16.4 教训(写给下一次)
+> 历史备注:0.2.14 那一步必须先修 ③(app 侧)才动得起来;0.3.11 之后 ③ 不再被触发,
+> 上游那条 `packageFrom` 修复只作为建议保留(补丁仍在 16.2)。
+
+### 16.4 另一条路:repack 期删掉构建期专用依赖(已落地)
+
+③ 只对"与 Node 内建同名"的依赖发作,而这类依赖在本闭包里**只有一个源头** ——
+`@jinsiyu/dshcs-kerberos-*` 从上游继承的 `prebuild-install`(install 期下载预编译产物的 CLI):
+
+```
+@jinsiyu/dshcs-kerberos-win32-arm64 → prebuild-install → tar-fs → tar-stream → bl → buffer
+                                                                 bl/tar-stream → readable-stream → string_decoder
+```
+
+- repack 早已删掉 `scripts`(`vendor-repacks.mjs` 里 `delete m.scripts`),所以 `prebuild-install`
+  **永远不会被调用**;实测全 profile 只有这一个包声明它;
+- 删掉它之后,profile 里"与 Node 内建同名的依赖"边数 **2 → 0**(审计脚本见 `.spike/desktop-install-0.3.8/`),
+  桌面校验器 ③ 对这个插件不再命中 —— 不改桌面端也能装;
+- 已落地:`scripts/vendor-repacks.mjs` 的 `writeRepack()` 在删 `scripts` 之后,一并从
+  `dependencies`/`optionalDependencies` 删除 `prebuild-install`。生效需要重跑
+  `repack:build -- --target win32-arm64,win32-x64 --pack` → `publish:repacks`,再出新运行树/插件版本
+  (运行树里**内嵌**的那份 kerberos manifest 也会随之变成删过的版本,所以树必须重新生成);
+- 注意:这只解决本插件的闭包。别家插件只要声明了同类依赖仍会撞 ③,上游那条 `packageFrom` 修复
+  依旧值得提(补丁见 16.2)。
+
+### 16.5 发布结果:全部走插件侧(0.3.8 → 0.3.10 → 0.3.11)
+
+| 层 | 插件侧修法 | 版本 |
+|---|---|---|
+| ① tslib peer 没装 | 把 `tslib` 写进 `dependencies` | 0.3.8 |
+| ② 同平台依赖被跳过 | 随 ① 一起消失(触发条件是"peer 未满足",且只在 registry `add` + 应用自带 pnpm 11.7.0 下出现) | 0.3.8 |
+| ③ 核心模块名解析不了 | repack 期删掉 `prebuild-install`(`vendor-repacks.mjs` 的 `writeRepack()`),kerberos 重发 `2.1.1-dshcs.1`,运行树重发 `0.3.10` | 0.3.10 |
+| ④ 宿主 peer 的 semver 预发布陷阱 | 删掉 `peerDependencies."@deepseek-ai/dsh"` | 0.3.11 |
+
+**④ 是什么**:校验器的 peer 检查是 `satisfies(hostVersion, range)`(node-semver,默认不含预发布),
+而 `>=0.1.2-rc.1` **永远匹配不上** `0.1.5-rc.2` —— 规则是"候选项带预发布时,只有当**同一个
+major.minor.patch** 的比较符也带预发布才算命中"(`*` 同样不匹配预发布)。所以任何"≥ 某个预发布"的
+区间都不可能匹配未来任意预发布宿主,每换一次宿主预发布就要改一次区间。本插件运行时**不 import**
+`@deepseek-ai/dsh`/`cordis`(schemastery 走 `lib/index.js` 的动态解析兜底,见 `lib/dsh-resolve.mjs`),
+生态里也有插件完全不声明宿主 peer(`deepseek-harness-wallet` / `dsh-safemode-profile`),直接删掉最稳;
+兼容性意图仍由 `dsh.env.minVersion` 元数据 + 运行期特性探测(0.2.3 的旧版提示卡)承担。
+
+**发布记录**(日志与脚本在 `.spike/release-0.3.10/`):
+
+```
+repack : @jinsiyu/dshcs-kerberos-win32-{arm64,x64}@2.1.1-dshcs.1
+         (deps 只剩 bindings + node-addon-api;prebuild-install 已删)
+         @jinsiyu/dsh-code-server-runtime-win32-{arm64,x64}@0.3.10(kerberos 别名指向新版本)
+publish: [publish] 完成:发布 4 个,跳过 23 个,失败 0 个      ← dist-tag next,latest 未动
+plugin : + dsh-code-server-app@0.3.11                       ← next
+```
+
+**验收(应用原版、未打补丁的校验器)**:全新 desktop 风格沙盒 + 应用自带 pnpm 11.7.0 +
+`add dsh-code-server-app@0.3.11`:
+
+```
+VALIDATE: PASS — the application would accept this profile
+=== every declared edge that leaves the profile ===
+none
+profile facts: +tslib +node-pty +koffi +ssh2 +cpu-features +kerberos
+               -prebuild-install -buffer -string_decoder -bl -tar-stream -readable-stream
+```
+
+即"装进 dsh-desktop"现在**完全不需要上游补丁**;16.2 的 app 补丁只作为上游建议保留。
+
+### 16.6 教训(写给下一次)
 
 - 桌面校验器判的是**声明闭包**,不是运行时真正 import 的子集:peer / optional 都要能追溯,哪怕一行都没用到。
 - 三层原因会串成**一条**报错:先报最先命中的(tslib),修掉才露出后两层 ⇒ "报错信息 = 根因"只对第一层成立,
@@ -973,6 +1036,12 @@ tar-fs → tar-stream → bl),链路本身无法在插件侧消除,只能上游�
 - 验收必须走**真实安装路径**:registry `add` + 应用自己的校验器。tarball 安装与 `--frozen-lockfile`
   都会掩盖 registry `add` 才有的行为(本次两者都不触发 ②)。
 - 复现必须用**应用自带的 runtime 与 workspace 设置**(§11.1):store、reporter、安装方式都会改变结论。
+- 校验器的 peer 检查对**预发布宿主**无解:`satisfies('0.1.5-rc.2', '>=0.1.2-rc.1') === false`。插件要在
+  预发布 DSH 上保持可安装,就别把宿主版本写成"≥ 某个预发布"的 peer —— 要么不声明(靠 `dsh.env.minVersion`
+  元数据 + 运行期探测),要么声明一个**稳定版**宿主包(例如 `@deepseek-ai/cordis: ^4.0.1`)。
+- "只改插件"完全可行:四层里三层在插件侧(peer 升依赖、repack 删构建期依赖、删宿主 peer),
+  只有 ③ 属于上游;而 ③ 被 repack 剥离绕开后,桌面端一行都不用改。发布链本身是幂等的
+  (`publish-repacks.mjs` 默认 `--tag next`,已存在版本自动跳过),可安全重跑。
 
 ## 17. 0.3.9:修掉编辑器桥的两个真缺陷(桥从来没同步过 + 桥扩展装不全)
 
@@ -1006,9 +1075,8 @@ tar-fs → tar-stream → bl),链路本身无法在插件侧消除,只能上游�
 - `assets/extensions/dshcs-editor-bridge/` 里,`extension.js` 通过 `require('./lib/bridge-client.js' | './lib/context-model.js' | './lib/diff-model.js')`
   使用三个纯逻辑模块(刻意不 require('vscode'),便于单测)。
 - 而 `installBundledExtensions` 的 `const files = ['package.json', 'extension.js']` 是**硬编码两项**、不递归 ⇒
-  装到 profile 的副本没有 `lib/`,扩展一加载就 `Cannot find module`,VS Code 只记一条
-  `Marked extension as removed dsh-code-server-app.dshcs-editor-bridge-0.1.0`
-  (实测日志里出现 6 次,界面毫无反应)。
+  装到 profile 的副本没有 `lib/`,扩展一加载就 `Cannot find module`
+  (**归因更正见 17.4**:`Marked extension as removed` 那行日志与"装不全"无关,是 profile 机制打的标记)。
 - **修法(0.3.9)**:改为**递归列出源目录**并同步(内容不同即覆盖,**源里已不存在的文件从目标删除**,
   避免升级后旧 `lib/` 残留),仍然保留"清理放错位置副本"的行为。
 - 回归:`scripts/test-bridge-routes.mjs` 直接调 `installBundledExtensions`(它导出是为了可测 —— 安装发生在 start 里),
@@ -1023,4 +1091,107 @@ tar-fs → tar-stream → bl),链路本身无法在插件侧消除,只能上游�
   lib/ 里也无人调用)—— 本次**没删**,留给出桥定方向的人决定;新代码路径不依赖它。
 - 回归总览:7 个套件 70 项断言全绿(bridge-routes 21 / bridge-extension 17 / claim-types 9 /
   launcher-routes 9 / sidebar-fullscreen 7 / workspace-switch 5 / plugin-apply 2)。
+
+## 18. 0.3.12:第三个缺陷 —— 桥扩展"装对了也不加载"(VS Code 的 `.obsolete` 自锁)
+
+> 0.3.9 修完"路由挂了"和"文件装全了"之后,**桥依然没有状态**:DSH 的 `editor_context` /
+> `editor_diagnostics` 一直答"编辑器里的扩展还没有上报状态"。
+> 注意别被 `/code-server-bridge/health` 骗了 —— 它回的 `bridge:true` 只表示"桥的目标已就绪"
+> (`bridgeMeta !== null`),**不表示扩展在跑**。
+
+### 18.1 现场证据(2026-09-13,本机 web profile 实跑)
+
+- `<extensions-dir>/.obsolete` = `{"dsh-code-server-app.dshcs-editor-bridge-0.1.0":true}`;
+- 每次 IDE 启动的服务端日志都有一行
+  `Marked extension as removed dsh-code-server-app.dshcs-editor-bridge-0.1.0`
+  —— 10 次启动 10 条(`user-data/logs/*/remoteagent.log` 第 8 行),包含 0.3.9 已把 `lib/` 装全之后的那几次;
+- `<extensions-dir>/extensions.json`(= VS Code **default profile 的清单**)里只有语言包与 `dshcs-open-file`,
+  **没有桥扩展**;
+- exthost 日志(`*/exthost*/remoteexthost.log`)里只有 `dsh-code-server-app.dshcs-open-file` 的激活记录,
+  桥扩展**一次都没有**被激活。
+
+### 18.2 机制(读 `out/server-main.js` 定位到 `ExtensionsWatcher#initialize`)
+
+```js
+await this.extensionsScannerService.initializeDefaultProfileExtensions()
+await this.onDidChangeProfiles(this.userDataProfilesService.profiles)
+this.registerListeners()
+await this.deleteExtensionsNotInProfiles()      // ← 就是这里打标记
+```
+
+- `deleteExtensionsNotInProfiles()` 取"**在用户扩展目录里、但不在任何 profile 的 extensions.json 里**"的扩展,
+  交给 `ExtensionManagementService.deleteExtensions` → `ExtensionsScannerService.setExtensionsForRemoval`
+  → 写 `.obsolete` + 打 `Marked extension as removed`;
+- 而 `initializeDefaultProfileExtensions()` 只在 profile 清单**不存在**时才去建
+  (`bailOutWhenFileNotFound:true`);本机清单已存在(语言包 + open-file)⇒ **不会**把新出现的目录补进 profile;
+- 真正会把"运行期出现的扩展目录"补进 profile 的是文件监听那条路
+  (`onDidFilesChange` → `rawAdded` → `Added extensions to default profile from external source`),
+  而插件是在 **IDE 启动之前**把目录拷进去的 —— 监听看不到这次新增。
+
+⇒ 于是:扫描器见到 `.obsolete` 就跳过它 → 下一轮它又不在 profile 里 → 再标一次。**每启动一次循环一次,自锁。**
+
+**结论**:插件直接往 `<extensions-dir>` 拷目录这种"安装"方式,在 VS Code 服务端的 profile 机制下站不住。
+0.3.0–0.3.11 的注释写着"桥必须装用户级,用户才有办法卸载" —— 这个意图改由插件设置
+`editorBridge=false`(不挂桥、不注册工具)承担即可,不需要用户级位置。
+
+### 18.3 修法(0.3.12)
+
+1. 桥扩展改为**内置**安装(`<树>/lib/vscode/extensions/dshcs-editor-bridge`,与 `dshcs-open-file` 同处)——
+   内置目录不参与 profile 机制,一次装好即生效(正面对照:`dshcs-open-file` 一直是内置的,从来没被标 removed);
+2. `installBundledExtensions()` 每次跑完调用 `clearObsoleteMarkers()` 清掉 `.obsolete` 里属于本插件两个扩展的键
+   (别的扩展的键原样保留;清空后直接删文件),把历史遗留的自锁解开;
+3. 既有的"清理放错位置副本"逻辑会自动删掉用户目录里那份 0.3.11 残留。
+
+回归:`scripts/test-bridge-routes.mjs` 的安装用例改为注入假树(`installBundledExtensions(dir, ud, {treeRoot})`),
+断言五类文件落在**内置**目录、用户级旧副本被删、`.obsolete` 里本插件的键被清而别的键保留、只剩本插件键时删文件。
+
+### 18.4 第四个缺陷:扩展自己算错了配置目录(改内置之后必须由 host 告诉它)
+
+修完 18.3 立刻用一棵**独立数据根**的 VS Code server 复验(同树、`--user-data-dir` 换新、8123 端口,
+浏览器真开一次 workbench),exthost 日志里出现了第一条激活记录:
+
+```
+ExtensionService#_doActivateExtension dsh-code-server-app.dshcs-editor-bridge, startup: true, activationEvent: '*'
+```
+
+但 DSH 的 `editor_context` 仍然答"还没有上报状态" —— 因为扩展**读不到配置**:
+
+- `extension.js` 里 `extensionDir()` 是 `path.resolve(__dirname, '..', '..')`;
+  `__dirname` = `<ext>/`(入口是 `./extension.js`)⇒ 得到的是 **`<extensionsDir>` 的上一级**,
+  比正确值多上溯了一级。`bridge-client.js` 自己的默认(`<ext>/lib/` 上溯两级 = `<extensionsDir>`)**是对的**,
+  却被这个显式覆盖参数顶掉了 ⇒ 0.3.0–0.3.11 无论装哪种布局都读不到 `bridge.json`,桥永远是休眠态。
+- 而改成内置安装之后,"与配置文件同级"这个前提本身也不成立了:内置目录在**树里**,
+  与 `<extensionsDir>` 不在同一棵树下。
+
+**修法(0.3.12)**:
+1. host 在 spawn launcher 时注入 `DSHCS_EXTENSIONS_DIR`(env 会被扩展宿主继承 ——
+   与既有的 `DSHCS_OPEN_FILE_SIGNAL` 完全同一套做法,`dshcs-open-file` 一直这么干);
+2. `lib/bridge-client.js` 的 `defaultExtensionsDir()`:**env → 调用方显式值 → 自己位置反推**,
+   并且**只在这一处算**;`extension.js` 不再自己算配置目录(`createClient()` 走默认);
+3. 回归:新增两条断言(env 优先 / 不带参数也能按 env 读到配置)+ 一条源码级断言
+   (`extension.js` 里不允许再出现 `resolve(__dirname…`)。
+
+**端到端复验(同一棵独立 server,注入 env 后)**:
+
+```
+editor_context  → 活动编辑器:无(用户没有聚焦任何文件)
+                  未保存缓冲区:无(磁盘内容 = 用户所见)
+                  问题面板:无错误/警告
+editor_diagnostics → 没有匹配的诊断
+```
+
+这正是"扩展活了、配置读到了、轮询打通了"三件事同时成立的证据(该 server 里确实没开任何文件)。
+
+### 18.5 教训
+
+- **"我以为装上了"要分开验三层**:文件在不在(磁盘)、VS Code 认不认(profile/`.obsolete`)、扩展跑没跑
+  (exthost 日志)。三层里任何一层断了,表现都是同一句话"编辑器还没有上报状态"。
+- 康威式的坑:**服务端日志里的那行 `Marked extension as removed` 就是根因**,当时把它当成"加载失败的副产物",
+  于是 0.3.9 只修了文件拷贝,症状没变 —— **把日志行当成结论前,先找到打印它的那行源码**。
+- 扩展的放置位置是**产品契约**问题,不是实现细节:内置 = 产品自带、用户级 = 用户可装卸;
+  插件替用户"装"一个用户级扩展,就得替 VS Code 维护 profile 清单,而那不在插件的能力范围内。
+- **同一件事只允许一处实现**:配置目录被算了两次(一处对、一处错),错的那处还恰好覆盖了对的那处 ——
+  这类 bug 不看运行结果几乎发现不了。相邻模块之间的"我替你算好了"是最贵的一种好意。
+- 验证要**分层到能被观察**:先看 exthost 有没有激活(是/否),再看工具返回有没有数据(是/否);
+  一次只推进一层,才能立刻定位断在哪。
 
