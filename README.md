@@ -216,7 +216,9 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 扩展 → host     GET  /code-server-bridge/health 无鉴权探活(便于重启后一眼确认)
 扩展 → host     POST /code-server-bridge/event  扩展上报打开/关闭文件等(进 host 日志尾)
 host  → 扩展    <extensionsDir>/.dshcs-bridge/bridge.json  端点 + 令牌(扩展每 5s 重读)
-                (目录由 host 注入的 `DSHCS_EXTENSIONS_DIR` 告知 —— 扩展装在内置目录里,自己推不出来)
+                (同一份内容还会写到**内置扩展旁边** `<树>/lib/vscode/extensions/.dshcs-bridge/` ——
+                 环境变量只在 host spawn IDE 时注入,而被**接管**的 IDE 是上一次启动的进程、拿不到它,
+                 扩展得能只靠自身位置读到配置)
 ```
 
 请求走 `http.request({ socketPath })`(`fetch` 不支持 socket),**不开任何端口**。

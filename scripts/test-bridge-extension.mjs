@@ -331,6 +331,34 @@ await test('端到端:真实命名管道上跑一次 sync(host 监听口 ⇄ 扩
   }
 });
 
+await test('内置安装的扩展:没有 env 也能在"自己旁边"读到配置(0.3.16,adopt 的 IDE 拿不到 env)', async () => {
+  // 环境变量只在 host **spawn** IDE 时注入;而 adopt(接管正在运行的 IDE)的那个进程是上一次启动的,
+  // env 早已定死 ⇒ 扩展必须能只靠自身位置找到配置:`<ext>/lib/` 上溯两级 = <树>/lib/vscode/extensions。
+  // host 侧对应 `bridgeConfigDirs()` 的第二份写入位置。
+  const { copyFileSync } = await import('node:fs');
+  const tree = mkdtempSync(join(tmpdir(), 'dshcs-tree-'));
+  const extDir = join(tree, 'lib', 'vscode', 'extensions', 'dshcs-editor-bridge');
+  mkdirSync(join(extDir, 'lib'), { recursive: true });
+  for (const rel of ['package.json', 'extension.js', 'lib/bridge-client.js', 'lib/context-model.js', 'lib/diff-model.js']) {
+    copyFileSync(new URL(`../assets/extensions/dshcs-editor-bridge/${rel}`, import.meta.url), join(extDir, rel));
+  }
+  const siblingDir = join(tree, 'lib', 'vscode', 'extensions');
+  mkdirSync(join(siblingDir, bridgeClient.BRIDGE_DIRNAME), { recursive: true });
+  writeFileSync(join(siblingDir, bridgeClient.BRIDGE_DIRNAME, 'bridge.json'),
+    JSON.stringify({ version: 2, pipe: PIPE, token: 'd'.repeat(32), pid: 11 }), 'utf8');
+  const saved = process.env.DSHCS_EXTENSIONS_DIR;
+  delete process.env.DSHCS_EXTENSIONS_DIR;
+  try {
+    const copied = require2(join(extDir, 'lib', 'bridge-client.js'));
+    assert.equal(copied.defaultExtensionsDir(), siblingDir, '默认解析必须落在扩展所在的那一层');
+    const config = copied.readBridgeConfig();
+    assert.equal(config === null ? null : config.pipe, PIPE, '没有 env 时也应读到隔壁的配置');
+  } finally {
+    if (saved !== undefined) process.env.DSHCS_EXTENSIONS_DIR = saved;
+    rmSync(tree, { recursive: true, force: true });
+  }
+});
+
 await test('端点形状:Windows 必须是命名管道名,其它平台必须是绝对路径(两边同判定)', () => {
   assert.equal(bridgeClient.isBridgeEndpoint(PIPE), true);
   assert.equal(bridgeClient.isBridgeEndpoint('http://127.0.0.1:8123'), false, 'HTTP URL 不再是合法端点');

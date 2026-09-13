@@ -221,8 +221,10 @@ extension → host   POST /code-server-bridge/ask     push an editor question in
 extension → host   GET  /code-server-bridge/health  unauthenticated liveness probe
 extension → host   POST /code-server-bridge/event   extension reports open/close etc. (host log tail)
 host → extension   <extensionsDir>/.dshcs-bridge/bridge.json   endpoint + token, re-read every 5s
-                   (the directory is announced via the host-injected `DSHCS_EXTENSIONS_DIR` — the extension lives in
-                   the built-in tree now, so it cannot derive it from its own path)
+                   (the same content is also written **next to the built-in extension** in
+                   `<tree>/lib/vscode/extensions/.dshcs-bridge/` — the env var is only injected when the host
+                   spawns the IDE, and an **adopted** IDE is a process from an earlier start that never saw it,
+                   so the extension must be able to find the config from its own location alone)
 ```
 
 Requests use `http.request({ socketPath })` (`fetch` has no socket support) and **no port is ever opened**.

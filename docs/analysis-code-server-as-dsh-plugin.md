@@ -1273,6 +1273,22 @@ editor_diagnostics → 没有匹配的诊断
 **给升级用户的准确步骤**(固定端口 8090 的部署尤其适用):重启 `dsh web` → 若日志出现上面那条告警,
 在 Code Server 标签里**重载一次窗口**(渲染进程重连 ⇒ 扩展宿主进程重启 ⇒ 读到新代码)。
 
+### 19.5 被接管的 IDE 连环境变量都没有(0.3.16)
+
+`DSHCS_EXTENSIONS_DIR` 只在 host **spawn** IDE 时注入。被 adopt 的进程是上一次启动的,
+env 早已定死 —— 于是即便用户按上面重载窗口、拿到新代码,扩展仍然读不到配置(它自己反推只能到
+`<树>/lib/vscode/extensions`,而配置写在 `<extensionsDir>/.dshcs-bridge/`)。桥只能等 IDE 重启。
+
+修法:**host 把同一份 bridge.json 也写到内置扩展旁边**(`<树>/lib/vscode/extensions/.dshcs-bridge/`),
+即 `bridgeConfigDirs()` 的第一/第二份写入位置 —— 第二份正好是 `bridge-client` 的兜底解析路径
+(`<ext>/lib/` 上溯两级)。两份由同一个 `syncBridgeRuntime()`/`clearBridgeRuntime()` 一起写/一起删,
+不存在优先级问题;env 仍然优先(它指向权威位置)。
+
+回归:新增用例把扩展的三个 lib 文件复制到一棵假树的 `<树>/lib/vscode/extensions/dshcs-editor-bridge/`,
+把配置写到它旁边,**清掉 env** 后断言 `defaultExtensionsDir()` 落在这一层且能读到配置。
+
+### 19.6 教训
+
 ### 19.5 教训
 
 - **传输是设计决策,不是"顺手用现成的"**:0.3.0 起桥三次换传输(`/api` → `webServer` 前缀 → 本机 IPC),
