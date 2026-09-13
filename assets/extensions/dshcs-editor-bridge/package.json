@@ -2,7 +2,7 @@
   "name": "dshcs-editor-bridge",
   "displayName": "DSH Editor Bridge",
   "description": "只读地把编辑器状态(未保存缓冲区、诊断、活动选区)提供给 DSH,并让编辑器里的动作驱动 DSH 会话。由 dsh-code-server-app 插件安装,可禁用。",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "dsh-code-server-app",
   "license": "MIT",
   "private": true,
@@ -38,6 +38,17 @@
     ],
     "menus": {
       "editor/context": [
+        {
+          "command": "dsh-code-server.askAboutSelection",
+          "when": "editorHasSelection",
+          "group": "navigation@-2"
+        },
+        {
+          "command": "dsh-code-server.askAboutFile",
+          "group": "navigation@-1"
+        }
+      ],
+      "editor/title": [
         {
           "command": "dsh-code-server.askAboutSelection",
           "when": "editorHasSelection",

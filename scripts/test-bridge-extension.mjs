@@ -372,9 +372,9 @@ await test('端点形状:Windows 必须是命名管道名,其它平台必须是�
   rmSync(dir, { recursive: true, force: true });
 });
 
-// ---------------------------------------------------------------- 编辑器右键菜单
+// ---------------------------------------------------------------- 编辑器菜单与图标
 
-await test('编辑器右键菜单:两个提问命令在**最上面**,并且带图标', () => {
+await test('编辑器菜单:两个提问命令在右键菜单**最上面**,并且挂到标题栏(图标只在那里显示)', () => {
   // 顺序规则(源码实证,VS Code 1.137 `workbench.web.main.internal.js` 的 `_compareMenuItems`):
   //   if (i === 'navigation') return -1;            // 只有 "navigation" 这一个组被特殊化到最前
   //   let c = i.localeCompare(n);                   // 其它组按组名比较 ⇒ 自造组名(如 dsh)被排到后面
@@ -389,13 +389,24 @@ await test('编辑器右键菜单:两个提问命令在**最上面**,并且带�
   for (const [name, command] of [['选中内容', selection], ['当前文件', file]]) {
     assert.match(String(command.icon), /^\$\([a-z0-9-]+\)$/, `${name}命令必须带 codicon 图标(实际 ${command.icon})`);
   }
-  const menu = ext.contributes.menus['editor/context'];
-  assert.deepEqual(menu.map((item) => item.group), ['navigation@-2', 'navigation@-1'],
+  const expected = ['navigation@-2', 'navigation@-1'];
+  const context = ext.contributes.menus['editor/context'];
+  assert.deepEqual(context.map((item) => item.group), expected,
     '两条必须在 navigation 组里用负 order(否则会被 localeCompare 排到 1_modification 之后)');
-  assert.equal(menu.find((item) => item.command === 'dsh-code-server.askAboutSelection').when, 'editorHasSelection',
+  assert.equal(context.find((item) => item.command === 'dsh-code-server.askAboutSelection').when, 'editorHasSelection',
     '「针对选中内容提问」只在有选区时出现');
-  assert.equal(menu.find((item) => item.command === 'dsh-code-server.askAboutFile').when, undefined,
+  assert.equal(context.find((item) => item.command === 'dsh-code-server.askAboutFile').when, undefined,
     '「针对当前文件提问」任何时候都该出现');
+  // **右键菜单不渲染命令图标**(源码:ContextMenu 的 doGetActionViewItem 构造菜单项时不传 icon,
+  // 而菜单项类的构造器是 `icon: i.icon !== void 0 ? i.icon : false`)⇒ 图标要能看见,必须另挂一处
+  // 会渲染图标的容器:菜单栏下拉 / 命令面板 / **编辑器标题栏按钮**(editor/title + navigation 组,
+  // markdown 扩展的「在侧边预览」就是这条路)。
+  const title = ext.contributes.menus['editor/title'];
+  assert.ok(Array.isArray(title) && title.length === 2, '两个命令都要有标题栏按钮(否则图标永远看不见)');
+  assert.deepEqual(title.map((item) => item.group), expected, '标题栏按钮同样用 navigation 组,顺序保持一致');
+  assert.deepEqual(title.map((item) => item.command), context.map((item) => item.command), '两处的命令集合必须一致');
+  assert.equal(title.find((item) => item.command === 'dsh-code-server.askAboutSelection').when, 'editorHasSelection',
+    '标题栏的「选中提问」按钮也只在有选区时出现');
 });
 
 // ---------------------------------------------------------------- 事件抽取
