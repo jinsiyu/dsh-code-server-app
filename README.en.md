@@ -206,9 +206,13 @@ only the editor knows, and lets editor gestures drive the current session.
 - **Ask panel** (extension 0.2.0): the context-menu command no longer pops a one-line input box but opens a panel —
   transcript on top, input at the bottom. The selection is captured **at send time** (so you can change it while the
   panel stays open), and the reply refreshes with the same polling round trip: no need to switch back to the DSH UI.
+  The two commands **remember their intent** (0.3.21): "ask about selection" carries a **line range + selection text**
+  only when something is actually selected, while "ask about file" **never carries line numbers or a selection** — the
+  cursor line is irrelevant to the question and only misleads the agent. With no selection, the selection command also
+  degrades to the plain file.
 - The question enters the DSH session as a **plain user message** (`source: { kind: 'user' }`, host 0.3.19): earlier
   versions used `{kind:'plugin'}`, which DSH renders as a *context update* — it did not look like something the user
-  said. Provenance stays in the first line of the text: `From the editor: <file>:<line>`.
+  said. Provenance stays in the first line of the text: `From the editor: <file>[:<line>]`.
 - **Everything is read-only**: the bridge never writes files, applies edits, or runs commands. The agent's writes
   still go through its own `fs` tools; the bridge only *knows about* them.
 - Status bar shows `$(plug) DSH` while connected (click it for the log in the "DSH Editor Bridge" output channel).

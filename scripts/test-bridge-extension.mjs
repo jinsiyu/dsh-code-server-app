@@ -445,8 +445,24 @@ await test('提问面板:HTML 外壳带 CSP nonce,状态行与上下文描述可
   assert.equal(panel.statusText({ status: 'thinking' }), 'DSH 正在回答…');
   assert.equal(panel.describeContext({ file: 'C:\\repo\\docs\\a.md', lineStart: 12, lineEnd: 14 }), 'a.md:12-14');
   assert.equal(panel.describeContext({ file: 'C:\\repo\\docs\\a.md', lineStart: 7, lineEnd: null }), 'a.md:7');
+  // 文件级提问:不带行号(0.3.21)⇒ 标题行只有文件名
+  assert.equal(panel.describeContext({ file: 'C:\\repo\\docs\\a.md', lineStart: null, lineEnd: null }), 'a.md');
   assert.equal(panel.describeContext(null), '');
   assert.equal(panel.escapeHtml('<img src=x onerror=1>'), '&lt;img src=x onerror=1&gt;');
+});
+
+await test('提问意图:文件级不带行号,选中级只在真有选区时带行号(0.3.21)', () => {
+  // 面板是两个命令共用的,所以意图要记在面板上(askPanel.mode),发送时按它取上下文。
+  // 这条用源码级断言钉住三件事,免得又退回"光标停在哪行就带哪行"的老行为:
+  const source = readFileSync(new URL('../assets/extensions/dshcs-editor-bridge/extension.js', import.meta.url), 'utf8');
+  assert.match(source, /function captureAskContext\(mode\)/, 'captureAskContext 必须接收意图参数');
+  assert.match(source, /const hasSelection = mode === 'selection'/, '只有 selection 意图才认选区');
+  assert.match(source, /lineStart: hasSelection \? selection\.start\.line \+ 1 : null/,
+    '没有选区(或 file 意图)时 lineStart 必须是 null —— 不能拿光标所在行当行号');
+  assert.match(source, /lineEnd: hasSelection \? selection\.end\.line \+ 1 : null/, '同上,lineEnd 也一样');
+  assert.match(source, /await openAskPanelFor\('file'\)/, '「针对当前文件提问」必须以 file 意图打开面板');
+  assert.match(source, /await openAskPanelFor\('selection'\)/, '「针对选中内容提问」以 selection 意图打开');
+  assert.match(source, /captureAskContext\(askPanel\.mode\)/, '发送时按面板记录的意图取上下文');
 });
 
 // ---------------------------------------------------------------- 事件抽取
@@ -495,6 +511,12 @@ await test('投递:提示文本带上 文件:行 与选区代码块', async () =
   assert.match(text, /```typescript/);
   assert.match(text, /const x = 1;/);
   assert.ok(text.endsWith('这里为什么报错?'), '用户原话应当在最后');
+  // 文件级提问(lineStart=null)⇒ 只有文件路径,没有 `:行`(0.3.21)
+  const wholeFile = composeEditorPrompt({
+    text: '整个文件看一下', file: `${WORKSPACE}\\a.ts`, lineStart: null, lineEnd: null, languageId: null, selection: null,
+  });
+  assert.match(wholeFile, /^From the editor: .*a\.ts\n/);
+  assert.doesNotMatch(wholeFile, /a\.ts:\d/, '文件级提问不该出现行号');
 });
 
 await test('投递:没有可用会话时返回 NO_AGENT 而不是抛异常', async () => {

@@ -419,19 +419,25 @@ function updateStatusBar() {
 
 // ---------------------------------------------------------------- 命令 / 提问面板
 
-/** 当前编辑器上下文(发送时现取一次:用户可以在面板开着的同时换选区)。 */
-function captureAskContext() {
+/**
+ * 当前编辑器上下文(发送时现取一次:用户可以在面板开着的同时换选区)。
+ *
+ * @param {'selection'|'file'} mode 提问意图:
+ *   - `selection`(「针对选中内容提问」):有选区就带上**行区间 + 选区正文**;
+ *     没有选区时退化成**纯文件**(不带行号 —— 光标停在哪一行跟问题无关,行号只会误导 agent);
+ *   - `file`(「针对当前文件提问」):**永远不带行号、不带选区**,只给文件路径。
+ */
+function captureAskContext(mode) {
   const editor = vscode.window.activeTextEditor;
   if (editor === undefined || editor === null) return null;
   const doc = editor.document;
   const selection = editor.selection;
-  const hasSelection = selection !== undefined && selection !== null && selection.isEmpty === false;
+  const hasSelection = mode === 'selection'
+    && selection !== undefined && selection !== null && selection.isEmpty === false;
   const selectedText = hasSelection ? doc.getText(selection) : '';
   return {
     file: doc.uri.scheme === 'file' ? doc.uri.fsPath : null,
-    lineStart: hasSelection
-      ? selection.start.line + 1
-      : (doc.isDirty ? null : selection.active.line + 1),
+    lineStart: hasSelection ? selection.start.line + 1 : null,
     lineEnd: hasSelection ? selection.end.line + 1 : null,
     selection: selectedText === '' ? null : selectedText,
     languageId: doc.languageId ?? null,
@@ -465,7 +471,8 @@ function failAskPanel(message) {
 /** 面板收到一条提问:投递到 DSH,并把这一轮放进状态里等回答。 */
 async function sendAskFromPanel(text) {
   if (askPanel === null || client === null) return;
-  const context = captureAskContext() ?? askPanel.state.context;
+  // 用面板自己的意图(selection / file)取上下文:文件级提问永远不带行号。
+  const context = captureAskContext(askPanel.mode) ?? askPanel.state.context;
   const turn = pushQuestion(askPanel.state, text, context);
   refreshAskPanel();
   try {
@@ -501,9 +508,12 @@ async function sendAskFromPanel(text) {
   refreshAskPanel();
 }
 
-/** 打开(或聚焦)「问 DSH」面板。上下文只用来显示;真正的上下文在发送时现取。 */
-function openAskPanel(context) {
-  const contextInfo = context ?? captureAskContext();
+/**
+ * 打开(或聚焦)「问 DSH」面板。
+ * @param {'selection'|'file'} mode 提问意图(决定发送时带不带行号/选区),见 captureAskContext。
+ */
+function openAskPanel(mode = 'selection') {
+  const contextInfo = captureAskContext(mode);
   if (askPanel === null) {
     const panel = vscode.window.createWebviewPanel(
       'dshAsk',
@@ -511,7 +521,7 @@ function openAskPanel(context) {
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
       { enableScripts: true, retainContextWhenHidden: true },
     );
-    askPanel = { panel, state: createPanelState() };
+    askPanel = { panel, state: createPanelState(), mode };
     panel.webview.html = renderPanelHtml({
       cspSource: panel.webview.cspSource,
       nonce: crypto.randomBytes(16).toString('base64url'),
@@ -532,22 +542,32 @@ function openAskPanel(context) {
     });
   }
   askPanel.state.context = contextInfo;
+  askPanel.mode = mode;
   askPanel.panel.reveal(vscode.ViewColumn.Beside, false);
   refreshAskPanel();
 }
 
 /** 选中内容 → DSH(编辑器→DSH 的主入口):打开面板并带上当前上下文。 */
 async function askAboutSelection() {
+  await openAskPanelFor('selection');
+}
+
+/** 整个文件 → DSH(不带选中、**不带行号**)。 */
+async function askAboutFile() {
+  await openAskPanelFor('file');
+}
+
+/** 两个命令的公共前置检查(桥可用 + 有活动编辑器)。 */
+async function openAskPanelFor(mode) {
   if (client === null || client.isDormant()) {
     vscode.window.showInformationMessage('编辑器桥未启用:请在 DSH 里打开 Code Server 标签后重试。');
     return;
   }
-  openAskPanel(captureAskContext());
-}
-
-/** 整个文件 → DSH(不需要选中)。 */
-async function askAboutFile() {
-  await askAboutSelection();
+  if (captureAskContext(mode) === null) {
+    vscode.window.showInformationMessage('没有活动的编辑器:请先打开一个文件。');
+    return;
+  }
+  openAskPanel(mode);
 }
 
 function showBridgeLog() {
