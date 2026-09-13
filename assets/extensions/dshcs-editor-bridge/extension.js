@@ -34,6 +34,7 @@ const { createDiffCache, describeChange } = require('./lib/diff-model.js');
 const {
   applyAnswers,
   createPanelState,
+  currentTurn,
   describeContext,
   panelPayload,
   pushQuestion,
@@ -379,8 +380,17 @@ async function pollOnce() {
   if ((result.events ?? []).length > 0) client.persist();
   // 回答同步:host 把 agent 的正文放在 answers 里(见 lib/bridge-answer.mjs),
   // 面板每趟轮询刷新一次 —— 不需要第二个定时器,也不需要流式协议。
-  if (askPanel !== null && result.answers !== undefined) {
-    if (applyAnswers(askPanel.state, result.answers, askPanel.state.sessionId)) refreshAskPanel();
+  if (askPanel !== null) {
+    if (result.answers === undefined) {
+      // 旧版 host(≤0.3.18)没有这个字段:此时面板会永远停在"正在回答…",必须说出原因。
+      askPanel.stalePolls = (askPanel.stalePolls ?? 0) + 1;
+      if (askPanel.stalePolls === 15 && askPanel.state.sessionId !== null && askPanel.state.status === 'thinking') {
+        failAskPanel('宿主没有回复同步能力(插件版本过旧?):请重启 dsh web 让 host 侧升级到 0.3.19 以上');
+      }
+    } else {
+      askPanel.stalePolls = 0;
+      if (applyAnswers(askPanel.state, result.answers, askPanel.state.sessionId)) refreshAskPanel();
+    }
   }
 }
 
@@ -439,6 +449,17 @@ function refreshAskPanel() {
     ? (askPanel.state.error ?? '出错了')
     : statusText(askPanel.state);
   void askPanel.panel.webview.postMessage(payload);
+}
+
+/** 面板进入错误态:状态行 + 当前轮都标上原因(绝不静默)。 */
+function failAskPanel(message) {
+  if (askPanel === null) return;
+  askPanel.state.status = 'error';
+  askPanel.state.error = message;
+  const turn = currentTurn(askPanel.state);
+  if (turn !== null) turn.error = message;
+  log(message);
+  refreshAskPanel();
 }
 
 /** 面板收到一条提问:投递到 DSH,并把这一轮放进状态里等回答。 */
