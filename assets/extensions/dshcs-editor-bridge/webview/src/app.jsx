@@ -133,10 +133,18 @@ function App() {
     if (node !== null && stickRef.current) node.scrollTop = node.scrollHeight;
   }, [view.entries]);
 
-  // 宿主状态回来了就解除"发送中"的按钮锁。
+  // 任何一趟宿主状态回来都解除"发送中"的按钮锁(0.3.44)。
+  // 老写法盯着 `view.status` 变化 —— 而对话框形态下宿主回的 status **一直是 'idle'**,
+  // 于是那个 effect 永远不再触发:第一次发送之后按钮就永久变灰(实测"只能发送一次,没法追问")。
   useEffect(() => {
-    if (view.status !== 'sending') setSending(false);
-  }, [view.status]);
+    setSending(false);
+  }, [view]);
+  // 兜底:万一某一趟状态没回来(宿主卡住/请求失败),最多 15 秒也把锁解开。
+  useEffect(() => {
+    if (sending !== true) return undefined;
+    const timer = window.setTimeout(() => setSending(false), 15000);
+    return () => window.clearTimeout(timer);
+  }, [sending]);
 
   const onScroll = () => {
     const node = logRef.current;
