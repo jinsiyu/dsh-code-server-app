@@ -198,11 +198,17 @@ only the editor knows, and lets editor gestures drive the current session.
 | Direction | Capability | Mechanism |
 |---|---|---|
 | editor → agent | **unsaved buffers** (disk ≠ what the user sees), active file and selection, **language-server diagnostics** with `file:line`, source and code | agent tools `editor_context` / `editor_diagnostics`; plus a notice attached before writing a dirty file |
-| editor → DSH | select code → context menu **"DSH: ask about selection"** → the message lands in the current session (with `file:line` and a fenced block) | extension command `dsh-code-server.askAboutSelection` |
+| editor → DSH | select code → context menu **"DSH: ask about selection"** → an **ask panel** opens (carrying `file:line` and the selection); the question enters the current session as **user input**, and the reply is mirrored back into the panel | extension command `dsh-code-server.askAboutSelection` (one of the **top two** editor context-menu items) + a webview panel + `POST /ask` + the `answers` field of `/sync` |
 | agent → editor | the agent changed a file → a **native diff** opens; if that buffer has unsaved changes you get a warning and **no overwrite** | host watches `tools/result`, the extension polls and opens the diff |
 
 - The tools are only registered while the bridge is live (so the model never sees an unusable tool), and the
   system-prompt section renders only then too.
+- **Ask panel** (extension 0.2.0): the context-menu command no longer pops a one-line input box but opens a panel —
+  transcript on top, input at the bottom. The selection is captured **at send time** (so you can change it while the
+  panel stays open), and the reply refreshes with the same polling round trip: no need to switch back to the DSH UI.
+- The question enters the DSH session as a **plain user message** (`source: { kind: 'user' }`, host 0.3.19): earlier
+  versions used `{kind:'plugin'}`, which DSH renders as a *context update* — it did not look like something the user
+  said. Provenance stays in the first line of the text: `From the editor: <file>:<line>`.
 - **Everything is read-only**: the bridge never writes files, applies edits, or runs commands. The agent's writes
   still go through its own `fs` tools; the bridge only *knows about* them.
 - Status bar shows `$(plug) DSH` while connected (click it for the log in the "DSH Editor Bridge" output channel).

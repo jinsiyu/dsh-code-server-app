@@ -374,39 +374,79 @@ await test('端点形状:Windows 必须是命名管道名,其它平台必须是�
 
 // ---------------------------------------------------------------- 编辑器菜单与图标
 
-await test('编辑器菜单:两个提问命令在右键菜单**最上面**,并且挂到标题栏(图标只在那里显示)', () => {
+await test('编辑器菜单:两个提问命令在右键菜单**最上面**,且不再声明图标/标题栏按钮', () => {
   // 顺序规则(源码实证,VS Code 1.137 `workbench.web.main.internal.js` 的 `_compareMenuItems`):
   //   if (i === 'navigation') return -1;            // 只有 "navigation" 这一个组被特殊化到最前
   //   let c = i.localeCompare(n);                   // 其它组按组名比较 ⇒ 自造组名(如 dsh)被排到后面
   //   let r = e.order || 0, a = t.order || 0;       // 组内按 @order 升序
   // 菜单解析用 `Number(group.substr(i+1)) || void 0` ⇒ **负 order 合法**,于是 navigation@-2/-1
   // 稳定排在 VS Code 自己的 navigation@1(转到定义…)之前 = 右键菜单的第一、第二项。
+  //
+  // 图标(0.3.17/0.3.18 的尝试,0.3.19 撤销):VS Code 的右键菜单**不渲染命令图标**
+  // (ContextMenu 的 doGetActionViewItem 构造菜单项时不传 icon ⇒ 恒为 false),
+  // 只有编辑器标题栏这条替代路径能显示图标,而用户明确不要那条路 —— 于是命令不再声明 icon,
+  // 也不注册 editor/title。这条断言就是防回归:别再有人往 menus/commands 里加 icon 期待它显示。
   const ext = require2(`${EXT}/package.json`);
   const commands = new Map(ext.contributes.commands.map((command) => [command.command, command]));
   const selection = commands.get('dsh-code-server.askAboutSelection');
   const file = commands.get('dsh-code-server.askAboutFile');
   assert.ok(selection !== undefined && file !== undefined, '两个提问命令必须都注册');
   for (const [name, command] of [['选中内容', selection], ['当前文件', file]]) {
-    assert.match(String(command.icon), /^\$\([a-z0-9-]+\)$/, `${name}命令必须带 codicon 图标(实际 ${command.icon})`);
+    assert.equal(command.icon, undefined, `${name}命令不该再声明图标(右键菜单不渲染它)`);
   }
-  const expected = ['navigation@-2', 'navigation@-1'];
   const context = ext.contributes.menus['editor/context'];
-  assert.deepEqual(context.map((item) => item.group), expected,
+  assert.deepEqual(context.map((item) => item.group), ['navigation@-2', 'navigation@-1'],
     '两条必须在 navigation 组里用负 order(否则会被 localeCompare 排到 1_modification 之后)');
   assert.equal(context.find((item) => item.command === 'dsh-code-server.askAboutSelection').when, 'editorHasSelection',
     '「针对选中内容提问」只在有选区时出现');
   assert.equal(context.find((item) => item.command === 'dsh-code-server.askAboutFile').when, undefined,
     '「针对当前文件提问」任何时候都该出现');
-  // **右键菜单不渲染命令图标**(源码:ContextMenu 的 doGetActionViewItem 构造菜单项时不传 icon,
-  // 而菜单项类的构造器是 `icon: i.icon !== void 0 ? i.icon : false`)⇒ 图标要能看见,必须另挂一处
-  // 会渲染图标的容器:菜单栏下拉 / 命令面板 / **编辑器标题栏按钮**(editor/title + navigation 组,
-  // markdown 扩展的「在侧边预览」就是这条路)。
-  const title = ext.contributes.menus['editor/title'];
-  assert.ok(Array.isArray(title) && title.length === 2, '两个命令都要有标题栏按钮(否则图标永远看不见)');
-  assert.deepEqual(title.map((item) => item.group), expected, '标题栏按钮同样用 navigation 组,顺序保持一致');
-  assert.deepEqual(title.map((item) => item.command), context.map((item) => item.command), '两处的命令集合必须一致');
-  assert.equal(title.find((item) => item.command === 'dsh-code-server.askAboutSelection').when, 'editorHasSelection',
-    '标题栏的「选中提问」按钮也只在有选区时出现');
+  assert.equal(ext.contributes.menus['editor/title'], undefined, '不再挂标题栏按钮(它只为图标服务)');
+});
+
+// ---------------------------------------------------------------- 提问面板
+
+await test('提问面板:提问 → 回答同步(只有本会话的回答会落到当前轮)', () => {
+  const panel = require2(`${EXT}/lib/ask-panel.js`);
+  const state = panel.createPanelState();
+  assert.equal(panel.applyAnswers(state, [], null), false, '还没提问时不该有变化');
+  panel.pushQuestion(state, '这段逻辑有问题吗?', { file: 'C:\\repo\\a.ts', lineStart: 3, lineEnd: 5 });
+  assert.equal(state.status, 'sending');
+  assert.equal(state.turns.length, 1);
+  // 会话还没登记(ask 的响应还没回来)→ 只认 sessionId 匹配的条目
+  assert.equal(panel.applyAnswers(state, [{ sessionId: 'session-x', text: '半句', done: false }], null), false,
+    'sessionId 未知时不该把别人的回答塞进来');
+  state.sessionId = 'session-x';
+  assert.equal(panel.applyAnswers(state, [{ sessionId: 'session-x', text: '半句', done: false }], state.sessionId), true);
+  assert.equal(state.turns[0].answer, '半句');
+  assert.equal(state.status, 'thinking');
+  assert.equal(panel.applyAnswers(state, [{ sessionId: 'session-x', text: '半句', done: false }], 'session-x'), false,
+    '内容与状态都没变 ⇒ 不该触发刷新');
+  assert.equal(panel.applyAnswers(state, [{ sessionId: 'other', text: '别的会话', done: true }], 'session-x'), false,
+    '别的会话的回答必须忽略');
+  assert.equal(panel.applyAnswers(state, [{ sessionId: 'session-x', text: '完整回答。', done: true }], 'session-x'), true);
+  assert.equal(state.turns[0].answer, '完整回答。');
+  assert.equal(state.turns[0].done, true);
+  assert.equal(state.status, 'idle');
+  // 超长回答截断(避免 webview 卡死)
+  const huge = 'x'.repeat(panel.MAX_MESSAGE_CHARS + 500);
+  panel.applyAnswers(state, [{ sessionId: 'session-x', text: huge, done: true }], 'session-x');
+  assert.equal(state.turns[0].answer.length, panel.MAX_MESSAGE_CHARS);
+});
+
+await test('提问面板:HTML 外壳带 CSP nonce,状态行与上下文描述可读', () => {
+  const panel = require2(`${EXT}/lib/ask-panel.js`);
+  const html = panel.renderPanelHtml({ cspSource: 'vscode-webview://x', nonce: 'NONCE123' });
+  assert.match(html, /script-src 'nonce-NONCE123'/, '内联脚本必须带 nonce(否则 CSP 直接拦掉)');
+  assert.match(html, /id="box"/, '要有提问输入框');
+  assert.match(html, /id="send"/, '要有发送按钮');
+  assert.match(html, /acquireVsCodeApi/, '要用 webview API 与扩展通信');
+  assert.match(html, /postMessage\(\{ type: 'ask'/, '发送时要把提问交给扩展');
+  assert.equal(panel.statusText({ status: 'thinking' }), 'DSH 正在回答…');
+  assert.equal(panel.describeContext({ file: 'C:\\repo\\docs\\a.md', lineStart: 12, lineEnd: 14 }), 'a.md:12-14');
+  assert.equal(panel.describeContext({ file: 'C:\\repo\\docs\\a.md', lineStart: 7, lineEnd: null }), 'a.md:7');
+  assert.equal(panel.describeContext(null), '');
+  assert.equal(panel.escapeHtml('<img src=x onerror=1>'), '&lt;img src=x onerror=1&gt;');
 });
 
 // ---------------------------------------------------------------- 事件抽取
@@ -494,9 +534,11 @@ await test('投递:选中的 agent 收到 followup 消息', async () => {
   assert.equal(result.ok, true, `应投递成功(实际 ${JSON.stringify(result)})`);
   assert.equal(sent.length, 1, 'followup 应恰好调用一次');
   assert.equal(sent[0].role, 'user');
-  assert.equal(sent[0].source.kind, 'plugin');
-  assert.equal(sent[0].source.plugin, 'dsh-code-server-app:editor-bridge');
+  // 0.3.19:`source.kind` 必须是 'user' —— 用 'plugin' 时 DSH 会把它渲染成**上下文更新**
+  // (MessageSourceMap.plugin = plugin + ContextFormed),用户在界面里看到的不是"自己说的话"。
+  assert.equal(sent[0].source.kind, 'user', `必须作为用户输入进对话(实际 ${JSON.stringify(sent[0].source)})`);
   assert.match(sent[0].content[0].text, /看看这段/);
+  assert.match(sent[0].content[0].text, /^From the editor: /, '来源信息靠正文第一行保留');
 });
 
 console.log(`SUMMARY pass=${pass} fail=${fail}${skip > 0 ? ` skip=${skip}` : ''}`);

@@ -277,7 +277,10 @@ function createClient(options) {
         for (const event of events) {
           if (Number.isSafeInteger(event.seq) && event.seq > since) since = event.seq;
         }
-        return { ok: true, events };
+        // answers = 「问过 DSH 的会话」的最新回复(0.3.19)。提问框靠它就地显示回答,
+        // 所以必须原样透传 —— 它走独立字段而不是事件环形缓冲(见 host 侧 lib/bridge-answer.mjs)。
+        const answers = body !== null && Array.isArray(body.answers) ? body.answers : [];
+        return { ok: true, events, answers };
       } catch (error) {
         return { ok: false, error: error.message, status: error.status, code: error.code };
       }

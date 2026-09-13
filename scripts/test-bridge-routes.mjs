@@ -355,6 +355,61 @@ await test('adopt 判据:内容一致时 updated 为空,且能算出"扩展文�
   rmSync(dir, { recursive: true, force: true });
 });
 
+await test('回复同步:只同步"问过 DSH 的会话",正文累积、换轮重置、idle 定稿', async () => {
+  // 编辑器里的提问框要能就地看到回答 ⇒ host 把 agent 的正文随 /sync 的 answers 回去
+  // (见 lib/bridge-answer.mjs)。这里用一个假 ctx 直接驱动事件,验五件事:
+  //   ① 没问过的会话不产生数据;② text-delta 累积、reasoning-delta 忽略;
+  //   ③ 换 turn 重新累积;④ idle 定稿;⑤ 会话数有上限且丢最旧。
+  const answer = await import('../lib/bridge-answer.mjs');
+  const handlers = new Map();
+  const ctx = { on: (event, handler) => { handlers.set(event, handler); return () => handlers.delete(event); } };
+  const board = answer.createAnswerBoard({ maxSessions: 2 });
+  const dispose = answer.registerBridgeAnswers(ctx, { board, log: (m) => console.warn('  ', m) });
+  const emit = (event, payload) => { const handler = handlers.get(event); if (handler !== undefined) handler(payload); };
+  const agent = (id) => ({ id, session: { id } });
+
+  // ① 没登记过的会话:事件照样来,但不进 board
+  emit('agent/assistant-stream', { agent: agent('session-a'), frame: { type: 'chunk', turn: 1, chunk: { type: 'text-delta', text: '偷看' } } });
+  assert.equal(board.size(), 0, '没被问过的会话不该进 board');
+
+  assert.equal(board.track('session-a'), true, 'ask 成功后才登记');
+  emit('agent/assistant-stream', { agent: agent('session-a'), frame: { type: 'chunk', turn: 3, chunk: { type: 'text-delta', text: '这是' } } });
+  emit('agent/assistant-stream', { agent: agent('session-a'), frame: { type: 'chunk', turn: 3, chunk: { type: 'reasoning-delta', text: '(内心戏)' } } });
+  emit('agent/assistant-stream', { agent: agent('session-a'), frame: { type: 'chunk', turn: 3, chunk: { type: 'text-delta', text: '回答。' } } });
+  assert.equal(board.get('session-a').text, '这是回答。', 'reasoning 不该混进正文');
+  assert.equal(board.get('session-a').done, false, '还在跑 ⇒ done:false');
+
+  // ③ 换轮:重新累积(新问题 → 新回答)
+  emit('agent/assistant-stream', { agent: agent('session-a'), frame: { type: 'chunk', turn: 4, chunk: { type: 'text-delta', text: '第二轮' } } });
+  assert.equal(board.get('session-a').text, '第二轮');
+
+  // ④ idle 定稿
+  emit('agent/status', { agent: agent('session-a'), status: 'idle' });
+  assert.equal(board.get('session-a').done, true);
+  emit('agent/status', { agent: agent('session-a'), status: 'running' });
+  assert.equal(board.get('session-a').done, true, 'running 不该把已定稿的标记冲掉');
+
+  // ⑤ 会话上限:登记第 3 个会话时丢最旧的
+  board.track('session-b');
+  board.track('session-c');
+  assert.equal(board.size(), 2);
+  assert.equal(board.get('session-a'), null, '超出上限时丢最旧的');
+  assert.deepEqual(board.snapshot().map((item) => item.sessionId), ['session-b', 'session-c']);
+
+  dispose();
+  assert.equal(handlers.size, 0, 'disposer 必须把两个订阅都摘掉');
+});
+
+await test('源码级:/sync 返回 answers、ask 成功登记会话、提问以用户输入投递', () => {
+  const source = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
+  assert.match(source, /answers: bridgeAnswers\.snapshot\(\)/, '/sync 必须把 answers 带回去(提问框靠它显示回答)');
+  assert.match(source, /bridgeAnswers\.track\(result\.sessionId\)/, 'ask 成功后必须登记会话,否则回复永远不同步');
+  assert.match(source, /registerBridgeAnswers\(ctx,/, '事件订阅必须在 apply 里注册');
+  const session = readFileSync(new URL('../lib/bridge-session.mjs', import.meta.url), 'utf8');
+  assert.match(session, /source: \{ kind: 'user' \}/,
+    '提问必须以用户输入进对话(plugin source 会被 DSH 渲染成"上下文更新")');
+});
+
 await test('源码级:桥不再挂 /api,扩展侧路径由 BRIDGE_BASE 拼出', async () => {
   for (const rel of ['../lib/index.js', '../lib/bridge.mjs']) {
     const source = readFileSync(new URL(rel, import.meta.url), 'utf8');

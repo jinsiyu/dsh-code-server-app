@@ -1289,11 +1289,60 @@ env 早已定死 —— 于是即便用户按上面重载窗口、拿到新代�
 
 ### 19.6 教训
 
-### 19.5 教训
-
 - **传输是设计决策,不是"顺手用现成的"**:0.3.0 起桥三次换传输(`/api` → `webServer` 前缀 → 本机 IPC),
   每次都是因为"现成的那条路"只在某一个部署形态里成立。桥的两端是**同一台机器上的两个进程**,
   这个事实本身就是最强的约束 —— 直接用它,不必绕道网络栈。
 - **"支持某平台"要落到具体事实**(有没有 HTTP 面、谁来调、进程边界在哪),不能停在"应该能通"。
   这次的三条事实各自十行源码,却决定了整套传输的取舍。
+
+## 20. 0.3.19:「问 DSH」面板 —— 回答同步回编辑器 + 提问以用户输入进对话
+
+用户要求三件事:①不再折腾图标;②优化提问框、提问后把回答同步显示在里面;
+③在 DSH 界面里提问要**以用户输入**进对话,而不是"上下文更新"。
+
+### 20.1 图标尝试(0.3.17/0.3.18)撤销
+
+源码定论(VS Code 1.137):**右键菜单不渲染命令图标** ——
+`ContextMenu.doGetActionViewItem` 构造普通菜单项时只传 `{enableMnemonics,useEventAsContext,keybinding}`,
+而菜单项类构造器是 `icon: i.icon !== void 0 ? i.icon : !1` ⇒ 恒为 false。
+能显示命令图标的容器只有菜单栏下拉/命令面板/工具栏(`MenuEntryActionViewItem.render` 会加
+`codicon codicon-<name>` 类)。0.3.18 试过挂 `editor/title` 按钮(实测标题栏确实出现 `codicon-comment`),
+但用户不要那条路 ⇒ 0.3.19 把 `icon` 与 `editor/title` 全部撤掉,**只保留右键菜单最上面两条**:
+group `navigation@-2/-1` —— `navigation` 是 `_compareMenuItems` 里唯一被特殊化到最前的组
+(其余按 `localeCompare` 比组名),而 order 用 `Number(...)` 解析 ⇒ **负 order 合法**。
+回归断言改成"两个命令都**不该**再声明图标、也不该注册 editor/title"。
+
+### 20.2 提问以「用户输入」进对话(一行改动的语义差别)
+
+`lib/bridge-session.mjs` 原来构造
+`createUserMessage({ content, source: { kind: 'plugin', plugin, form: 'notice', summary: '来自编辑器' } })`,
+而 `MessageSourceMap.plugin = plugin + ContextFormed` ⇒ DSH 把它当**上下文更新**渲染,
+用户在界面里看到的不是"自己说的话"。改成 `source: { kind: 'user' }`;
+来源信息靠正文首行 `From the editor: <file>:<行>` 保留,不依赖消息元数据。
+回归:投递用例断言 `sent[0].source.kind === 'user'` 且首行仍是 `From the editor: `。
+
+### 20.3 回答同步回编辑器(同一趟轮询的 `answers` 字段)
+
+- **host**(新增 `lib/bridge-answer.mjs`):订阅 `agent/assistant-stream`(只取 `text-delta`,忽略
+  `reasoning-delta`)累积正文、`agent/status` → `idle` 定稿;`turn` 变了就重新累积(新问题 → 新回答)。
+  只同步**被编辑器问过**的会话(ask 成功时 `board.track(sessionId)`),否则 DSH 界面里聊什么都往桥里灌。
+- **传输**:放在 `/sync` 响应的**独立字段** `answers`(不是事件环形缓冲)—— 每个会话只给
+  "到目前为止的**完整正文**",于是丢中间态无所谓、也不会把 64 条的 agent-edit 事件挤掉;
+  面板永远只渲染最新一条,不做增量合并。
+- **扩展**(新增 `lib/ask-panel.js`,纯逻辑 + HTML,可单测):右键命令打开/聚焦 webview 面板 ——
+  上面问答记录、下面输入框(Enter 发送、Shift+Enter 换行),`postMessage({type:'ask'})` 交给扩展投递;
+  扩展在轮询回调里 `applyAnswers(state, result.answers, state.sessionId)` →
+  `postMessage({type:'state'})` 增量刷新(不重建外壳,输入框与滚动位置都不受影响);
+  发送时**现取当前选区**,所以面板开着也能换上下文再问。
+
+### 20.4 验证
+
+- **面板前端冒烟(真浏览器)**:`.spike/make-panel-preview.mjs` 用生产代码生成 HTML(stub 掉
+  `acquireVsCodeApi`)并由本地静态服务打开 ⇒ 上下文行、状态行、问答渲染、`ready`/`ask` 消息、
+  发送后清空输入框全部实测通过。顺带发现:CSP `script-src 'nonce-…'` 下**没有 nonce 的注入脚本会被拦掉**
+  (预览脚本自己踩了),于是给面板脚本加了 `error`/`unhandledrejection` 兜底 —— 面板静默空白是最难查的失败。
+- **回归**:bridge-extension 新增两条(面板状态机:只有本会话的回答落到当前轮、超长截断、
+  CSP nonce、上下文描述、HTML 转义);bridge-routes 新增两条(回复同步:未登记会话不入 board、
+  text-delta 累积、reasoning 忽略、换 turn 重置、idle 定稿、会话上限丢最旧、disposer 摘订阅;
+  以及 `/sync` 带 answers、ask 登记会话、`source.kind='user'` 三个接线点的源码级断言)。
 

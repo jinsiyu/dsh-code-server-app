@@ -1,15 +1,20 @@
 // dshcs-editor-bridge —— 编辑器桥的扩展侧(由 dsh-code-server-app 插件安装)
 //
 // 职责边界(与 host 侧 lib/bridge.mjs / bridge-tools.mjs 的分工):
-//   - **本扩展**是唯一知道"用户此刻看到什么"的一方,所以 /context 与 /diagnostics 的数据在这里采集;
-//   - **host** 负责鉴权、给 agent 提供工具、观察 agent 的写操作;
-//   - 方向 host → 扩展 的事件走 **轮询**(host 推环形缓冲,这里 GET /events?since=N)。
+//   - **本扩展**是唯一知道"用户此刻看到什么"的一方,所以编辑器状态(活动文件/选区/脏缓冲区/诊断)
+//     在这里采集;
+//   - **host** 负责鉴权、给 agent 提供工具、观察 agent 的写操作,并把 agent 的回复同步回来;
+//   - 双向流量都走 **一趟轮询**(`POST /sync`:上报状态 + 取回事件与回复)。没有第二个定时器,
+//     也没有 SSE/WS —— 扩展宿主不监听端口,host 反向请求不到它。
 //
 // 三条硬规则:
 //   1. **只读**:本扩展只读编辑器状态,不写文件、不执行命令、不应用编辑(host 侧命名空间同理只读)。
 //   2. **休眠而不是报错**:读不到 bridge.json(IDE 是用户自己起的旧实例 / 插件关了桥 / 已停止)
 //      就什么都不做。状态栏不显示任何东西,更不弹通知。
 //   3. **绝不覆盖未保存改动**:agent 改了文件而该文档是脏的就只告警 + 给 diff,由用户决定。
+//
+// 「问 DSH」面板(0.2.0):右键命令打开一个 webview,提问走 `/ask`(host 侧以**用户输入**进对话),
+// 回答随 `/sync` 的 `answers` 字段回到面板(纯逻辑在 lib/ask-panel.js,可单测)。
 //
 // 只依赖 `vscode` 与 Node 内置模块;纯逻辑在 lib/ 下且不 require('vscode'),便于单测。
 
@@ -26,6 +31,15 @@ const {
 } = require('./lib/bridge-client.js');
 const { createProjector } = require('./lib/context-model.js');
 const { createDiffCache, describeChange } = require('./lib/diff-model.js');
+const {
+  applyAnswers,
+  createPanelState,
+  describeContext,
+  panelPayload,
+  pushQuestion,
+  renderPanelHtml,
+  statusText,
+} = require('./lib/ask-panel.js');
 
 /** 状态栏项(仅在桥连通时显示)。 */
 let statusBar = null;
@@ -37,6 +51,8 @@ let client = null;
 let pollTimer = null;
 /** 上次成功轮询的时间(状态栏 tooltip 用)。 */
 let lastPollAt = 0;
+/** 「问 DSH」面板:null = 没开。`{panel, state}`(状态模型见 lib/ask-panel.js)。 */
+let askPanel = null;
 /** 是否已经确认过 host 端点可达(避免把"IDE 刚起、扩展先加载"误判为断线)。 */
 let connected = false;
 /** 诊断集合缓存:host 请求时现算,这里只做"有没有变化"的计数上报。 */
@@ -361,6 +377,11 @@ async function pollOnce() {
     await handleEvent(event);
   }
   if ((result.events ?? []).length > 0) client.persist();
+  // 回答同步:host 把 agent 的正文放在 answers 里(见 lib/bridge-answer.mjs),
+  // 面板每趟轮询刷新一次 —— 不需要第二个定时器,也不需要流式协议。
+  if (askPanel !== null && result.answers !== undefined) {
+    if (applyAnswers(askPanel.state, result.answers, askPanel.state.sessionId)) refreshAskPanel();
+  }
 }
 
 function startPolling(context) {
@@ -386,51 +407,121 @@ function updateStatusBar() {
   }
 }
 
-// ---------------------------------------------------------------- 命令
+// ---------------------------------------------------------------- 命令 / 提问面板
 
-/** 选中内容 → DSH(编辑器→DSH 的主入口)。 */
-async function askAboutSelection() {
+/** 当前编辑器上下文(发送时现取一次:用户可以在面板开着的同时换选区)。 */
+function captureAskContext() {
   const editor = vscode.window.activeTextEditor;
-  if (editor === undefined || editor === null) {
-    vscode.window.showInformationMessage('没有活动的编辑器。');
-    return;
-  }
-  if (client === null || client.isDormant()) {
-    vscode.window.showInformationMessage('编辑器桥未启用:请在 DSH 里打开 Code Server 标签后重试。');
-    return;
-  }
+  if (editor === undefined || editor === null) return null;
   const doc = editor.document;
   const selection = editor.selection;
   const hasSelection = selection !== undefined && selection !== null && selection.isEmpty === false;
   const selectedText = hasSelection ? doc.getText(selection) : '';
-  const question = await vscode.window.showInputBox({
-    title: hasSelection ? '问 DSH(带选中内容)' : '问 DSH(当前文件)',
-    prompt: `${path.basename(doc.fileName)}${hasSelection ? ` 第 ${selection.start.line + 1}-${selection.end.line + 1} 行` : ''}`,
-    placeHolder: '例如:这段逻辑有什么问题?',
-    ignoreFocusOut: true,
-  });
-  if (question === undefined || question.trim() === '') return;
+  return {
+    file: doc.uri.scheme === 'file' ? doc.uri.fsPath : null,
+    lineStart: hasSelection
+      ? selection.start.line + 1
+      : (doc.isDirty ? null : selection.active.line + 1),
+    lineEnd: hasSelection ? selection.end.line + 1 : null,
+    selection: selectedText === '' ? null : selectedText,
+    languageId: doc.languageId ?? null,
+  };
+}
+
+/** 把状态推给面板(增量更新:输入框与滚动位置都不受影响)。 */
+function refreshAskPanel() {
+  if (askPanel === null) return;
+  const payload = panelPayload(askPanel.state);
+  payload.contextText = askPanel.state.context === null
+    ? '来自编辑器'
+    : `来自编辑器:${describeContext(askPanel.state.context)}`;
+  payload.statusText = askPanel.state.status === 'error'
+    ? (askPanel.state.error ?? '出错了')
+    : statusText(askPanel.state);
+  void askPanel.panel.webview.postMessage(payload);
+}
+
+/** 面板收到一条提问:投递到 DSH,并把这一轮放进状态里等回答。 */
+async function sendAskFromPanel(text) {
+  if (askPanel === null || client === null) return;
+  const context = captureAskContext() ?? askPanel.state.context;
+  const turn = pushQuestion(askPanel.state, text, context);
+  refreshAskPanel();
   try {
     const result = await client.ask({
-      text: question.trim(),
-      file: doc.uri.scheme === 'file' ? doc.uri.fsPath : null,
-      lineStart: hasSelection ? selection.start.line + 1 : (doc.isDirty ? null : editor.selection.active.line + 1),
-      lineEnd: hasSelection ? selection.end.line + 1 : null,
-      selection: selectedText === '' ? null : selectedText,
-      languageId: doc.languageId ?? null,
+      text,
+      file: context === null ? null : context.file,
+      lineStart: context === null ? null : context.lineStart,
+      lineEnd: context === null ? null : context.lineEnd,
+      selection: context === null ? null : context.selection,
+      languageId: context === null ? null : context.languageId,
     });
     if (result.ok === true) {
-      vscode.window.setStatusBarMessage('$(check) 已发送给 DSH', 3000);
+      askPanel.state.sessionId = typeof result.sessionId === 'string' ? result.sessionId : null;
+      askPanel.state.status = 'thinking';
       log(`已投递编辑器消息(session=${result.sessionId ?? '?'})`);
     } else {
-      vscode.window.showWarningMessage(`未投递:${result.error ?? '未知原因'}`);
+      askPanel.state.status = 'error';
+      askPanel.state.error = `未投递:${result.error ?? '未知原因'}`;
+      turn.error = askPanel.state.error;
     }
   } catch (error) {
     const status = error && error.status;
-    if (status === 409) vscode.window.showWarningMessage('DSH 里没有可投递的会话:请先打开或新建一个会话。');
-    else if (status === 401 || status === 503) vscode.window.showWarningMessage('编辑器桥尚未就绪,请稍后重试。');
-    else vscode.window.showWarningMessage(`投递失败:${error && error.message ? error.message : error}`);
+    const message = status === 409
+      ? 'DSH 里没有可投递的会话:请先在 DSH 里打开或新建一个会话。'
+      : (status === 401 || status === 503
+        ? '编辑器桥尚未就绪,请稍后重试。'
+        : `投递失败:${error && error.message ? error.message : error}`);
+    // 桥没就绪时挂断会话:面板据此显示原因,轮询恢复后下一次发送即可。
+    askPanel.state.status = 'error';
+    askPanel.state.error = message;
+    turn.error = message;
   }
+  refreshAskPanel();
+}
+
+/** 打开(或聚焦)「问 DSH」面板。上下文只用来显示;真正的上下文在发送时现取。 */
+function openAskPanel(context) {
+  const contextInfo = context ?? captureAskContext();
+  if (askPanel === null) {
+    const panel = vscode.window.createWebviewPanel(
+      'dshAsk',
+      'DSH 提问',
+      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
+      { enableScripts: true, retainContextWhenHidden: true },
+    );
+    askPanel = { panel, state: createPanelState() };
+    panel.webview.html = renderPanelHtml({
+      cspSource: panel.webview.cspSource,
+      nonce: crypto.randomBytes(16).toString('base64url'),
+    });
+    panel.webview.onDidReceiveMessage((message) => {
+      if (message === null || typeof message !== 'object') return;
+      if (message.type === 'ready') {
+        refreshAskPanel();
+        return;
+      }
+      if (message.type === 'ask' && typeof message.text === 'string') {
+        const text = message.text.trim();
+        if (text !== '') void sendAskFromPanel(text);
+      }
+    });
+    panel.onDidDispose(() => {
+      askPanel = null;
+    });
+  }
+  askPanel.state.context = contextInfo;
+  askPanel.panel.reveal(vscode.ViewColumn.Beside, false);
+  refreshAskPanel();
+}
+
+/** 选中内容 → DSH(编辑器→DSH 的主入口):打开面板并带上当前上下文。 */
+async function askAboutSelection() {
+  if (client === null || client.isDormant()) {
+    vscode.window.showInformationMessage('编辑器桥未启用:请在 DSH 里打开 Code Server 标签后重试。');
+    return;
+  }
+  openAskPanel(captureAskContext());
 }
 
 /** 整个文件 → DSH(不需要选中)。 */
