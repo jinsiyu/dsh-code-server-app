@@ -62,6 +62,8 @@ let askPanel = null;
 let askDialogSupported = false;
 /** 上一份对话流快照(host 只在变化时回传,这里兜住"没变化"的那些轮询)。 */
 let lastThreadSnapshot;
+/** 上一份对话流修订号(随请求上报,告诉 host 本扩展懂修订号协议)。 */
+let lastThreadRev = 0;
 /** 扩展根目录(activate 时记下;面板要按它取 webview 产物 URI)。 */
 let extensionRoot = null;
 /** 是否已经确认过 host 端点可达(避免把"IDE 刚起、扩展先加载"误判为断线)。 */
@@ -371,6 +373,9 @@ async function pollOnce() {
     // 并用"有没有人在看"决定授权请求是先问面板还是直接交给 DSH 界面
     // (见 host 侧 lib/bridge-thread.mjs / lib/bridge-approval.mjs)。
     watch: askPanel !== null && askPanel.state.sessionId !== null ? [askPanel.state.sessionId] : [],
+    // 声明"本扩展懂对话流修订号"(0.2.9):host 才会在没变化时省略 thread 省流量。
+    // 不声明(旧扩展)时 host 照旧发整份快照 —— 否则旧扩展会误报"宿主没有对话流能力"。
+    threadRev: lastThreadRev,
   };
   const result = await client.sync(payload);
   if (result.ok !== true) {
@@ -406,6 +411,7 @@ async function pollOnce() {
       ? result.thread
       : (result.threadRev !== undefined ? lastThreadSnapshot : undefined);
     if (result.thread !== undefined) lastThreadSnapshot = result.thread;
+    if (Number.isSafeInteger(result.threadRev)) lastThreadRev = result.threadRev;
     if (applySync(askPanel.state, { ...result, thread })) refreshAskPanel();
   }
 }
