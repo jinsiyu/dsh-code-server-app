@@ -78,6 +78,8 @@ function cleanEntry(raw) {
     thinking: typeof raw.thinking === 'string' ? raw.thinking.slice(0, MAX_TEXT) : '',
     // 注入的上下文(0.3.24):桥自己拼的位置行 + 选区代码块,渲染成默认收起的「上下文」行。
     context: typeof raw.context === 'string' ? raw.context.slice(0, MAX_TEXT) : '',
+    // 消息来源(0.3.43):非 'user' = 上下文注入,渲染成折叠行。
+    sourceKind: typeof raw.sourceKind === 'string' && raw.sourceKind !== '' ? raw.sourceKind : null,
     streaming: raw.streaming === true,
     name: typeof raw.name === 'string' ? raw.name : null,
     summary: typeof raw.summary === 'string' ? raw.summary : null,
@@ -101,6 +103,7 @@ function entriesSignature(entries) {
       entry.text.length,
       entry.thinking.length,
       entry.context.length,
+      entry.sourceKind === null ? '' : entry.sourceKind.length,
       entry.summary === null ? '' : entry.summary.length,
     ].join(':'));
   }

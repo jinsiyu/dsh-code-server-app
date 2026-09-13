@@ -247,9 +247,11 @@ await test('宿主:悬浮对话框的 5 条路由 + 能力探测 + 上下文折�
   assert.match(thread, /splitEditorPrompt\(text\)/, '投影用户消息时要用它拆');
   const model = read(`${EXT}/lib/ask-panel.js`);
   assert.match(model, /context: typeof raw\.context === 'string'/, '面板模型要收 context');
+  assert.match(model, /sourceKind: typeof raw\.sourceKind === 'string'/, '面板模型要收 sourceKind(区分用户消息与上下文注入)');
   const threadView = read(`${WEBVIEW}/src/thread.jsx`);
-  assert.match(threadView, /function ContextRow\(\{ text \}\)/, '注入的上下文要有折叠行');
-  assert.match(threadView, /title="上下文"/, '折叠行标题:上下文');
+  assert.match(threadView, /function ContextRow\(\{ text, title = '上下文' \}\)/, '注入的上下文要有折叠行(标题可换)');
+  assert.match(threadView, /entry\.sourceKind !== ''/, '非 user 来源要渲染成折叠的「上下文注入」');
+  assert.match(threadView, /title="上下文注入"/, '上下文注入的折叠行标题');
 });
 
 await test('扩展:上报 watch 列表,并把对话流并进面板状态', () => {

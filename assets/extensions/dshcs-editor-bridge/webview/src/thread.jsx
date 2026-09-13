@@ -77,7 +77,7 @@ function ThinkingRow({ text, running }) {
  * 与 DSH 界面对注入上下文的处理一致 —— 默认折叠,只留一行摘要;点开才看得到那段代码。
  * 摘要取位置行(第一行),去掉 `From the editor: ` 前缀(标题已经说了"来自编辑器")。
  */
-function ContextRow({ text }) {
+function ContextRow({ text, title = '上下文' }) {
   const [expanded, setExpanded] = useState(false);
   const firstLine = text.split('\n')[0] ?? '';
   const summary = firstLine.replace(/^From the editor:\s*/i, '');
@@ -85,7 +85,7 @@ function ContextRow({ text }) {
     <div className="dshcs-context" data-expanded={expanded || undefined}>
       <DisclosureRow
         icon={<IconContextInjectionOutline16 size={16} />}
-        title="上下文"
+        title={title}
         open={expanded}
         expandable
         expandOnRowClick
@@ -100,6 +100,15 @@ function ContextRow({ text }) {
 
 export const ThreadEntry = memo(function ThreadEntry({ entry }) {
   if (entry.role === 'user') {
+    // **别的工具注入的上下文不是"用户说的"**(0.3.43):DSH 界面按「上下文注入」折叠显示,面板照做 ——
+    // 否则这些注入会变成一屏用户气泡,把真正的对话挤掉。
+    if (typeof entry.sourceKind === 'string' && entry.sourceKind !== '') {
+      return (
+        <div className="dshcs-msg dshcs-injection">
+          <ContextRow text={entry.text} title="上下文注入" />
+        </div>
+      );
+    }
     const context = typeof entry.context === 'string' ? entry.context : '';
     return (
       <div className="dshcs-msg dshcs-user">
