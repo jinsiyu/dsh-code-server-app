@@ -277,10 +277,20 @@ function createClient(options) {
         for (const event of events) {
           if (Number.isSafeInteger(event.seq) && event.seq > since) since = event.seq;
         }
-        // answers = 「问过 DSH 的会话」的最新回复(0.3.19)。提问框靠它就地显示回答,
-        // 所以必须原样透传 —— 它走独立字段而不是事件环形缓冲(见 host 侧 lib/bridge-answer.mjs)。
-        const answers = body !== null && Array.isArray(body.answers) ? body.answers : [];
-        return { ok: true, events, answers };
+        // 0.2.3 起面板像 DSH 对话一样显示内容,数据走这三个字段(见 host 侧 lib/bridge-thread.mjs
+        // 与 lib/bridge-approval.mjs):
+        //   - thread:被面板观看的会话的**新内容**条目(旧版宿主没有这个字段 → 面板明确报错);
+        //   - approvals:待决授权请求(工作区外写入 / 命令执行),面板就地作答;
+        //   - uiVersion:DSH 界面的版本(面板据此提示"渲染器与界面版本不一致")。
+        // 全部原样透传,解析与合并交给 lib/ask-panel.js 的纯模型。
+        return {
+          ok: true,
+          events,
+          thread: body !== null && body.thread !== undefined ? body.thread : undefined,
+          approvals: body !== null && Array.isArray(body.approvals) ? body.approvals : [],
+          approvalHoldMs: body !== null && Number.isSafeInteger(body.approvalHoldMs) ? body.approvalHoldMs : undefined,
+          uiVersion: body !== null && typeof body.uiVersion === 'string' ? body.uiVersion : undefined,
+        };
       } catch (error) {
         return { ok: false, error: error.message, status: error.status, code: error.code };
       }
@@ -291,6 +301,22 @@ function createClient(options) {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
+      });
+    },
+    /**
+     * 回答一条待决的授权请求(桥里**唯一**的非只读路由)。
+     *
+     * 约束在 host 侧写死:只认本进程发起、仍未决的 id(单次使用),outcome 只接受
+     * `allowed-once` / `rejected`,不接受任何自由文本 —— 这条路由只能"回答问题",不能"发起动作"。
+     *
+     * @param {string} id 授权请求 id(来自 /sync 的 approvals)
+     * @param {'allowed-once'|'rejected'} outcome
+     */
+    async approve(id, outcome) {
+      return request(`${BRIDGE_BASE}/approve`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id, outcome }),
       });
     },
     /** 把游标落盘(实例重启后不重复播报旧事件)。 */

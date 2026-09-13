@@ -14,3 +14,8 @@ allowBuilds:
   koffi: false
   node-pty: false
   protobufjs: false
+minimumReleaseAgeExclude:
+  - '@jinsiyu/dsh-code-server-runtime-win32-arm64@0.3.10'
+  - '@jinsiyu/dsh-code-server-runtime-win32-x64@0.3.10'
+  - '@jinsiyu/dshcs-kerberos-win32-arm64@2.1.1-dshcs.1'
+  - '@jinsiyu/dshcs-kerberos-win32-x64@2.1.1-dshcs.1'

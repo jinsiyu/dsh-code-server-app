@@ -1,8 +1,8 @@
 {
   "name": "dshcs-editor-bridge",
   "displayName": "DSH Editor Bridge",
-  "description": "只读地把编辑器状态(未保存缓冲区、诊断、活动选区)提供给 DSH,并让编辑器里的动作驱动 DSH 会话。由 dsh-code-server-app 插件安装,可禁用。",
-  "version": "0.2.2",
+  "description": "只读地把编辑器状态(未保存缓冲区、诊断、活动选区)提供给 DSH,并让编辑器里的动作驱动 DSH 会话;0.2.3 起「问 DSH」面板用 DSH 官方 markdown 渲染器显示该会话的新内容,并可就地回答授权请求(写工作区外文件 / 执行命令)。由 dsh-code-server-app 插件安装,可禁用。",
+  "version": "0.2.3",
   "publisher": "dsh-code-server-app",
   "license": "MIT",
   "private": true,

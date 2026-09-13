@@ -21,6 +21,10 @@
 > 0.2.0 起:**argon2 与 code-server 的 136 个运行时依赖(express / proxy-agent / js-yaml / pem / limiter …)
 > 全部不再随包分发**(减少 ~34.5MB + 一条原生构建链);IDE 提供方式见下方「服务方式(serve)」。
 > 依据与实测证据见 `docs/analysis-code-server-as-dsh-plugin.md`(含子路径挂载、WS 路径、命名管道、fence 的逐项验证)。
+>
+> 0.3.22 起:「问 DSH」面板直接渲染 **DSH 官方的 markdown 结果**(与 DSH 界面同一份渲染器 + 同一套设计令牌,
+> 只渲染该会话的新内容),并且**就在面板里处理授权**(工作区外写入 / 执行命令)—— 详见
+> 「与 DSH 的协同:编辑器桥」与 `docs/analysis-code-server-as-dsh-plugin.md` 第 21 节。
 
 ## UI 载体与 DSH 版本要求(0.2.3 起只支持带右侧栏的 DSH)
 
@@ -194,20 +198,29 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 | 方向 | 能力 | 落地方式 |
 |---|---|---|
 | 编辑器 → agent | **未保存缓冲区**(磁盘内容 ≠ 用户所见)、活动文件与选区、**语言服务器诊断**(含 file:line、来源、code) | agent 工具 `editor_context` / `editor_diagnostics`;写脏文件前额外附一条提醒 |
-| 编辑器 → DSH | 选中代码 → 右键「DSH: 针对选中内容提问」→ 打开**提问面板**(带 `文件:行` 与选中内容);提问以**用户输入**进当前会话,回答**同步显示回面板** | 命令 `dsh-code-server.askAboutSelection`(编辑器右键菜单**最上面两条**之一)+ webview 面板 + `POST /ask` + `/sync` 的 `answers` 字段 |
+| 编辑器 → DSH | 选中代码 → 右键「DSH: 针对选中内容提问」→ 打开**提问面板**(带 `文件:行` 与选中内容);提问以**用户输入**进当前会话,该会话的**新内容**用 DSH 官方 markdown 渲染器显示在面板里 | 命令 `dsh-code-server.askAboutSelection`(编辑器右键菜单**最上面两条**之一)+ webview 面板 + `POST /ask` + `/sync` 的 `thread` 字段 |
+| DSH → 编辑器(授权) | agent 要**写工作区外的文件 / 执行命令**时的授权请求 → 面板里就地弹卡片(工具名 + 原因 + 倒计时),点「允许一次 / 拒绝」立刻生效 | `/sync` 的 `approvals` 字段 + `POST /approve`(桥里**唯一**的非只读路由,约束见「安全模型」) |
 | agent → 编辑器 | agent 改了哪个文件 → 开**原生 diff** 审阅;缓冲区有未保存改动时**告警而不覆盖** | host 观察 `tools/result`,扩展轮询后开 diff + 非模态告警 |
 
 - 工具只在桥就绪时注册(IDE 没起来时模型看不到"有个用不了的工具");提示词段落也只在桥存活时渲染。
-- **提问面板**(扩展 0.2.0 起):右键命令不再弹一行输入框,而是一个面板 —— 上面是问答记录、下面是输入框;
-  发送时**现取当前选区**(可以在面板开着的同时改选区再问);回答跟着轮询一起刷新,不用切回 DSH 界面。
+- **提问面板**(扩展 0.2.0 起;0.2.3 起正文走官方渲染器):右键命令不再弹一行输入框,而是一个面板 ——
+  上面是该会话的**新内容**、下面是输入框;发送时**现取当前选区**(可以在面板开着的同时改选区再问)。
   两个命令的**意图分开记**(0.3.21):「针对选中内容提问」只有真的选了内容才带**行区间 + 选区正文**;
   「针对当前文件提问」**永远不带行号、不带选区** —— 光标停在哪一行跟问题无关,行号只会误导 agent;
   没选区时用选中命令提问也会退化成纯文件。
+- **面板里的正文就是 DSH 的渲染结果**(0.3.22):面板打包了 DSH 官方的 markdown 渲染器
+  (`@deepseek-ai/dsh-client-ui-primitives` 的 `MarkdownText`)与官方设计令牌 —— 同一套 micromark/mdast 管线、
+  同一个增量流式解析器、同一个 shiki 高亮(启动集 typescript / shellscript / json)、KaTeX 公式、同样的标题与表格排版。
+  只渲染**新内容**(从面板订阅那一刻起),**不重放历史**、没有"加载更早"。
+- **授权就在面板里处理**(0.3.22):面板打开着的时候,该会话的授权请求**先问面板**(默认 8 秒),
+  点「允许一次」/「拒绝」立刻生效;没人答就把请求**原样交回官方链路**(DSH 界面照旧弹卡)。
+  **永不自动放行** —— `allowed-once` 只能来自你的一次点击,面板里没有"以后都允许"这种入口。
 - 提问进 DSH 会话时是**普通用户消息**(`source: { kind: 'user' }`,host 0.3.19 修正):早期版本用
   `{kind:'plugin'}` 会被 DSH 渲染成"上下文更新",看起来不像自己说的话;来源信息靠正文首行
   `From the editor: <file>[:<行>]` 保留。
-- **全部只读**:桥不写文件、不改文档、不执行命令。agent 的写操作仍然全部走它自己的 `fs` 工具,
-  桥只是"知道它写了什么"。
+- **只读 + 一个受限例外**:桥不写文件、不改文档、不执行命令;唯一的非只读路由是 `POST /approve`,
+  它只能**回答**已经存在的授权请求(见「安全模型」第 2 条)。agent 的写操作仍然全部走它自己的 `fs` 工具,
+  桥只是"知道它写了什么"、并把你对授权的答复带回去。
 - 编辑器侧的入口还有状态栏的 `$(plug) DSH`(连通时显示,点击打开日志),日志在输出面板
   「DSH Editor Bridge」里 —— 出问题时先看它。
 - **扩展装在内置目录**(0.3.12 修正):`dshcs-editor-bridge` 与 `dshcs-open-file` 一样装进
@@ -219,10 +232,11 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 ### 三条通道(0.3.13 起走**本机 IPC**:Windows 命名管道 / unix socket)
 
 ```
-扩展 → host     POST /code-server-bridge/sync   一趟来回:上报编辑器状态 + 取回待处理事件
-扩展 → host     POST /code-server-bridge/ask    把编辑器里的提问投进当前会话
-扩展 → host     GET  /code-server-bridge/health 无鉴权探活(便于重启后一眼确认)
-扩展 → host     POST /code-server-bridge/event  扩展上报打开/关闭文件等(进 host 日志尾)
+扩展 → host     POST /code-server-bridge/sync    一趟来回:上报编辑器状态(+ 面板在看哪个会话)+ 取回待处理事件与对话流
+扩展 → host     POST /code-server-bridge/ask     把编辑器里的提问投进当前会话
+扩展 → host     POST /code-server-bridge/approve 回答一条**已经存在**的授权请求(唯一的非只读路由)
+扩展 → host     GET  /code-server-bridge/health  无鉴权探活(便于重启后一眼确认)
+扩展 → host     POST /code-server-bridge/event   扩展上报打开/关闭文件等(进 host 日志尾)
 host  → 扩展    <extensionsDir>/.dshcs-bridge/bridge.json  端点 + 令牌(扩展每 5s 重读)
                 (同一份内容还会写到**内置扩展旁边** `<树>/lib/vscode/extensions/.dshcs-bridge/` ——
                  环境变量只在 host spawn IDE 时注入,而被**接管**的 IDE 是上一次启动的进程、拿不到它,
@@ -230,6 +244,14 @@ host  → 扩展    <extensionsDir>/.dshcs-bridge/bridge.json  端点 + 令牌(�
 ```
 
 请求走 `http.request({ socketPath })`(`fetch` 不支持 socket),**不开任何端口**。
+
+`/sync` 的响应里，面板真正用到的三段(0.3.22):
+
+| 字段 | 内容 | 面板怎么用 |
+|---|---|---|
+| `thread` | 被面板 `watch` 的会话的**新内容**条目(user / assistant / tool / approval),有界:每会话 ≤120 条、单条正文 ≤8000 字符、同时 watch ≤4 个会话 | 助手正文交给官方渲染器;工具与授权是紧凑摘要行 |
+| `approvals` | 待决授权请求 `[{id, toolName, reason, at}]`(≤4 条) | 弹卡片 + 倒计时;点按后 `POST /approve` |
+| `approvalHoldMs` / `uiVersion` | 授权窗口长度(默认 8000ms)/ DSH 界面版本 | 倒计时基准;渲染器版本不一致时提示 |
 
 > **为什么不是 HTTP(0.3.13 定论,三条都实测过)**
 > 1. **desktop 根本没有 HTTP 面**:渲染进程经 Electron IPC 调 `host.fetch()`
@@ -253,21 +275,29 @@ host 反向请求不到它。所以编辑器状态只能在扩展主动发起的
 **为什么不用 SSE/WebSocket**:扩展宿主里没有 HTTP 服务器,而桥的形态是"每 600ms 一趟请求/响应"。
 轮询给了两条好性质:幂等(丢一次事件只是少一次提示,数据本身永远在编辑器里),以及状态天然最新(每趟都刷新)。
 
-### 安全模型(四条不变量,改 `lib/bridge.mjs` 之前先读)
+### 安全模型(五条不变量,改 `lib/bridge.mjs` 之前先读)
 
 桥的令牌写在 `<extensionsDir>/.dshcs-bridge/bridge.json`(**对本机同用户进程可读**),所以:
 
-1. **`/code-server-bridge/*` 永久只读。** 没有写文件、改文档、执行命令的路由。
-   令牌泄露的爆炸半径被封在"看到编辑器里的信息",**不会**变成任意文件写/任意命令执行。
+1. **`/code-server-bridge/*` 只读,只有 `/approve` 一个例外。** 没有写文件、改文档、执行命令、
+   拉起进程的路由。令牌泄露的爆炸半径被封在"看到编辑器里的信息",**不会**变成任意文件写/任意命令执行。
    `scripts/test-bridge-routes.mjs` 里有一条白名单断言盯着这件事(未知后缀一律 404)。
-2. **带 `Origin` 的请求一律 403。** 浏览器发起必带 Origin(含沙箱 iframe 的 `Origin: null`),
+2. **`/approve` 的四条约束(缺一条就等于开了任意命令执行的后门,不许放宽)**:
+   (a) 只能**回答**已经存在的授权请求,请求体只有 `{id, outcome}`,**不接受任何自由文本 / 路径 / 命令参数**
+   —— 它只能"回答问题",不能"发起动作";(b) `id` 必须是本进程自己发起、且**仍未决**的请求(用后即废);
+   (c) `outcome` 只接受 `allowed-once` / `rejected`,**没有"永久允许"**;
+   (d) 没有面板在看 / 窗口超时(默认 8s)→ **交回官方链路**,绝不自动放行
+   (DSH 的 `approval/request` 本身 fail closed,这里只能把"没人答"保持成"没人答")。
+   `pnpm test:webview-bundle` 里有针对这四条与宿主侧白名单的断言。
+3. **带 `Origin` 的请求一律 403。** 浏览器发起必带 Origin(含沙箱 iframe 的 `Origin: null`),
    扩展宿主是 Node 进程、不带。判定顺序上 Origin **先于令牌** —— 否则等于给浏览器一个
    "令牌猜对没有"的 oracle。
    实现细节:Node 路由 → Fetch 适配器把**原始 headers** 挂在 request 上(`dshcsRawHeaders`),
    因为 undici 的 `Request` 构造器会把 `origin` 当 forbidden header 归一化掉 —— 读 `request.headers`
    会让这道 403 静默失效(测试里有这条实测记录)。
-3. **路径收敛在编辑器当前工作区**(`workspaceFolder` 之外的诊断直接丢弃)。
-4. **有界**:诊断默认 200 条 / 单条截断 500 字符 / 上报体上限 256KB / 事件环形缓冲 64 条。
+4. **路径收敛在编辑器当前工作区**(`workspaceFolder` 之外的诊断直接丢弃)。
+5. **有界**:诊断默认 200 条 / 单条截断 500 字符 / 上报体上限 256KB / 事件环形缓冲 64 条 /
+   对话流每会话 ≤120 条(单条正文 ≤8000 字符、同时 watch ≤4 个会话)/ 待决授权 ≤4 条。
 
 这一层挡的是"本机其它应用或浏览器页面拿到那个文件后乱调桥";**同用户的本地恶意程序**
 本来就能直接读你的文件与令牌文件 —— 那不在本插件的威胁模型内(与「回环端口的安全模型」同一句话)。
@@ -337,17 +367,24 @@ host 反向请求不到它。所以编辑器状态只能在扩展主动发起的
 
 ```powershell
 cd C:\Users\User\Desktop\dsh-code-server-app
-pnpm install             # 开发依赖(esbuild + motion);allowBuilds 已显式声明 → 不执行任何 postinstall
+pnpm install             # 开发依赖(esbuild + 官方渲染器打包依赖);allowBuilds 已显式声明 → 不执行任何 postinstall
 pnpm run build:client    # src/factory.js → lib/client.js(不入库,必须先构建)
+pnpm run build:webview   # 「问 DSH」面板:官方 markdown 渲染器 + 面板外壳 → webview/thread.{js,css}(不入库,必须先构建)
 pnpm run vendor:check    # 可选:查看内置 VS Code 树版本 vs code-server 最新版
 pnpm run vendor:vscode                            # ① 生成 vendor/vscode(精简 VS Code 树,≈197MB)
 pnpm run repack:build -- --target win32-arm64,win32-x64 --pack   # ② 统一脚本产出全部子包(见下表)
 pnpm run publish:repacks                         # ③ 发布全部 @jinsiyu/* 子包(默认 dist-tag = next)
-pnpm pack                                        # ④ → dsh-code-server-app-<version>.tgz(约 107KB)
+pnpm pack                                        # ④ → dsh-code-server-app-<version>.tgz(约 750KB,含面板渲染器产物)
 pnpm run publish:plugin                          # ⑤ 发布插件本体(默认 dist-tag = next)
 # 用户重启 dsh web 确认无误后,再把 latest 推进到该版本:
 pnpm run promote -- <version>
 ```
+
+> `build:webview` 会把 DSH **官方**的 markdown 渲染器与设计令牌打进面板产物(≈1.34MB:JS 996KB +
+> CSS 87KB + KaTeX 字体 254KB),所以它要求本机有 DSH 部署:脚本读部署里 `@deepseek-ai/dsh-web-frontend`
+> 的版本,与 devDependency 钉住的渲染器版本比对,**不一致就报错退出**(`--allow-version-mismatch` 才放行)。
+> 它与 `lib/client.js` 同一约定:产物不入 git,`prepack` 里会自动重跑。
+> 细节(为什么不是 iframe、令牌从哪来、体积取舍)见 `docs/analysis-code-server-as-dsh-plugin.md` 第 21 节。
 
 > **dist-tag 政策(必须遵守)**:发布一律发到 **`next`**,**不动 `latest`**;
 > `latest` 只保留「最近一个确认无 bug 的版本」,由 `pnpm run promote -- <version>`
@@ -388,8 +425,9 @@ pnpm run promote -- <version>
 ```powershell
 pnpm test:apply              # 桩 ctx 下跑通 apply(回归:apply 期的 ReferenceError)
 pnpm test:claim-types        # 认领类型语法与默认值
-pnpm test:bridge-routes      # 编辑器桥:路由表只读白名单 / Origin 与令牌的判定顺序 / 令牌头三处一致
-pnpm test:bridge-extension   # 编辑器桥扩展侧纯逻辑:未保存缓冲区上报、诊断排序截断、diff 判据、投递降级
+pnpm test:bridge-routes      # 编辑器桥:路由表白名单(只读 + /approve)/ Origin 与令牌的判定顺序 / 令牌头三处一致
+pnpm test:bridge-extension   # 编辑器桥扩展侧纯逻辑:未保存缓冲区上报、诊断排序截断、diff 判据、投递降级、面板状态机
+pnpm test:webview            # 面板 webview 产物:官方渲染器与令牌打包、版本一致、/approve 的四条约束(先跑 build:webview)
 pnpm test:launcher-routes    # launcher 的 HTTP 面(起真进程,较慢)
 pnpm test:workspace-switch   # 切工作区不重启进程
 pnpm test:fullscreen         # 打开标签即全屏
@@ -490,7 +528,8 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 >
 > **改动 client bundle**:编辑 `src/factory.js` 后执行 `pnpm run build:client`
 > 重新生成 `lib/client.js`(仓库不跟踪该产物;浏览器刷新即生效,host 无需重启)。
-> 窗口动画由内嵌 `motion` 驱动,手感参数在 `src/factory.js` 的 `winPhysics`(一处)。
+> **改动提问面板**:编辑 `assets/extensions/dshcs-editor-bridge/webview/src/*` 后执行
+> `pnpm run build:webview`(同一约定:产物不入库;IDE 需重启一次才会加载新产物,扩展宿主会缓存 webview 资源)。
 
 ### 打包机环境要求(使用者机器什么都不需要)
 
@@ -684,6 +723,17 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
 - **未保存缓冲区是"上报"而不是"接管"**:agent 仍然通过它自己的 `fs` 工具按磁盘内容编辑。
   桥能做的是**在写之前提醒**、**写之后给 diff**、**冲突时告警而不覆盖** ——
   它不能替用户决定保存与否(那需要改动 agent 的读路径,不在本版本范围内)。
+- **提问面板只渲染"新内容"(0.3.22)**:订阅从面板建立那一刻开始,`follow` 开帧里的历史 `records` 被丢弃,
+  面板里**没有"加载更早"**(历史分页 API `sessionController.page()` 在这个版本里刻意不调用)。
+  想看更早的内容请回 DSH 界面。
+- **面板的高亮只带 DSH 启动集的三套语法**(typescript / shellscript / json):官方其余语法走**懒加载**
+  (按需 `import()`,合计约 1.6MB),面板是单文件 IIFE、没有按需加载,所以那些语言的代码块**纯文本**显示
+  (与 DSH 首次渲染时的样子一致,不报错)。要全量:`node scripts/build-webview.mjs --all-grammars`。
+- **面板产物与 DSH 版本绑定**:渲染器按构建时 DSH 部署的界面版本打包,DSH 升级后**要重打面板**
+  (`pnpm run build:webview`;构建脚本会在版本不一致时直接报错)。运行期面板顶部也会提示版本不一致,
+  不会悄悄用错版本的渲染器。
+- **面板里的授权窗口是 8 秒**:面板打开着的时候授权先问面板,8 秒没人答就交回 DSH 界面
+  —— 交回之后这一条**只能**在 DSH 界面里处理(面板上的卡片会显示"已交给 DSH 界面")。
 
 - ~~子路径不支持~~ **已不成立(0.2.0 实测更正)**:VS Code 渲染出的 workbench HTML 里
   **资源引用全是相对路径**(实测 9 条引用中绝对路径 0 条,`serverBasePath="."`、`rootEndpoint="."`),

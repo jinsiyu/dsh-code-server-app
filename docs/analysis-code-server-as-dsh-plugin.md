@@ -1346,3 +1346,107 @@ group `navigation@-2/-1` —— `navigation` 是 `_compareMenuItems` 里唯一�
   text-delta 累积、reasoning 忽略、换 turn 重置、idle 定稿、会话上限丢最旧、disposer 摘订阅;
   以及 `/sync` 带 answers、ask 登记会话、`source.kind='user'` 三个接线点的源码级断言)。
 
+## 21. 0.3.22:面板直接渲染 DSH 对话(官方 markdown 渲染器)+ 就在面板里处理授权
+
+用户的两条要求(0.3.21 之后):①消息框不要"纯文本回答",要**像 DSH 对话那样渲染**,但**只渲染新内容**;
+②把**权限**问题一起解决 —— "工作区外写入和指令执行的授权"。这一节记录为什么长成这样、每条断言的证据在哪。
+
+### 21.1 为什么不是 iframe(把 DSH 界面嵌进 webview)
+
+三条硬阻塞,都看过源码:
+
+1. **会话 cookie 拿不到**:DSH Web 的会话 cookie 是 `HttpOnly; SameSite=Strict`
+   (`packages/client/connection/src/browser-auth.ts:122`)⇒ webview 里 iframe 带不上它,DSH 界面必然 401;
+2. **没有会话深链接**:DSH Web 是纯内存 SPA(全仓 `pushState` 零命中)⇒ 就算能带 cookie,
+   也定位不到"当前这个会话";
+3. **webview 的 CSP/`localResourceRoots` 本来就不允许把 DSH 的 origin 当子框架加载** ——
+   要开后门就得放开 `frame-src` 与跨源访问,爆炸半径远大于收益。
+
+所以走"**面板自己渲染**":数据从 DSH 的正规 API 来,渲染用 DSH 官方的渲染器(见 21.4)。
+
+### 21.2 对话流:`sessionController.follow` 是唯一允许的实时通道(且只渲染新内容)
+
+- 同步读会话历史(`Session.snapshotEvents` / `eventAt` / `ownEvents`)已被 DSH **明令禁止新增调用**
+  (`.agents/notes/implemented/architecture/2026-09-09-deprecate-synchronous-session-event-reads.zh.md`);
+- `sessionController.page()` 是**历史分页** API —— 本版本按用户要求**只渲染新内容**,不调用它,
+  所以面板里没有"加载更早"(未来的版本要补,得先在这条禁令下论证);
+- 用的是被 sanction 的实时 API `sessionController.follow(address, signal)`
+  (`packages/api/session-controller/src/types.ts:515`),帧形状三种:
+  `{type:'snapshot',cursor,records[],assistantStream?}` / `{type:'event',event}` /
+  `{type:'assistant-stream',frame:{type:'start'|'chunk',turn,chunk}}`。
+  开帧的 `records`(历史)**丢弃**,只留 `cursor` 与助手流基线 ⇒ 从订阅那一刻起渲染"新内容"。
+- host 侧新增 `lib/bridge-thread.mjs`:把事件投影成有界条目流 —— `user/message` → 用户气泡、
+  `assistant/message` → 助手正文(**原地替换**同一轮的流式临时条目,不重复显示)、
+  `tool/call` + `tool/result` → 一行工具摘要(按 `callId` 配对、状态 running/ok/error)、
+  `approval/asked` + `approval/decided` → 授权审计行。有界:每会话 ≤120 条、单条 ≤8000 字符、
+  同时 watch ≤4 个会话(LRU + abort)。
+- **谁能看**:扩展每趟轮询上报 `watch:[sessionId]`,host 据此 `bridgeThread.sync(ids)` ——
+  没声明的会话一律取消订阅,面板关掉就没人看,不做无谓的后台订阅。
+
+### 21.3 授权:面板优先 8 秒,然后**原样**交回官方链路
+
+DSH 把敏感动作收敛到 `approval` 服务(`@deepseek-ai/dsh-user-approval`):
+`approval/request` 是 **agent 作用域的 waterfall 事件**,答案方可以是服务端监听器,也可以是浏览器客户端
+(官方 `ui-approval` 卡片,`packages/api/remotes/src/remote-events.ts:18` 把它注册为 waterfall 远程事件);
+outcome 只有四种 `allowed-once | rejected | cancelled | unavailable`,**没有答案者就 fail closed**。
+
+于是"人在编辑器里提问"必然撞墙:agent 要写工作区外的文件 / 执行命令时,授权卡片只出现在 DSH 界面,
+而用户根本不在那儿 —— 要么看不到,要么超时失败。做法(host 侧新增 `lib/bridge-approval.mjs`):
+
+1. 只对**被面板 watch 的会话**注册 `agent.ctx.on('approval/request', …)`(agent 作用域天然只收本会话);
+2. 生成 pending 记录 → 面板随 `/sync` 的 `approvals` 看到卡片(工具名 / 原因 / 倒计时);
+3. 用户点「允许一次 / 拒绝」→ 扩展 `POST /approve` → 立刻 settle(官方卡片不再出现);
+4. 8 秒没人答 / 面板没开 → `return next()`,**原样交给官方链路**(DSH 界面照旧弹卡);
+5. **永不自动放行**:`allowed-once` 只能来自用户点击。
+
+`/approve` 是桥里**唯一**的非只读路由,约束写死在实现里(`lib/bridge.mjs` 头部的安全不变量第 2 条):
+只能回答**本进程发起、仍未决**的请求(单次使用)、outcome 只有两个白名单值、
+**不接受任何自由文本 / 路径 / 命令参数** —— 它只能"回答问题",不能"发起动作"。
+
+### 21.4 渲染:把 DSH 官方 markdown 渲染器打进 webview(`scripts/build-webview.mjs`)
+
+- **渲染器** = `@deepseek-ai/dsh-client-ui-primitives` 的 `MarkdownText`(根导出,ESM):
+  与 DSH 界面**同一份代码** —— 同一套 micromark/mdast 管线、同一个增量流式解析器、同一个 shiki 高亮
+  (启动集:typescript / shellscript / json)、同一套 CSS 模块、KaTeX 公式。面板只包一层外壳(React 视图 +
+  授权卡片 + 输入框)。
+- **设计令牌**:markdown / 代码块样式依赖 `--dsw-*`(排版与配色)、`--shiki-*`(高亮色)、
+  `--dsh-scrollbar-width` 等,而这些 CSS **不随包发布** —— `@deepseek-ai/dsh-client-ui-theme` 的
+  `files` 里写了 `lib/styles` 但 tarball 里没有那个目录(`exports` 还挂着 `./src/*`,而 `src/` 同样不在
+  发布物里);它们被 esbuild 内联成 `lib/client.js` 里的字符串。于是构建脚本从**那份发布物**里按
+  "顶层为 `:root` / `body` 的字面量"把 5 段令牌表原样抽出来生成 `webview/src/official-tokens.css`
+  (生成物,列了 `REQUIRED_TOKENS` 自检,缺一个就报出来,不静默降级)。
+- **版本一致性**:渲染器版本必须和 DSH 部署的界面同版本。构建脚本读部署里
+  `@deepseek-ai/dsh-web-frontend` 的版本(那份 UI 就在它里面)与本仓库 devDependency 比对,
+  不一致**直接报错退出**(`--allow-version-mismatch` 才放行);运行期宿主还把 `uiVersion` 随 `/sync` 给面板,
+  面板再比一次,不一致就在顶部显示一行提示(附带重建命令)。
+- **体积与取舍**(实测):`thread.js` 996KB + `thread.css` 87KB + KaTeX woff2 字体 254KB ≈ 1.34MB;
+  KaTeX 默认打包(`--no-katex` 可省 540KB,公式按字面 TeX 显示);官方那 23 套**懒加载**语法
+  (约 1.6MB)换成"空注册" —— 那些语言的代码块纯文本显示(与 DSH 首次渲染同形),不报错。
+- **第三方许可**:产物里打包的是 MIT 代码(ui-primitives / ui-theme / react / shiki / micromark / katex …),
+  构建脚本生成 `webview/THIRD-PARTY.md` 列清单与版本。
+
+### 21.5 两个"容易踩"的工程细节
+
+1. **esbuild 的 JS API 在 workspace-write 沙箱里跑不起来**:它以
+   `stdio: ["pipe","pipe","inherit"]` 拉起服务进程,而沙箱**拒绝创建子进程管道**(spawn EPERM)。
+   CLI(`esbuild/bin/esbuild`)走的是 `execFileSync(binPath, args, { stdio: "inherit" })`(继承标准流),
+   沙箱内可用 —— 代价是不能用插件,所以"虚拟模块"(懒加载语法替身 / KaTeX 替身 / 令牌表)
+   都落成真实文件(`.tmp-webview/` 与 `official-tokens.css`)。
+2. **产物不入 git、但必须进 npm 包**:与 `lib/client.js` 同一约定 —— `.gitignore` 掉,
+   `prepack` 里跑 `build:webview`,扩展目录本就在 `files` 里,所以发布物带的是当次构建的面板。
+
+### 21.6 验证
+
+- **真浏览器里跑打包产物**(`.spike/webview-preview/`,`serve.mjs` 静态服务 + `acquireVsCodeApi` 替身):
+  实测通过 —— 标题/列表/表格/引用/行内代码与链接、`ts`/`bash`/`json` 三套语法**真高亮**、
+  `python` 纯文本降级、KaTeX 行内与独立公式、脚注区、超长行换行、授权卡片倒计时与「允许一次 / 拒绝」、
+  版本不一致提示、旧版宿主(没有 `thread` 字段)的错误提示。
+- **回归**:`test-bridge-extension` 28 条(对话流只渲染新内容 / 本地提问回显后退场 / 流式变化才刷新 /
+  角色白名单 / 旧版宿主必须报错 / 授权列表 + 窗口长度 / 外壳 CSP 与 `localResourceRoots` /
+  正文必须走官方渲染器)、`test-webview-bundle` 11 条(产物存在与体积区间、第三方许可、
+  渲染器版本注入与构建期把关、官方令牌与 KaTeX 样式在 CSS 里、令牌抽取不许手改、
+  懒加载语法替身、CLI 构建、宿主 `/sync` 四字段、扩展 `watch` 与 `applySync` 接线、
+  `/approve` 的四条约束),`test-bridge-routes` 27 条不变绿。
+
+
+

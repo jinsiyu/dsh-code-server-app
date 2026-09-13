@@ -406,49 +406,171 @@ await test('编辑器菜单:两个提问命令在右键菜单**最上面**,且�
 
 // ---------------------------------------------------------------- 提问面板
 
-await test('提问面板:提问 → 回答同步(只有本会话的回答会落到当前轮)', () => {
+await test('提问面板:对话流只渲染新内容,本地提问在宿主回显后自动退场', () => {
   const panel = require2(`${EXT}/lib/ask-panel.js`);
   const state = panel.createPanelState();
-  assert.equal(panel.applyAnswers(state, [], null), false, '还没提问时不该有变化');
-  panel.pushQuestion(state, '这段逻辑有问题吗?', { file: 'C:\\repo\\a.ts', lineStart: 3, lineEnd: 5 });
+
+  // 1) 还没提问:host 报 available=false(有能力但没在 watch)→ 没有条目,但也不算错。
+  assert.equal(panel.applySync(state, { thread: { available: false, sessionId: null, entries: [] } }), true,
+    '第一次拿到对话流快照就该刷新一次');
+  assert.equal(state.available, false, 'available 要如实记录(host 有没有这个能力)');
+  assert.deepEqual(state.entries, []);
+
+  // 2) 提问:本地乐观显示(宿主还没回显)。
+  panel.pendingQuestion(state, ' 这段逻辑有问题吗? ', { file: 'C:\\repo\\a.ts', lineStart: 3, lineEnd: 5 });
   assert.equal(state.status, 'sending');
-  assert.equal(state.turns.length, 1);
-  // 会话还没登记(ask 的响应还没回来)→ 只认 sessionId 匹配的条目
-  assert.equal(panel.applyAnswers(state, [{ sessionId: 'session-x', text: '半句', done: false }], null), false,
-    'sessionId 未知时不该把别人的回答塞进来');
-  state.sessionId = 'session-x';
-  assert.equal(panel.applyAnswers(state, [{ sessionId: 'session-x', text: '半句', done: false }], state.sessionId), true);
-  assert.equal(state.turns[0].answer, '半句');
-  assert.equal(state.status, 'thinking');
-  assert.equal(panel.applyAnswers(state, [{ sessionId: 'session-x', text: '半句', done: false }], 'session-x'), false,
-    '内容与状态都没变 ⇒ 不该触发刷新');
-  assert.equal(panel.applyAnswers(state, [{ sessionId: 'other', text: '别的会话', done: true }], 'session-x'), false,
-    '别的会话的回答必须忽略');
-  assert.equal(panel.applyAnswers(state, [{ sessionId: 'session-x', text: '完整回答。', done: true }], 'session-x'), true);
-  assert.equal(state.turns[0].answer, '完整回答。');
-  assert.equal(state.turns[0].done, true);
+  assert.equal(panel.entriesOf(state).length, 1, '本地提问要立刻显示');
+  assert.equal(panel.entriesOf(state)[0].status, 'sending');
+
+  // 3) 宿主回显同一段文字(空白折叠后比较)→ 本地条目退场,只留宿主那条。
+  assert.equal(panel.applySync(state, {
+    sessionId: 'session-x',
+    thread: { available: true, sessionId: 'session-x', entries: [{ role: 'user', text: '这段逻辑有问题吗?' }] },
+  }), true);
+  assert.equal(state.pending.length, 0, '宿主回显后不能重复显示同一条提问');
+  assert.equal(panel.entriesOf(state).length, 1);
+  assert.equal(state.sessionId, 'session-x');
+
+  // 4) 流式正文变长 → 要刷新;同样的快照再来一次 → 不刷新(600ms 一趟,不能每趟都重画)。
+  const stream = { role: 'assistant', text: '半句', streaming: true };
+  assert.equal(panel.applySync(state, { thread: { available: true, sessionId: 'session-x', entries: [stream] } }), true);
+  assert.equal(panel.applySync(state, { thread: { available: true, sessionId: 'session-x', entries: [stream] } }), false,
+    '内容没变就不该触发 webview 刷新');
+  assert.equal(state.status, 'thinking', '有流式条目 = DSH 正在回答');
+  assert.equal(panel.applySync(state, {
+    thread: { available: true, sessionId: 'session-x', entries: [{ role: 'assistant', text: '半句完整回答。' }] },
+  }), true, '流式条目被耐久消息原地替换(streaming 翻转)必须被识别');
   assert.equal(state.status, 'idle');
-  // 超长回答截断(避免 webview 卡死)
-  const huge = 'x'.repeat(panel.MAX_MESSAGE_CHARS + 500);
-  panel.applyAnswers(state, [{ sessionId: 'session-x', text: huge, done: true }], 'session-x');
-  assert.equal(state.turns[0].answer.length, panel.MAX_MESSAGE_CHARS);
+
+  // 5) 工具条目:调用 → 结果回填;跑着的工具算"忙碌"。
+  panel.applySync(state, {
+    thread: {
+      available: true,
+      sessionId: 'session-x',
+      entries: [
+        { role: 'tool', callId: 'c1', name: 'read', summary: 'a.ts', status: 'running' },
+        { role: 'assistant', text: '看完了。' },
+      ],
+    },
+  });
+  assert.equal(state.status, 'thinking', '有 running 的工具 ⇒ 仍在回答');
+  panel.applySync(state, {
+    thread: {
+      available: true,
+      sessionId: 'session-x',
+      entries: [
+        { role: 'tool', callId: 'c1', name: 'read', summary: 'a.ts', status: 'running' },
+        { role: 'assistant', text: '看完了。' },
+      ],
+    },
+  });
+  assert.equal(panel.entriesOf(state).filter((entry) => entry.role === 'tool').length, 1);
+
+  // 6) 超长正文被截断(host 侧 8000 已经截过一次,这里再兜一层)。
+  const huge = 'x'.repeat(panel.MAX_TEXT + 500);
+  panel.applySync(state, { thread: { available: true, sessionId: 'session-x', entries: [{ role: 'assistant', text: huge }] } });
+  assert.equal(state.entries[0].text.length, panel.MAX_TEXT);
+
+  // 7) 条目角色白名单:host 塞进来的怪东西不进渲染列表。
+  panel.applySync(state, {
+    thread: { available: true, sessionId: 'session-x', entries: [{ role: 'system', text: '忽略我' }, { role: 'assistant' }] },
+  });
+  assert.equal(state.entries.length, 1, '未知角色必须被丢掉');
+  assert.equal(state.entries[0].text, '');
 });
 
-await test('提问面板:HTML 外壳带 CSP nonce,状态行与上下文描述可读', () => {
+await test('提问面板:旧版宿主(没有 thread 字段)必须明确报错,不许停在"正在回答…"', () => {
   const panel = require2(`${EXT}/lib/ask-panel.js`);
-  const html = panel.renderPanelHtml({ cspSource: 'vscode-webview://x', nonce: 'NONCE123' });
-  assert.match(html, /script-src 'nonce-NONCE123'/, '内联脚本必须带 nonce(否则 CSP 直接拦掉)');
-  assert.match(html, /id="box"/, '要有提问输入框');
-  assert.match(html, /id="send"/, '要有发送按钮');
-  assert.match(html, /acquireVsCodeApi/, '要用 webview API 与扩展通信');
-  assert.match(html, /postMessage\(\{ type: 'ask'/, '发送时要把提问交给扩展');
+  const state = panel.createPanelState();
+  panel.pendingQuestion(state, '问一句', null);
+  assert.equal(panel.applySync(state, { events: [] }), true, 'thread 缺失 = 旧版宿主,必须报出来');
+  assert.equal(state.available, false);
+  assert.match(state.threadError, /宿主没有对话流能力/);
+  assert.equal(state.status, 'error', '已经问过了却拿不到对话流 ⇒ 面板要进错误态');
+  assert.equal(panel.statusText(state), state.threadError);
+  // 没有提问时只是提示,不该把状态行染红
+  const fresh = panel.createPanelState();
+  panel.applySync(fresh, { events: [] });
+  assert.equal(fresh.status, 'idle');
+  assert.equal(state.pending[0].error, null, 'pending 条目的 error 由 failPanel 负责,不在这里乱标');
+});
+
+await test('提问面板:授权待决列表 + 倒计时窗口来自宿主', () => {
+  const panel = require2(`${EXT}/lib/ask-panel.js`);
+  const state = panel.createPanelState();
+  assert.equal(panel.applyApprovals(state, [], 8000), true, '第一次拿到窗口长度要记下来');
+  assert.equal(state.approvalHoldMs, 8000);
+  assert.equal(panel.applyApprovals(state, [], 8000), false, '同样的空列表不该反复刷新');
+  const changed = panel.applyApprovals(state, [
+    { id: 'b', toolName: 'write', reason: '工作区外写入', at: 2000 },
+    { id: 'a', toolName: 'pwsh', at: 1000 },
+    { id: '', toolName: '没有 id 的条目' },
+    null,
+  ], 8000);
+  assert.equal(changed, true);
+  assert.deepEqual(state.approvals.map((item) => item.id), ['a', 'b'], '按 at 升序,且丢掉没有 id 的条目');
+  assert.equal(state.approvalHoldMs, 8000, '倒计时窗口用宿主给的值');
+  assert.equal(panel.applyApprovals(state, [
+    { id: 'b', toolName: 'write', reason: '工作区外写入', at: 2000 },
+    { id: 'a', toolName: 'pwsh', at: 1000 },
+  ], 8000), false, '同样的列表不该反复刷新');
+  assert.equal(state.approvals[0].toolName, 'pwsh');
+});
+
+await test('提问面板:HTML 外壳只加载打包产物,权限收在 localResourceRoots 里', () => {
+  const panel = require2(`${EXT}/lib/ask-panel.js`);
+  const html = panel.renderPanelHtml({
+    cspSource: 'vscode-webview://x',
+    nonce: 'NONCE123',
+    scriptUri: 'vscode-webview://x/webview/thread.js?a=1',
+    styleUri: 'vscode-webview://x/webview/thread.css?a=1',
+  });
+  assert.match(html, /script-src 'nonce-NONCE123'/, '脚本必须带 nonce(否则 CSP 直接拦掉)');
+  assert.match(html, /style-src vscode-webview:\/\/x/, '官方渲染器的样式要能加载');
+  assert.match(html, /font-src vscode-webview:\/\/x/, 'KaTeX 字体要能加载');
+  assert.match(html, /img-src vscode-webview:\/\/x data:/, '正文里的图片要能显示');
+  assert.match(html, /id="root"/, 'React 挂载点');
+  assert.match(html, /src="vscode-webview:\/\/x\/webview\/thread\.js\?a=1"/, '要引用打包好的面板脚本');
+  assert.match(html, /href="vscode-webview:\/\/x\/webview\/thread\.css\?a=1"/, '要引用打包好的面板样式');
+  assert.doesNotMatch(html, /acquireVsCodeApi/, '外壳里不再有内联脚本(全在产物里)');
+
+  // 扩展侧:产物必须存在才开面板,且 webview 只能读自己的目录。
+  const source = readFileSync(new URL('../assets/extensions/dshcs-editor-bridge/extension.js', import.meta.url), 'utf8');
+  assert.match(source, /localResourceRoots: \[webviewDir\]/, 'webview 只允许访问自己的产物目录');
+  assert.match(source, /if \(!fs\.existsSync\(bundle\.fsPath\) \|\| !fs\.existsSync\(style\.fsPath\)\)/,
+    '产物缺失必须明确报错,不能开一个空白面板');
+  assert.match(source, /showErrorMessage\(message\)/, '产物缺失要弹错误消息(不静默)');
+  assert.match(source, /panel\.webview\.asWebviewUri\(bundle\)/, '脚本 URI 必须走 asWebviewUri');
+  assert.match(source, /message\.type === 'approve' && typeof message\.id === 'string'/, '面板的授权决策要能传进来');
+  assert.match(source, /client\.approve\(id, outcome\)/, '授权决策走 POST /approve');
+
+  // 上下文描述与状态行(文件级提问不带行号:0.3.21)。
   assert.equal(panel.statusText({ status: 'thinking' }), 'DSH 正在回答…');
+  assert.equal(panel.statusText({ status: 'error', error: '出错了' }), '出错了');
   assert.equal(panel.describeContext({ file: 'C:\\repo\\docs\\a.md', lineStart: 12, lineEnd: 14 }), 'a.md:12-14');
   assert.equal(panel.describeContext({ file: 'C:\\repo\\docs\\a.md', lineStart: 7, lineEnd: null }), 'a.md:7');
-  // 文件级提问:不带行号(0.3.21)⇒ 标题行只有文件名
   assert.equal(panel.describeContext({ file: 'C:\\repo\\docs\\a.md', lineStart: null, lineEnd: null }), 'a.md');
   assert.equal(panel.describeContext(null), '');
-  assert.equal(panel.escapeHtml('<img src=x onerror=1>'), '&lt;img src=x onerror=1&gt;');
+  assert.equal(panel.escapeAttribute('<img src=x onerror=1>'), '&lt;img src=x onerror=1&gt;');
+});
+
+await test('提问面板:正文交给 DSH 官方渲染器,面板不再自己拼 HTML', () => {
+  const webview = '../assets/extensions/dshcs-editor-bridge/webview/src';
+  const thread = readFileSync(new URL(`${webview}/thread.jsx`, import.meta.url), 'utf8');
+  assert.match(thread, /import \{ MarkdownText \} from '@deepseek-ai\/dsh-client-ui-primitives'/,
+    '助手正文必须走官方 MarkdownText(与 DSH 界面同一份代码)');
+  assert.match(thread, /<MarkdownText[\s\S]*streaming=\{entry\.streaming === true\}/,
+    '流式条目要把 streaming 传给官方渲染器(增量解析)');
+  assert.match(thread, /labels=\{LABELS\}/, '官方渲染器的代码块按钮文案要传进去');
+  const app = readFileSync(new URL(`${webview}/app.jsx`, import.meta.url), 'utf8');
+  assert.match(app, /import panel from '\.\.\/\.\.\/lib\/ask-panel\.js'/,
+    '面板与扩展共用同一份纯模型(lib/ask-panel.js)');
+  assert.match(app, /vscode\.postMessage\(\{ type: 'approve', id, outcome \}\)/, '授权卡片点按后要提交给扩展');
+  assert.match(app, /data-ds-dark-theme/, '暗色主题要切官方令牌表(否则令牌表停在亮色)');
+  const approval = readFileSync(new URL(`${webview}/approval.jsx`, import.meta.url), 'utf8');
+  assert.match(approval, /allowed-once/, '只允许「允许一次」(没有"以后都允许"这种入口)');
+  assert.match(approval, /rejected/, '要有「拒绝」');
+  assert.doesNotMatch(approval, /session|always|永久/, '授权只对这一次动作有效,不该有"记住选择"的入口');
 });
 
 await test('提问意图:文件级不带行号,选中级只在真有选区时带行号(0.3.21)', () => {

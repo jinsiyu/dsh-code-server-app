@@ -1,94 +1,258 @@
-// dshcs-editor-bridge / lib/ask-panel.js —— 「问 DSH」面板(0.2.0)
+// dshcs-editor-bridge / lib/ask-panel.js —— 「问 DSH」面板的纯逻辑(0.2.3)
 //
-// 纯逻辑 + HTML 生成,**不 require('vscode')**,所以能在普通 Node 里单测
-// (scripts/test-bridge-extension.mjs)。与 VS Code 交互的部分在 extension.js。
+// **一份模型,两边用**:
+//   - 扩展侧(extension.js)用它保存面板状态,并组装每趟轮询 postMessage 的载荷;
+//   - 面板侧(webview/src/app.jsx,由 scripts/build-webview.mjs 打成 webview/thread.js)
+//     用它把载荷变成视图 —— 消息正文交给 DSH **官方** markdown 渲染器
+//     (`@deepseek-ai/dsh-client-ui-primitives` 的 MarkdownText,与 DSH 界面同一份代码)。
 //
-// 为什么要有这个面板:0.3.0–0.3.18 的提问是「输入框 → 发送 → 一条状态栏提示」,
-// 用户在编辑器里问完必须切回 DSH 界面才看得到回答。面板把三件事放在一处:
-//   ① 带着上下文提问(文件:行 + 选中内容,发送时再取一次当前选区);
-//   ② 提问以**用户输入**的形态进 DSH 会话(host 侧 bridge-session.mjs 的 source.kind='user');
-//   ③ 回答**同步显示在这里** —— host 把 agent 的正文随 /sync 的 answers 字段推回来
-//      (见 lib/bridge-answer.mjs),面板每趟轮询刷新一次,不需要第二个定时器。
+// 0.2.0–0.2.2 的面板自己拼 HTML 字符串、正文按 `white-space: pre-wrap` 原样显示,与 DSH 界面
+// 的排版不一致;0.2.3 起正文走官方渲染器,面板只保留"外壳"逻辑(上下文 / 状态 / 输入框)。
+//
+// 本文件不 require('vscode')、不碰 DOM,所以能在普通 Node 里单测
+// (scripts/test-bridge-extension.mjs)。
 
 'use strict';
 
-/** 面板里最多保留多少轮问答(超过丢最旧的:这是对话窗口,不是存档)。 */
-const MAX_TURNS = 20;
+/** 面板保留的对话条目上限(宿主侧 lib/bridge-thread.mjs 也有上限;这里再兜一层)。 */
+const MAX_ENTRIES = 200;
 
-/** 单条消息渲染上限(回答太长时截断,避免 webview 卡)。 */
-const MAX_MESSAGE_CHARS = 20000;
+/** 本地乐观提问(已发出、宿主还没回显)的上限。 */
+const MAX_PENDING = 6;
 
-/** HTML 转义:面板里所有用户/模型文本都必须走它(webview 里就是 XSS 面)。 */
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+/** 单条正文渲染上限(宿主已截到 8000,这里只防意外)。 */
+const MAX_TEXT = 20000;
+
+/** 授权卡片的默认等待窗口(毫秒);宿主随 /sync 给出真实值,这里只是兜底。 */
+const DEFAULT_HOLD_MS = 8000;
+
+/** 条目角色(与 lib/bridge-thread.mjs 的投影一致)。 */
+const ROLES = ['user', 'assistant', 'tool', 'approval'];
+
+/** 折叠空白:用于"本地乐观提问"与"宿主回显"的同一性比较。 */
+function normalizeText(text) {
+  return String(text ?? '').replace(/\s+/g, ' ').trim();
 }
 
-/**
- * 面板状态模型(纯数据,便于单测)。
- * @returns {{turns: Array<{question: string, answer: string, done: boolean, error: string|null}>,
- *            context: object|null, status: string, sessionId: string|null}}
- */
+/** 面板状态(纯数据,便于单测)。 */
 function createPanelState() {
-  return { turns: [], context: null, status: 'idle', sessionId: null };
-}
-
-/** 追加一次提问(开始新一轮)。 */
-function pushQuestion(state, question, context) {
-  state.turns.push({ question, answer: '', done: false, error: null });
-  while (state.turns.length > MAX_TURNS) state.turns.shift();
-  state.context = context ?? state.context;
-  state.status = 'sending';
-  state.sessionId = null;
-  return state.turns[state.turns.length - 1];
-}
-
-/** 最后一次提问对应的轮次(没有就返回 null)。 */
-function currentTurn(state) {
-  return state.turns.length === 0 ? null : state.turns[state.turns.length - 1];
-}
-
-/**
- * 把 host 推回来的 answers 应用到状态上。
- * `answers` 是 `[{sessionId, text, done, at}]`(见 lib/bridge-answer.mjs);只认**本面板登记的会话**。
- * @returns {boolean} 是否有变化(调用方据此决定要不要刷新 webview)
- */
-function applyAnswers(state, answers, sessionId) {
-  const target = sessionId ?? state.sessionId;
-  if (target === null || target === undefined || !Array.isArray(answers)) return false;
-  const entry = answers.find((item) => item !== null && typeof item === 'object' && item.sessionId === target);
-  if (entry === undefined) return false;
-  const turn = currentTurn(state);
-  if (turn === null) return false;
-  const text = typeof entry.text === 'string' ? entry.text.slice(0, MAX_MESSAGE_CHARS) : '';
-  const done = entry.done === true;
-  const changed = turn.answer !== text || turn.done !== done || state.status !== (done ? 'idle' : 'thinking');
-  turn.answer = text;
-  turn.done = done;
-  state.status = done ? 'idle' : 'thinking';
-  return changed;
-}
-
-/** 状态 → 面板可渲染的 JSON(postMessage 的载荷)。 */
-function panelPayload(state) {
   return {
-    type: 'state',
-    status: state.status,
-    context: state.context,
-    turns: state.turns.map((turn) => ({
-      question: turn.question,
-      answer: turn.answer,
-      done: turn.done === true,
-      error: turn.error ?? null,
-    })),
+    /** 对话条目(宿主权威;0.3.22 起只含**新内容**)。 */
+    entries: [],
+    /** 条目签名:变了才刷新面板(600ms 一趟轮询,不能每趟都重传几十 KB)。 */
+    entriesSig: '',
+    /** 已发出、宿主还没回显的提问(乐观显示)。 */
+    pending: [],
+    /** 待决授权请求 [{id, toolName, reason, callId, at}]。 */
+    approvals: [],
+    approvalSig: '',
+    approvalHoldMs: DEFAULT_HOLD_MS,
+    /** 宿主有没有对话流能力:null=还不知道,false=旧版宿主。 */
+    available: null,
+    /** 对话流的错误(订阅失败 / 旧版宿主)。 */
+    threadError: null,
+    /** 当前提问意图:'selection' | 'file'。 */
+    mode: 'selection',
+    /** 发送时那一次取的编辑器上下文。 */
+    context: null,
+    /** idle | sending | thinking | error */
+    status: 'idle',
+    error: null,
+    /** 面板绑定的会话(host 回话里的 sessionId)。 */
+    sessionId: null,
+    /** DSH 界面的版本(host 的 /sync 报回来;面板据此提示渲染器版本不一致)。 */
+    uiVersion: null,
   };
 }
 
-/** 上下文描述(标题栏那一行):文件:行 + 选区行数。 */
+/** 一条宿主条目 → 规整过的渲染条目(字段白名单,不接受宿主塞别的东西)。 */
+function cleanEntry(raw) {
+  if (raw === null || typeof raw !== 'object') return null;
+  const role = ROLES.includes(raw.role) ? raw.role : null;
+  if (role === null) return null;
+  const text = typeof raw.text === 'string' ? raw.text.slice(0, MAX_TEXT) : '';
+  return {
+    role,
+    text,
+    streaming: raw.streaming === true,
+    name: typeof raw.name === 'string' ? raw.name : null,
+    summary: typeof raw.summary === 'string' ? raw.summary : null,
+    status: typeof raw.status === 'string' ? raw.status : null,
+    callId: typeof raw.callId === 'string' ? raw.callId : null,
+    approvalId: typeof raw.approvalId === 'string' ? raw.approvalId : null,
+  };
+}
+
+/**
+ * 条目签名:正文只会"流式变长"或"被耐久消息原地替换"(此时 streaming 翻转),
+ * 所以 角色 + 状态 + 长度 + 是否流式 足够判变化,不必每趟比对几十 KB 文本。
+ */
+function entriesSignature(entries) {
+  const parts = [];
+  for (const entry of entries) {
+    parts.push(`${entry.role}:${entry.status ?? ''}:${entry.streaming ? 1 : 0}:${entry.text.length}:${entry.summary === null ? '' : entry.summary.length}`);
+  }
+  return `${entries.length}|${parts.join(',')}`;
+}
+
+/** 本地乐观提问 → 渲染条目。 */
+function pendingEntries(state) {
+  return state.pending.map((item) => ({
+    role: 'user',
+    text: item.text,
+    streaming: false,
+    name: null,
+    summary: null,
+    status: item.error === null || item.error === undefined ? 'sending' : 'error',
+    callId: null,
+    approvalId: null,
+  }));
+}
+
+/** 面板要渲染的完整列表(宿主条目 + 尚未回显的本地提问)。 */
+function entriesOf(state) {
+  const all = [...state.entries, ...pendingEntries(state)];
+  return all.length > MAX_ENTRIES ? all.slice(all.length - MAX_ENTRIES) : all;
+}
+
+/**
+ * 应用宿主 `/sync` 的 `thread` 快照。
+ *
+ * `thread === null` = 旧版宿主(没有这个字段)—— 必须**说出原因**,否则面板会永远停在"正在回答…"。
+ * `thread.available === false` = 宿主有这个能力但当前没有 watch 到会话(还没提问过)。
+ *
+ * @returns {boolean} 是否有变化(调用方据此决定要不要刷新 webview)
+ */
+function applyThread(state, thread, sessionId) {
+  if (thread === null || thread === undefined || typeof thread !== 'object') {
+    const changed = state.available !== false || state.threadError === null;
+    state.available = false;
+    state.threadError = '宿主没有对话流能力(插件版本过旧?):请重启 dsh web 让 host 侧升级到 0.3.22 以上';
+    // 已经问过了却拿不到对话流:不能只留一行提示,面板必须报错(否则永远停在"正在回答…")。
+    if (state.pending.length > 0 && state.status !== 'error') {
+      state.status = 'error';
+      state.error = state.threadError;
+    }
+    return changed;
+  }
+  let changed = false;
+  const next = [];
+  if (Array.isArray(thread.entries)) {
+    for (const raw of thread.entries) {
+      const entry = cleanEntry(raw);
+      if (entry !== null) next.push(entry);
+    }
+  }
+  const sig = entriesSignature(next);
+  if (sig !== state.entriesSig) {
+    state.entries = next;
+    state.entriesSig = sig;
+    changed = true;
+  }
+  const available = thread.available !== false;
+  if (available !== state.available) {
+    state.available = available;
+    changed = true;
+  }
+  const error = typeof thread.error === 'string' && thread.error !== '' ? thread.error : null;
+  if (error !== state.threadError) {
+    state.threadError = error;
+    changed = true;
+  }
+  const session = typeof thread.sessionId === 'string' && thread.sessionId !== ''
+    ? thread.sessionId
+    : (typeof sessionId === 'string' && sessionId !== '' ? sessionId : null);
+  if (session !== null && session !== state.sessionId) {
+    state.sessionId = session;
+    changed = true;
+  }
+  // 宿主回显了同一段文字 → 本地乐观条目退场(不重复显示)。
+  const before = state.pending.length;
+  state.pending = state.pending.filter((item) => !next.some(
+    (entry) => entry.role === 'user' && normalizeText(entry.text) === normalizeText(item.text),
+  ));
+  if (state.pending.length !== before) changed = true;
+
+  // 忙碌判定:有待回声的提问、有流式条目、或有还在跑的工具 → thinking。
+  const busy = state.pending.length > 0
+    || next.some((entry) => entry.streaming === true || (entry.role === 'tool' && entry.status === 'running'));
+  if (busy && state.status !== 'error') state.status = 'thinking';
+  else if (!busy && (state.status === 'thinking' || state.status === 'sending')) state.status = 'idle';
+  return changed;
+}
+
+/** 应用宿主 `/sync` 的 `approvals` 快照(待决授权请求)。 */
+function applyApprovals(state, approvals, holdMs) {
+  const list = [];
+  if (Array.isArray(approvals)) {
+    for (const raw of approvals) {
+      if (raw === null || typeof raw !== 'object') continue;
+      if (typeof raw.id !== 'string' || raw.id === '') continue;
+      list.push({
+        id: raw.id,
+        toolName: typeof raw.toolName === 'string' && raw.toolName !== '' ? raw.toolName : 'tool',
+        reason: typeof raw.reason === 'string' ? raw.reason : '',
+        callId: typeof raw.callId === 'string' ? raw.callId : null,
+        at: Number.isSafeInteger(raw.at) ? raw.at : Date.now(),
+      });
+    }
+    list.sort((a, b) => a.at - b.at);
+  }
+  const window = Number.isSafeInteger(holdMs) && holdMs > 0 ? holdMs : DEFAULT_HOLD_MS;
+  const sig = `${window}|${JSON.stringify(list)}`;
+  if (sig === state.approvalSig) return false;
+  state.approvals = list;
+  state.approvalHoldMs = window;
+  state.approvalSig = sig;
+  return true;
+}
+
+/**
+ * 把宿主一趟 `/sync` 的结果并进面板状态(扩展侧只调这一个)。
+ *
+ * `result.thread === undefined` = 旧版宿主(没有这个字段)。
+ * @returns {boolean} 是否有变化(调用方据此决定要不要刷新 webview)
+ */
+function applySync(state, result) {
+  let changed = false;
+  if (applyThread(state, result === null || result === undefined ? null : result.thread, result?.sessionId ?? null)) {
+    changed = true;
+  }
+  if (applyApprovals(state, result === null || result === undefined ? [] : result.approvals, result?.approvalHoldMs)) {
+    changed = true;
+  }
+  const version = result === null || result === undefined ? undefined : result.uiVersion;
+  if (typeof version === 'string' && version !== '' && version !== state.uiVersion) {
+    state.uiVersion = version;
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * 登记一条本地提问(乐观显示;宿主回显后自动退场)。
+ * @returns {object} 刚登记的 pending 条目
+ */
+function pendingQuestion(state, text, context) {
+  const item = { text: String(text ?? ''), at: Date.now(), error: null };
+  state.pending.push(item);
+  while (state.pending.length > MAX_PENDING) state.pending.shift();
+  if (context !== null && context !== undefined) state.context = context;
+  state.status = 'sending';
+  state.error = null;
+  return item;
+}
+
+/** 投递失败 / 面板错误:状态行 + 最新一条本地提问都标上原因。 */
+function failPanel(state, message) {
+  state.status = 'error';
+  state.error = message;
+  const last = state.pending[state.pending.length - 1];
+  if (last !== undefined) last.error = message;
+  return state;
+}
+
+/** 上下文 → 一行描述(标题栏):文件:行 + 选区行数。 */
 function describeContext(context) {
   if (context === null || context === undefined) return '';
   const name = typeof context.file === 'string' && context.file !== '' ? context.file : '(当前文件)';
@@ -102,129 +266,134 @@ function describeContext(context) {
   return base;
 }
 
-/**
- * 面板 HTML(一次性的外壳;之后靠 postMessage 增量更新,避免把用户正在输入的内容冲掉)。
- * @param {{cspSource: string, nonce: string}} options
- */
-function renderPanelHtml({ cspSource, nonce }) {
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<title>DSH 提问</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { margin: 0; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size, 13px);
-         color: var(--vscode-foreground); background: var(--vscode-editor-background); display: flex; flex-direction: column; height: 100vh; }
-  header { padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border, #8884); font-size: 12px; opacity: .85; }
-  #log { flex: 1; overflow-y: auto; padding: 12px; }
-  .turn { margin-bottom: 16px; }
-  .q { background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, #8884);
-       border-radius: 6px; padding: 6px 8px; white-space: pre-wrap; word-break: break-word; }
-  .a { margin-top: 8px; padding: 2px 2px 0 8px; border-left: 2px solid var(--vscode-focusBorder, #8886);
-       white-space: pre-wrap; word-break: break-word; }
-  .a.empty { opacity: .5; font-style: italic; }
-  .err { color: var(--vscode-errorForeground, #f66); margin-top: 6px; white-space: pre-wrap; }
-  footer { border-top: 1px solid var(--vscode-panel-border, #8884); padding: 8px; display: flex; gap: 8px; align-items: flex-end; }
-  textarea { flex: 1; resize: vertical; min-height: 54px; max-height: 40vh; padding: 6px 8px; box-sizing: border-box;
-             color: var(--vscode-input-foreground); background: var(--vscode-input-background);
-             border: 1px solid var(--vscode-input-border, #8884); border-radius: 4px; font-family: inherit; font-size: inherit; }
-  button { padding: 6px 14px; border: none; border-radius: 4px; cursor: pointer;
-           color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
-  button:disabled { opacity: .5; cursor: default; }
-  #status { padding: 0 12px 8px; font-size: 12px; opacity: .8; min-height: 16px; }
-</style>
-</head>
-<body>
-<header id="ctx">来自编辑器</header>
-<div id="log"></div>
-<div id="status"></div>
-<footer>
-  <textarea id="box" placeholder="问 DSH…(Enter 发送,Shift+Enter 换行)"></textarea>
-  <button id="send">发送</button>
-</footer>
-<script nonce="${nonce}">
-  const vscode = acquireVsCodeApi();
-  const log = document.getElementById('log');
-  const ctx = document.getElementById('ctx');
-  const status = document.getElementById('status');
-  const box = document.getElementById('box');
-  const send = document.getElementById('send');
-
-  function render(state) {
-    ctx.textContent = state.contextText || '来自编辑器';
-    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
-    log.textContent = '';
-    for (const turn of state.turns) {
-      const wrap = document.createElement('div');
-      wrap.className = 'turn';
-      const q = document.createElement('div');
-      q.className = 'q';
-      q.textContent = turn.question;
-      wrap.appendChild(q);
-      const a = document.createElement('div');
-      a.className = 'a' + (turn.answer ? '' : ' empty');
-      a.textContent = turn.answer || (turn.error ? '' : (turn.done ? '(没有文字回答)' : '思考中…'));
-      wrap.appendChild(a);
-      if (turn.error) {
-        const err = document.createElement('div');
-        err.className = 'err';
-        err.textContent = turn.error;
-        wrap.appendChild(err);
-      }
-      log.appendChild(wrap);
-    }
-    status.textContent = state.statusText || '';
-    send.disabled = state.status === 'sending';
-    if (atBottom) log.scrollTop = log.scrollHeight;
-  }
-
-  function submit() {
-    const text = box.value.trim();
-    if (text === '') return;
-    vscode.postMessage({ type: 'ask', text });
-    box.value = '';
-  }
-  send.addEventListener('click', submit);
-  box.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(); }
-  });
-  window.addEventListener('message', (event) => { if (event.data && event.data.type === 'state') render(event.data); });
-  // 出错就写在状态行上:面板静默空白是最难查的一种失败。
-  window.addEventListener('error', (event) => {
-    status.textContent = '面板脚本出错:' + (event && event.message ? event.message : '未知');
-  });
-  window.addEventListener('unhandledrejection', (event) => {
-    status.textContent = '面板脚本出错:' + (event && event.reason ? String(event.reason) : '未知');
-  });
-  vscode.postMessage({ type: 'ready' });
-  box.focus();
-</script>
-</body>
-</html>`;
+/** 标题栏那一行:上下文 + 提问意图。 */
+function contextLine(state) {
+  const where = state.context === null || state.context === undefined
+    ? '来自编辑器'
+    : `来自编辑器:${describeContext(state.context)}`;
+  if (state.context === null || state.context === undefined) return where;
+  return state.mode === 'file' ? `${where} · 针对当前文件` : `${where} · 针对选中内容`;
 }
 
 /** 状态 → 状态行文案(扩展侧组装,面板只显示)。 */
 function statusText(state) {
-  switch (state.status) {
-    case 'sending': return '发送中…';
-    case 'thinking': return 'DSH 正在回答…';
-    case 'error': return '出错了';
-    default: return '';
-  }
+  if (state.status === 'error') return state.error ?? '出错了';
+  if (state.status === 'sending') return '正在发给 DSH…';
+  if (state.status === 'thinking') return 'DSH 正在回答…';
+  return state.threadError ?? '';
+}
+
+/** 状态 → 面板可渲染的 JSON(postMessage 的载荷)。 */
+function panelPayload(state) {
+  return {
+    type: 'state',
+    entries: entriesOf(state),
+    approvals: state.approvals,
+    approvalHoldMs: state.approvalHoldMs,
+    contextText: contextLine(state),
+    statusText: statusText(state),
+    status: state.status,
+    error: state.error,
+    sessionId: state.sessionId,
+    available: state.available,
+    threadError: state.threadError,
+    uiVersion: state.uiVersion,
+  };
+}
+
+/** 面板侧:把载荷并进本地视图状态(只认白名单字段)。 */
+function applyPayload(state, payload) {
+  if (payload === null || typeof payload !== 'object' || payload.type !== 'state') return state;
+  return {
+    ...state,
+    entries: Array.isArray(payload.entries) ? payload.entries : [],
+    approvals: Array.isArray(payload.approvals) ? payload.approvals : [],
+    approvalHoldMs: Number.isSafeInteger(payload.approvalHoldMs) && payload.approvalHoldMs > 0
+      ? payload.approvalHoldMs
+      : DEFAULT_HOLD_MS,
+    contextText: typeof payload.contextText === 'string' ? payload.contextText : '',
+    statusText: typeof payload.statusText === 'string' ? payload.statusText : '',
+    status: typeof payload.status === 'string' ? payload.status : 'idle',
+    error: typeof payload.error === 'string' ? payload.error : null,
+    sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : null,
+    available: payload.available === undefined ? null : payload.available,
+    threadError: typeof payload.threadError === 'string' ? payload.threadError : null,
+    uiVersion: typeof payload.uiVersion === 'string' ? payload.uiVersion : null,
+  };
+}
+
+/** 面板视图的初始状态(同 applyPayload 的输出形状,首帧渲染用)。 */
+function createViewState() {
+  return {
+    entries: [],
+    approvals: [],
+    approvalHoldMs: DEFAULT_HOLD_MS,
+    contextText: '来自编辑器',
+    statusText: '',
+    status: 'idle',
+    error: null,
+    sessionId: null,
+    available: null,
+    threadError: null,
+    uiVersion: null,
+  };
+}
+
+/** HTML 属性转义(只用于外壳里的 URI;正文一律走 React,不做字符串拼接)。 */
+function escapeAttribute(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * 面板 HTML(一次性外壳):只加载打包好的 thread.js / thread.css,
+ * 之后全靠 postMessage 更新 —— 输入框与滚动位置不受影响。
+ *
+ * @param {{cspSource: string, nonce: string, scriptUri: string, styleUri: string}} options
+ */
+function renderPanelHtml({ cspSource, nonce, scriptUri, styleUri }) {
+  const script = escapeAttribute(scriptUri);
+  const style = escapeAttribute(styleUri);
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} data:; font-src ${cspSource}; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<link rel="stylesheet" href="${style}">
+<title>DSH 提问</title>
+</head>
+<body>
+<div id="root"></div>
+<script nonce="${nonce}" src="${script}"></script>
+</body>
+</html>`;
 }
 
 module.exports = {
-  MAX_TURNS,
-  MAX_MESSAGE_CHARS,
-  escapeHtml,
+  MAX_ENTRIES,
+  MAX_PENDING,
+  MAX_TEXT,
+  DEFAULT_HOLD_MS,
+  normalizeText,
   createPanelState,
-  pushQuestion,
-  currentTurn,
-  applyAnswers,
-  panelPayload,
+  cleanEntry,
+  entriesSignature,
+  entriesOf,
+  applyThread,
+  applyApprovals,
+  applySync,
+  pendingQuestion,
+  failPanel,
   describeContext,
-  renderPanelHtml,
+  contextLine,
   statusText,
+  panelPayload,
+  applyPayload,
+  createViewState,
+  escapeAttribute,
+  renderPanelHtml,
 };

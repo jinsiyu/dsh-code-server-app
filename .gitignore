@@ -3,6 +3,8 @@ node_modules/
 *.tgz
 .pnpm-store/
 .pnpm-store-local/
+# pnpm 的仓库本地 store(--store-dir .store;见 pnpm-workspace.yaml 的说明)
+.store/
 pnpm-lock.yaml
 
 # 打包期内置产物:由 `pnpm run vendor:vscode` 生成(见 scripts/vendor-vscode-server.mjs),
@@ -23,6 +25,17 @@ spike-*.mjs
 # client bundle 构建产物:由 src/factory.js 经 `pnpm run build:client` 生成,
 # 仓库只跟踪源码与构建脚本(scripts/build-client.mjs)。
 lib/client.js
+
+# 「问 DSH」面板 webview 的构建产物:由 scripts/build-webview.mjs 生成
+# (官方渲染器 + 面板外壳),同样只跟踪源码与构建脚本。
+assets/extensions/dshcs-editor-bridge/webview/thread.js
+assets/extensions/dshcs-editor-bridge/webview/thread.css
+assets/extensions/dshcs-editor-bridge/webview/fonts/
+assets/extensions/dshcs-editor-bridge/webview/THIRD-PARTY.md
+# 从官方发布物里抽出来的设计令牌表(生成物)
+assets/extensions/dshcs-editor-bridge/webview/src/official-tokens.css
+# webview 打包的中间产物(替身模块 / esbuild metafile)
+.tmp-webview/
 
 # code-server 运行期数据(扩展/用户数据/pid 等,由插件生成)
 code-server/

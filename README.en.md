@@ -12,6 +12,11 @@
 
 A static profile plugin (npm package with host + client bundle) that ships the **VS Code server tree** from a [code-server](https://github.com/coder/code-server) release as a **platform-independent dependency package** (pack-time artifact `vendor/vscode` → `@jinsiyu/dshcs-vscode-server`, no install scripts, no postinstall). The code-server **Node service layer is replaced by the plugin's own `lib/launcher.mjs`**: it drives `<tree>/lib/vscode/out/server-main.js` (`loadCodeWithNls()` / `createServer()` / `handleRequest()` / `handleUpgrade()`) directly and re-adds the few HTTP endpoints code-server used to provide (`/healthz`, `/manifest.json`, `/_static/*`, `/proxy/:port`). The 16 native modules (node-pty / @vscode/sqlite3 / spdlog / …) come from `@jinsiyu/dshcs-*-win32-<arch>` platform packages selected automatically per architecture by the platform aggregator. VS Code's inner dependencies and the prebuilt native modules are **all installed by the package manager together with the plugin** — no global npm install, no `bin` configuration, no profile config changes, no second install command, **no argon2/C++ toolchain**.
 
+> Since 0.3.22 the ask panel renders the session's new content with **DSH's own Markdown renderer** (the same
+> renderer and design tokens as the DSH UI; new content only) and can **answer approval requests in place**
+> (writing outside the workspace / running commands). See "Working with DSH: the editor bridge" and section 21 of
+> `docs/analysis-code-server-as-dsh-plugin.md`.
+
 ## UI carrier and required DSH version (0.2.3: right-sidebar DSH only)
 
 | DSH version | Carrier | Entry points |
@@ -198,23 +203,35 @@ only the editor knows, and lets editor gestures drive the current session.
 | Direction | Capability | Mechanism |
 |---|---|---|
 | editor → agent | **unsaved buffers** (disk ≠ what the user sees), active file and selection, **language-server diagnostics** with `file:line`, source and code | agent tools `editor_context` / `editor_diagnostics`; plus a notice attached before writing a dirty file |
-| editor → DSH | select code → context menu **"DSH: ask about selection"** → an **ask panel** opens (carrying `file:line` and the selection); the question enters the current session as **user input**, and the reply is mirrored back into the panel | extension command `dsh-code-server.askAboutSelection` (one of the **top two** editor context-menu items) + a webview panel + `POST /ask` + the `answers` field of `/sync` |
+| editor → DSH | select code → context menu **"DSH: ask about selection"** → an **ask panel** opens (carrying `file:line` and the selection); the question enters the current session as **user input**, and that session's **new content** is rendered in the panel by DSH's own Markdown renderer | extension command `dsh-code-server.askAboutSelection` (one of the **top two** editor context-menu items) + a webview panel + `POST /ask` + the `thread` field of `/sync` |
+| DSH → editor (approval) | when the agent wants to **write outside the workspace or run a command**, the approval request shows up as a card in the panel (tool, reason, countdown); "allow once" / "reject" takes effect immediately | the `approvals` field of `/sync` + `POST /approve` (the bridge's **only** non-read-only route; constraints under "Security model") |
 | agent → editor | the agent changed a file → a **native diff** opens; if that buffer has unsaved changes you get a warning and **no overwrite** | host watches `tools/result`, the extension polls and opens the diff |
 
 - The tools are only registered while the bridge is live (so the model never sees an unusable tool), and the
   system-prompt section renders only then too.
-- **Ask panel** (extension 0.2.0): the context-menu command no longer pops a one-line input box but opens a panel —
-  transcript on top, input at the bottom. The selection is captured **at send time** (so you can change it while the
-  panel stays open), and the reply refreshes with the same polling round trip: no need to switch back to the DSH UI.
+- **Ask panel** (extension 0.2.0; since 0.2.3 the body goes through the official renderer): the context-menu command
+  no longer pops a one-line input box but opens a panel — that session's **new content** on top, input at the bottom.
+  The selection is captured **at send time** (so you can change it while the panel stays open).
   The two commands **remember their intent** (0.3.21): "ask about selection" carries a **line range + selection text**
   only when something is actually selected, while "ask about file" **never carries line numbers or a selection** — the
   cursor line is irrelevant to the question and only misleads the agent. With no selection, the selection command also
   degrades to the plain file.
+- **The panel renders exactly what DSH renders** (0.3.22): the panel bundles DSH's official Markdown renderer
+  (`MarkdownText` from `@deepseek-ai/dsh-client-ui-primitives`) plus the official design tokens — the same
+  micromark/mdast pipeline, the same incremental streaming parser, the same shiki highlighting (boot set:
+  typescript / shellscript / json), KaTeX math and the same heading/table typography. Only **new content** is
+  rendered (from the moment the panel subscribes); history is **not replayed** and there is no "load earlier".
+- **Approvals are handled right in the panel** (0.3.22): while the panel is open, that session's approval requests
+  ask the panel first (8 s by default). Clicking "allow once" / "reject" settles it immediately; if nobody answers,
+  the request is handed back **unchanged** to the official path (the DSH UI shows the same card).
+  **Nothing is ever auto-approved** — `allowed-once` can only come from a click, and there is no "always allow".
 - The question enters the DSH session as a **plain user message** (`source: { kind: 'user' }`, host 0.3.19): earlier
   versions used `{kind:'plugin'}`, which DSH renders as a *context update* — it did not look like something the user
   said. Provenance stays in the first line of the text: `From the editor: <file>[:<line>]`.
-- **Everything is read-only**: the bridge never writes files, applies edits, or runs commands. The agent's writes
-  still go through its own `fs` tools; the bridge only *knows about* them.
+- **Read-only with one constrained exception**: the bridge never writes files, applies edits, or runs commands; the
+  single non-read-only route is `POST /approve`, which can only **answer an approval request that already exists**
+  (see invariant 2 below). The agent's writes still go through its own `fs` tools; the bridge only *knows about* them
+  and carries your answer back.
 - Status bar shows `$(plug) DSH` while connected (click it for the log in the "DSH Editor Bridge" output channel).
 - **The extension ships as a built-in** (fixed in 0.3.12): `dshcs-editor-bridge` is installed into
   `<tree>/lib/vscode/extensions/` next to `dshcs-open-file`. 0.3.0–0.3.11 installed it as a *user* extension
@@ -226,8 +243,9 @@ only the editor knows, and lets editor gestures drive the current session.
 ### The channels (since 0.3.13 over **local IPC**: a Windows named pipe / unix socket)
 
 ```
-extension → host   POST /code-server-bridge/sync    one round trip: push editor state + take pending events
+extension → host   POST /code-server-bridge/sync    one round trip: push editor state (+ which session the panel watches) + take events and thread deltas
 extension → host   POST /code-server-bridge/ask     push an editor question into the current session
+extension → host   POST /code-server-bridge/approve answer an approval request that **already exists** (the only non-read-only route)
 extension → host   GET  /code-server-bridge/health  unauthenticated liveness probe
 extension → host   POST /code-server-bridge/event   extension reports open/close etc. (host log tail)
 host → extension   <extensionsDir>/.dshcs-bridge/bridge.json   endpoint + token, re-read every 5s
@@ -238,6 +256,14 @@ host → extension   <extensionsDir>/.dshcs-bridge/bridge.json   endpoint + toke
 ```
 
 Requests use `http.request({ socketPath })` (`fetch` has no socket support) and **no port is ever opened**.
+
+The three `/sync` fields the panel actually consumes (0.3.22):
+
+| Field | Content | How the panel uses it |
+|---|---|---|
+| `thread` | **new content** entries (user / assistant / tool / approval) of the session the panel watches; bounded: ≤120 entries per session, ≤8000 chars per body, ≤4 watched sessions | assistant bodies go to the official renderer; tools and approvals become compact summary rows |
+| `approvals` | pending approval requests `[{id, toolName, reason, at}]` (≤4) | renders the card with a countdown; a click posts `/approve` |
+| `approvalHoldMs` / `uiVersion` | the approval window (8000 ms by default) / the DSH UI version | countdown basis; a renderer-version mismatch is surfaced in the panel |
 
 > **Why not HTTP (settled in 0.3.13, all three measured)**
 > 1. **Desktop has no HTTP surface at all**: the renderer calls `host.fetch()` through Electron IPC
@@ -264,20 +290,29 @@ of passing stale data off as fresh).
 request/response round trip every 600 ms. Polling also buys two useful properties: it is idempotent (a dropped event
 only costs one notification — the data always lives in the editor) and the cached state is inherently fresh.
 
-### Security model (four invariants; read before touching `lib/bridge.mjs`)
+### Security model (five invariants; read before touching `lib/bridge.mjs`)
 
 The token lives in `<extensionsDir>/.dshcs-bridge/bridge.json`, **readable by any process of the same local
 user**, so:
 
-1. **`/code-server-bridge/*` is permanently read-only.** No route writes files, edits documents, or runs
-   commands. A leaked token is therefore bounded to "sees information that is in the editor" and **can never**
-   become arbitrary file writes or command execution. A whitelist assertion in `scripts/test-bridge-routes.mjs`
-   guards this.
-2. **Any request carrying `Origin` gets 403.** Browsers always send one (including a sandboxed iframe's literal
+1. **`/code-server-bridge/*` is read-only, with `/approve` as the single exception.** No route writes files,
+   edits documents, runs commands, or spawns processes. A leaked token is therefore bounded to "sees information
+   that is in the editor" and **can never** become arbitrary file writes or command execution. A whitelist
+   assertion in `scripts/test-bridge-routes.mjs` guards this.
+2. **The four constraints on `/approve`** (drop one and it becomes an arbitrary-command-execution back door):
+   (a) it can only **answer** an approval request that already exists — the body is exactly `{id, outcome}`, with
+   **no free text, paths, or command arguments**, so it can answer questions but never start an action;
+   (b) `id` must belong to a request this process created and that is **still pending** (single use);
+   (c) `outcome` accepts only `allowed-once` / `rejected` — there is **no "always allow"**;
+   (d) when no panel is watching, or the window (8 s by default) expires, the request goes **back to the official
+   path** — never auto-approved (DSH's `approval/request` itself fails closed; this bridge can only keep
+   "nobody answered" as "nobody answered"). `pnpm test:webview` asserts these four plus the host-side whitelist.
+3. **Any request carrying `Origin` gets 403.** Browsers always send one (including a sandboxed iframe's literal
    `Origin: null`); the Node extension host never does. Origin is checked **before** the token — otherwise the
    bridge would be a "did you guess the token right" oracle for a web page.
-3. **Paths are confined to the editor's current workspace folders.**
-4. **Everything is bounded**: 200 diagnostics, 500-char messages, 256 KB request bodies, a 64-entry event ring.
+4. **Paths are confined to the editor's current workspace folders.**
+5. **Everything is bounded**: 200 diagnostics, 500-char messages, 256 KB request bodies, a 64-entry event ring,
+   ≤120 thread entries per session (≤8000 chars each, ≤4 watched sessions) and ≤4 pending approvals.
 
 This layer stops "another local app or a browser page that got hold of the file". A malicious program running as
 the same user could read your files and the token anyway — that is outside this plugin's threat model, exactly
@@ -354,13 +389,14 @@ Diagnostics: `GET /api/code-server/status` exposes
 
 ```powershell
 cd C:\Users\User\Desktop\dsh-code-server-app
-pnpm install             # dev deps (esbuild + motion); allowBuilds is explicit → no postinstall runs
+pnpm install             # dev deps (esbuild + the official-renderer bundling deps); allowBuilds is explicit → no postinstall runs
 pnpm run build:client    # src/factory.js → lib/client.js (not committed; must be built first)
+pnpm run build:webview   # ask panel: official Markdown renderer + panel shell → webview/thread.{js,css} (not committed; must be built first)
 pnpm run vendor:check    # optional: show the bundled tree version vs the latest code-server release
 pnpm run vendor:vscode                            # ① produce vendor/vscode (the trimmed VS Code tree, ~197MB)
 pnpm run repack:build -- --target win32-arm64,win32-x64 --pack   # ② one script builds every sub-package
 pnpm run publish:repacks                         # ③ publish every @jinsiyu/* sub-package (default dist-tag: next)
-pnpm pack                                        # ④ → dsh-code-server-app-<version>.tgz (~107KB)
+pnpm pack                                        # ④ → dsh-code-server-app-<version>.tgz (~750KB, including the panel renderer assets)
 pnpm run publish:plugin                          # ⑤ publish the plugin itself (default dist-tag: next)
 # once the user has restarted dsh web and confirmed it works, promote latest:
 pnpm run promote -- <version>
@@ -374,6 +410,14 @@ pnpm run promote -- <version>
 > unverified build. Sub-packages (`@jinsiyu/dshcs-*`, the aggregators) are referenced by exact/caret versions,
 > so their dist-tags do not affect resolution, but they default to `next` as well.
 > Inspect the current tags with `npm dist-tag ls dsh-code-server-app`.
+
+> `build:webview` bundles DSH's **official** Markdown renderer and design tokens into the panel assets
+> (~1.34MB: 996KB JS + 87KB CSS + 254KB KaTeX fonts), so it needs a local DSH deployment: the script reads the
+> `@deepseek-ai/dsh-web-frontend` version from that deployment and compares it with the renderer version pinned in
+> devDependencies — a mismatch **fails the build** (unless `--allow-version-mismatch`). Same convention as
+> `lib/client.js`: the artifacts are not committed and `prepack` rebuilds them.
+> Rationale (why not an iframe, where the tokens come from, size trade-offs) is section 21 of
+> `docs/analysis-code-server-as-dsh-plugin.md`.
 
 `repack:build` (`scripts/vendor-repacks.mjs`) is the **single script that produces every sub-package**:
 
@@ -484,7 +528,9 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 >
 > **Changing the client bundle**: edit `src/factory.js` then run `pnpm run build:client`
 > to regenerate `lib/client.js` (that artifact is not tracked; a browser refresh picks it up — no host restart needed).
-> Window animations are driven by the embedded `motion`; feel parameters live in `winPhysics` (one spot) in `src/factory.js`.
+> **Changing the ask panel**: edit `assets/extensions/dshcs-editor-bridge/webview/src/*` then run
+> `pnpm run build:webview` (same convention: generated, not tracked; the IDE must be restarted once to pick it up,
+> because the extension host caches the webview resources).
 
 ### Pack-machine environment (the user machine needs nothing)
 
@@ -704,6 +750,19 @@ What remains on the plugin side:
   or by simply calling `editor_context` — 0.3.0–0.3.11 sat in the state "health says bridge:true, extension never
   loaded" (cause above: the user-level install was marked `.obsolete`).
 - **Bridged state can lag by up to 600 ms**, and the tools say "stale" rather than serving data older than 10 s.
+- **The ask panel renders only "new content" (0.3.22)**: the subscription starts when the panel opens, the history
+  `records` from `follow`'s opening frame are discarded, and the panel has **no "load earlier"** (the history-paging
+  API `sessionController.page()` is deliberately not called in this version). Switch to the DSH UI for older content.
+- **Panel highlighting ships only DSH's boot grammar set** (typescript / shellscript / json): the rest of the
+  official grammars load lazily through `import()` (~1.6MB total), and the panel is a single-file IIFE with no
+  lazy loading, so those languages render as plain text (exactly like DSH's own first render, no errors).
+  For the full set: `node scripts/build-webview.mjs --all-grammars`.
+- **Panel assets are pinned to the DSH version**: the renderer is bundled against the UI version of the deployed
+  DSH, so after upgrading DSH you must rebuild the panel (`pnpm run build:webview`; the build fails loudly on a
+  version mismatch). The panel also shows a mismatch notice at runtime instead of silently using the wrong renderer.
+- **The approval window in the panel is 8 seconds**: while the panel is open, approvals ask the panel first and are
+  handed back to the DSH UI after 8 s — once handed back, that request can **only** be answered in the DSH UI (the
+  panel card says "handed to the DSH UI").
 - **Unsaved buffers are reported, not taken over.** The agent still edits via its own `fs` tools, i.e. against
   disk. What the bridge adds is a notice *before* writing a dirty file, a diff *after*, and a warning instead of
   an overwrite. It does not decide whether the user saves — that would mean changing the agent's read path,

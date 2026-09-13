@@ -172,7 +172,9 @@ function skipIfUnreachable(result, name) {
   return false;
 }
 
-const BRIDGE_SUFFIXES = ['/health', '/sync', '/ask', '/event'];
+const BRIDGE_SUFFIXES = ['/health', '/sync', '/ask', '/event', '/approve'];
+/** 命名空间里**唯一**非只读的路由:它只能回答既有授权请求(0.3.22,见 handleBridgeApprove)。 */
+const WRITE_SUFFIX = '/approve';
 /** 与 host 侧 lib/bridge.mjs 的 BRIDGE_TOKEN_HEADER 同名同值(扩展侧另有一份字面量)。 */
 const TOKEN_HEADER = 'x-dshcs-bridge-token';
 
@@ -203,16 +205,39 @@ await test('四条路由可达,未知后缀 404(绝不落到 VS Code 那边)', a
   }
 });
 
-await test('命名空间只读:只认这 4 条后缀,写/执行类一律 404', async () => {
+await test('命名空间:只认这几条后缀,写/执行类一律 404;唯一非只读的只有 /approve', async () => {
   // 命名白名单:新增路由必须改这里 —— 逼着人重新想一遍"这是只读的吗"。
   for (const suffix of BRIDGE_SUFFIXES) {
-    assert.ok(/^\/(health|sync|ask|event)$/.test(suffix), `未在只读白名单里的桥路由:${suffix}`);
+    assert.ok(/^\/(health|sync|ask|event|approve)$/.test(suffix), `未在白名单里的桥路由:${suffix}`);
   }
+  // 唯一允许改状态的路由必须**只有** /approve,且它的语义是"回答既有问题"(见下一条用例)。
+  assert.deepEqual(BRIDGE_SUFFIXES.filter((s) => s === WRITE_SUFFIX), [WRITE_SUFFIX]);
   for (const bad of ['/write', '/edit', '/exec', '/run', '/shell', '/apply', '/save', '/delete', '/create']) {
     const res = await callBridge(`/code-server-bridge${bad}`, { method: 'POST', body: '{}' });
     if (skipIfUnreachable(res, '命名空间只读')) return;
     assert.equal(res.status, 404, `${bad} 必须 404(实际 ${res.status})`);
   }
+});
+
+await test('/approve:方法/鉴权先过闸,授权不能凭空发放', async () => {
+  // 这条路由是命名空间里唯一的写口子。本用例覆盖"闸门"部分(方法 → 405、Origin → 403、
+  // 桥未启用 → 503);**白名单与未知 id** 的语义由上面那条 board 级用例覆盖
+  // (本测试框架不起 IDE,`bridgeMeta` 永远为 null,所以请求到不了 body 校验那一段)。
+  const badMethod = await callBridge('/code-server-bridge/approve', { method: 'GET' });
+  if (skipIfUnreachable(badMethod, '/approve')) return;
+  assert.equal(badMethod.status, 405, 'GET 必须 405');
+  const withOrigin = await callBridge('/code-server-bridge/approve', {
+    method: 'POST', headers: { origin: 'http://evil.example' }, body: '{}',
+  });
+  assert.equal(withOrigin.status, 403, '带 Origin 必须 403(浏览器一律拒绝)');
+  const noToken = await callBridge('/code-server-bridge/approve', {
+    method: 'POST', headers: { [TOKEN_HEADER]: 'whatever-0123456789abcdef' }, body: '{}',
+  });
+  assert.equal(noToken.status, 503, '桥未启用时与 /sync 同口径(503)');
+  // 源码级:白名单 + 未知 id 的约束必须在实现里(不能被绕过)
+  const source = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
+  assert.match(source, /PANEL_OUTCOMES\.includes\(outcome\)/, 'outcome 必须走白名单');
+  assert.match(source, /bridgeApprovalBoard\.get\(id\) === null/, '未知 / 已处理的 id 必须被拒(409)');
 });
 
 await test('health 无需令牌(便于重启后一眼确认),且不返回任何编辑器数据', async () => {
@@ -355,56 +380,187 @@ await test('adopt 判据:内容一致时 updated 为空,且能算出"扩展文�
   rmSync(dir, { recursive: true, force: true });
 });
 
-await test('回复同步:只同步"问过 DSH 的会话",正文累积、换轮重置、idle 定稿', async () => {
-  // 编辑器里的提问框要能就地看到回答 ⇒ host 把 agent 的正文随 /sync 的 answers 回去
-  // (见 lib/bridge-answer.mjs)。这里用一个假 ctx 直接驱动事件,验五件事:
-  //   ① 没问过的会话不产生数据;② text-delta 累积、reasoning-delta 忽略;
-  //   ③ 换 turn 重新累积;④ idle 定稿;⑤ 会话数有上限且丢最旧。
-  const answer = await import('../lib/bridge-answer.mjs');
-  const handlers = new Map();
-  const ctx = { on: (event, handler) => { handlers.set(event, handler); return () => handlers.delete(event); } };
-  const board = answer.createAnswerBoard({ maxSessions: 2 });
-  const dispose = answer.registerBridgeAnswers(ctx, { board, log: (m) => console.warn('  ', m) });
-  const emit = (event, payload) => { const handler = handlers.get(event); if (handler !== undefined) handler(payload); };
-  const agent = (id) => ({ id, session: { id } });
+await test('会话流:follow 帧投影成对话条目(只新内容、工具配对、流式替换、有界)', async () => {
+  // 面板要像 DSH 对话那样显示**新内容** ⇒ host 用 sessionController.follow 的帧投影
+  // (见 lib/bridge-thread.mjs)。这里直接驱动帧,验六件事:
+  //   ① 开帧(snapshot)按"只渲染新内容"丢弃历史;② 用户/助手文本;③ 工具 call→result 配对;
+  //   ④ 助手流累积、耐久消息落地后替换流式条目;⑤ 授权审计行;⑥ 条目上限丢最旧。
+  const thread = await import('../lib/bridge-thread.mjs');
+  const state = thread.createThreadState('session-a');
 
-  // ① 没登记过的会话:事件照样来,但不进 board
-  emit('agent/assistant-stream', { agent: agent('session-a'), frame: { type: 'chunk', turn: 1, chunk: { type: 'text-delta', text: '偷看' } } });
-  assert.equal(board.size(), 0, '没被问过的会话不该进 board');
+  // ① 开帧:带历史的 records,但我们只取 cursor
+  assert.equal(thread.consumeFrame(state, {
+    type: 'snapshot',
+    cursor: 42,
+    records: [{ type: 'event', event: { type: 'user/message', data: { content: [{ type: 'text', text: '远古历史' }] } } }],
+  }), false);
+  assert.equal(state.entries.length, 0, '历史不渲染(只渲染新内容)');
+  assert.equal(thread.threadSnapshot(state).cursor, 42, '开帧的 cursor 要留下(诊断/分页切点)');
 
-  assert.equal(board.track('session-a'), true, 'ask 成功后才登记');
-  emit('agent/assistant-stream', { agent: agent('session-a'), frame: { type: 'chunk', turn: 3, chunk: { type: 'text-delta', text: '这是' } } });
-  emit('agent/assistant-stream', { agent: agent('session-a'), frame: { type: 'chunk', turn: 3, chunk: { type: 'reasoning-delta', text: '(内心戏)' } } });
-  emit('agent/assistant-stream', { agent: agent('session-a'), frame: { type: 'chunk', turn: 3, chunk: { type: 'text-delta', text: '回答。' } } });
-  assert.equal(board.get('session-a').text, '这是回答。', 'reasoning 不该混进正文');
-  assert.equal(board.get('session-a').done, false, '还在跑 ⇒ done:false');
+  // ② 用户 / 助手文本(assistant 只取 text 块,reasoning 不进面板)
+  thread.consumeFrame(state, { type: 'event', event: { type: 'user/message', data: { content: [{ type: 'text', text: '这段逻辑对吗?' }] } } });
+  thread.consumeFrame(state, { type: 'event', event: { type: 'assistant/message', data: { message: { content: [{ type: 'reasoning', text: '内心戏' }, { type: 'text', text: '有问题。' }] } } } });
+  assert.deepEqual(state.entries.map((e) => [e.role, e.text]), [['user', '这段逻辑对吗?'], ['assistant', '有问题。']]);
 
-  // ③ 换轮:重新累积(新问题 → 新回答)
-  emit('agent/assistant-stream', { agent: agent('session-a'), frame: { type: 'chunk', turn: 4, chunk: { type: 'text-delta', text: '第二轮' } } });
-  assert.equal(board.get('session-a').text, '第二轮');
+  // ③ 工具 call → result 配对(ok / error)
+  thread.consumeFrame(state, { type: 'event', event: { type: 'tool/call', data: { callId: 'c1', name: 'pwsh', arguments: JSON.stringify({ command: 'npm test\n--watch' }) } } });
+  thread.consumeFrame(state, { type: 'event', event: { type: 'tool/call', data: { callId: 'c2', name: 'edit', arguments: JSON.stringify({ file_path: 'C:\\repo\\a.ts' }) } } });
+  const tools = state.entries.filter((e) => e.role === 'tool');
+  assert.deepEqual(tools.map((t) => [t.name, t.summary, t.status]), [['pwsh', 'npm test', 'running'], ['edit', 'C:\\repo\\a.ts', 'running']],
+    '摘要取命令首行 / 文件路径');
+  thread.consumeFrame(state, { type: 'event', event: { type: 'tool/result', data: { message: { source: { callId: 'c1' }, content: [{ isError: false }] } } } });
+  thread.consumeFrame(state, { type: 'event', event: { type: 'tool/result', data: { message: { source: { callId: 'c2' }, content: [{ isError: true }] } } } });
+  assert.deepEqual(tools.map((t) => t.status), ['ok', 'error'], 'result 回填状态');
+  // 未知 callId 的 result 不该凭空造条目
+  const before = state.entries.length;
+  thread.consumeFrame(state, { type: 'event', event: { type: 'tool/result', data: { message: { source: { callId: 'nope' }, content: [{}] } } } });
+  assert.equal(state.entries.length, before);
 
-  // ④ idle 定稿
-  emit('agent/status', { agent: agent('session-a'), status: 'idle' });
-  assert.equal(board.get('session-a').done, true);
-  emit('agent/status', { agent: agent('session-a'), status: 'running' });
-  assert.equal(board.get('session-a').done, true, 'running 不该把已定稿的标记冲掉');
+  // ④ 助手流:同轮累积;text-delta 之外的块忽略;耐久消息落地后流式条目被替换
+  thread.consumeFrame(state, { type: 'assistant-stream', frame: { type: 'start', turn: 9, step: 1 } });
+  thread.consumeFrame(state, { type: 'assistant-stream', frame: { type: 'chunk', turn: 9, chunk: { type: 'text-delta', text: '正在' } } });
+  thread.consumeFrame(state, { type: 'assistant-stream', frame: { type: 'chunk', turn: 9, chunk: { type: 'reasoning-delta', text: '(不想显示)' } } });
+  thread.consumeFrame(state, { type: 'assistant-stream', frame: { type: 'chunk', turn: 9, chunk: { type: 'text-delta', text: '回答' } } });
+  const streaming = state.entries.filter((e) => e.streaming === true);
+  assert.equal(streaming.length, 1, '同一轮只有一条流式条目');
+  assert.equal(streaming[0].text, '正在回答');
+  thread.consumeFrame(state, { type: 'event', event: { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '正在回答(完整)' }] } } } });
+  assert.equal(state.entries.filter((e) => e.streaming === true).length, 0, '耐久消息落地后不该再保留流式条目');
+  assert.equal(state.entries.at(-1).text, '正在回答(完整)');
 
-  // ⑤ 会话上限:登记第 3 个会话时丢最旧的
-  board.track('session-b');
-  board.track('session-c');
-  assert.equal(board.size(), 2);
-  assert.equal(board.get('session-a'), null, '超出上限时丢最旧的');
-  assert.deepEqual(board.snapshot().map((item) => item.sessionId), ['session-b', 'session-c']);
+  // ⑤ 授权审计行:asked → decided 回填 outcome
+  thread.consumeFrame(state, { type: 'event', event: { type: 'approval/asked', data: { id: 'ap1', toolName: 'pwsh', reason: '命令需要授权' } } });
+  const asked = state.entries.at(-1);
+  assert.deepEqual([asked.role, asked.toolName, asked.status, asked.summary], ['approval', 'pwsh', 'asked', '命令需要授权']);
+  thread.consumeFrame(state, { type: 'event', event: { type: 'approval/decided', data: { id: 'ap1', outcome: 'allowed-once' } } });
+  assert.equal(asked.status, 'allowed-once');
 
-  dispose();
-  assert.equal(handlers.size, 0, 'disposer 必须把两个订阅都摘掉');
+  // ⑥ 上限:塞满后只保留最近 MAX_ENTRIES 条
+  for (let i = 0; i < thread.MAX_ENTRIES + 10; i += 1) {
+    thread.consumeFrame(state, { type: 'event', event: { type: 'user/message', data: { content: [{ type: 'text', text: `#${i}` }] } } });
+  }
+  assert.equal(state.entries.length, thread.MAX_ENTRIES, `条目数必须封顶在 ${thread.MAX_ENTRIES}`);
+  assert.equal(state.entries.at(-1).text, `#${thread.MAX_ENTRIES + 9}`);
 });
 
-await test('源码级:/sync 返回 answers、ask 成功登记会话、提问以用户输入投递', () => {
+await test('会话流注册表:watch 幂等、超出上限丢最旧、abort 真被调用、dispose 收干净', async () => {
+  const thread = await import('../lib/bridge-thread.mjs');
+  const aborted = [];
+  /** 队列式假流:push() 进来的帧真的会被 await 中的消费者取到(模拟长连接)。 */
+  function makeService() {
+    const queue = [];
+    let notify = null;
+    return {
+      push(frame) {
+        queue.push(frame);
+        if (notify !== null) { const resume = notify; notify = null; resume(); }
+      },
+      follow(_request, signal) {
+        aborted.push(signal);
+        return {
+          async *[Symbol.asyncIterator]() {
+            for (;;) {
+              if (queue.length > 0) { yield queue.shift(); continue; }
+              if (signal.aborted) return;
+              await new Promise((resolve) => {
+                notify = resolve;
+                signal.addEventListener('abort', () => { notify = null; resolve(); }, { once: true });
+              });
+              if (signal.aborted) return;
+            }
+          },
+        };
+      },
+    };
+  }
+  const service = makeService();
+  const registry = thread.createThreadRegistry({ resolveController: () => service, log: () => {}, maxWatched: 2 });
+
+  assert.equal(registry.watch('s1'), true);
+  assert.equal(registry.watch('s1'), true, '幂等:重复 watch 不该再开一个订阅');
+  assert.equal(aborted.length, 1);
+  service.push({ type: 'event', event: { type: 'user/message', data: { content: [{ type: 'text', text: '你好' }] } } });
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.equal(registry.snapshot(['s1']).entries.length, 1, '帧要投影进快照');
+  assert.equal(registry.snapshot(['s1']).entries[0].text, '你好');
+
+  registry.watch('s2');
+  registry.watch('s3');
+  assert.equal(aborted.length, 3);
+  assert.equal(aborted[0].aborted, true, '被淘汰的会话订阅必须 abort');
+  assert.equal(registry.snapshot(['s1']).sessionId, null, 's1 已被淘汰');
+
+  registry.sync(['s3', 's4']);
+  assert.equal(registry.isWatched('s2'), false);
+  assert.equal(registry.isWatched('s3'), true);
+  assert.equal(registry.isWatched('s4'), true);
+
+  registry.dispose();
+  assert.equal(registry.isWatched('s3'), false);
+  assert.equal(aborted.every((signal) => signal.aborted), true, 'dispose 必须 abort 全部订阅');
+});
+
+await test('授权拦截:面板先答则返回该 outcome;没人答 / 面板没开则交给官方链路(next)', async () => {
+  // 见 lib/bridge-approval.mjs:从编辑器提问后,工作区外写入 / 命令执行的授权先在面板问一句,
+  // HOLD_MS 内没人答 → next()(官方 GUI 照旧弹卡);缺答案者 fail closed 的语义完全不变。
+  const approval = await import('../lib/bridge-approval.mjs');
+  const board = approval.createApprovalBoard({ holdMs: 40 });
+  const interceptor = approval.createApprovalInterceptor({ board, holdMs: 40, hasPanel: () => panelOpen, log: () => {} });
+  let panelOpen = true;
+  const handlers = new Map();
+  const agent = { ctx: { on: (event, handler) => { handlers.set(event, handler); return () => handlers.delete(event); } } };
+  const dispose = interceptor.intercept(agent, 'session-a');
+  assert.equal(typeof handlers.get('approval/request'), 'function', '必须在 agent.ctx 上注册 approval/request');
+  const handle = handlers.get('approval/request');
+
+  // ① 面板作答 → 返回该 outcome,且**不**调用 next
+  let nextCalls = 0;
+  const answered = handle({ id: 'ap-1', toolName: 'pwsh', reason: '需要授权' }, async () => { nextCalls += 1; return 'rejected'; });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(board.snapshot().map((a) => [a.id, a.toolName, a.reason]), [['ap-1', 'pwsh', '需要授权']],
+    '面板要能看到待决授权(工具名 + 原因)');
+  assert.equal(board.answer('ap-1', 'allowed-once'), true);
+  assert.equal(await answered, 'allowed-once');
+  assert.equal(nextCalls, 0, '面板先答 ⇒ 不该再问官方');
+
+  // ② 白名单:非 allowed-once/rejected 一律拒
+  assert.equal(board.answer('ap-1', 'yolo'), false, '非白名单 outcome 必须被拒');
+  assert.equal(board.answer('missing', 'allowed-once'), false, '未知 id 必须被拒');
+
+  // ③ 没人答(超时)→ 交给官方链路
+  const timedOut = handle({ id: 'ap-2', toolName: 'edit' }, async () => { nextCalls += 1; return 'rejected'; });
+  assert.equal(await timedOut, 'rejected');
+  assert.equal(nextCalls, 1, '面板没答 ⇒ 必须 next() 交给官方');
+  assert.equal(board.size(), 0, '超时后待决列表要清空');
+
+  // ④ 面板没开 → 完全不拦截
+  panelOpen = false;
+  const noPanel = handle({ id: 'ap-3', toolName: 'pwsh' }, async () => { nextCalls += 1; return 'unavailable'; });
+  assert.equal(await noPanel, 'unavailable');
+  assert.equal(nextCalls, 2);
+
+  // ⑤ 并发上限:满了就不抢答(交给官方)
+  panelOpen = true;
+  const slow = [];
+  for (const id of ['b-1', 'b-2', 'b-3', 'b-4']) slow.push(handle({ id, toolName: 't' }, async () => 'rejected'));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(board.size(), approval.MAX_PENDING);
+  const overflow = handle({ id: 'b-5', toolName: 't' }, async () => { nextCalls += 1; return 'unavailable'; });
+  assert.equal(await overflow, 'unavailable', '超过上限必须交给官方');
+  await Promise.all(slow);
+
+  dispose();
+  assert.equal(interceptor.size(), 0);
+});
+
+await test('源码级:/sync 带 thread+approvals、ask 建立会话流与授权拦截、提问以用户输入投递', () => {
   const source = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
-  assert.match(source, /answers: bridgeAnswers\.snapshot\(\)/, '/sync 必须把 answers 带回去(提问框靠它显示回答)');
-  assert.match(source, /bridgeAnswers\.track\(result\.sessionId\)/, 'ask 成功后必须登记会话,否则回复永远不同步');
-  assert.match(source, /registerBridgeAnswers\(ctx,/, '事件订阅必须在 apply 里注册');
+  assert.match(source, /thread: bridgeThread\.supported\(\)/, '/sync 必须把对话流带回去(面板靠它渲染)');
+  assert.match(source, /approvals: bridgeApprovalBoard\.snapshot\(\)/, '/sync 必须带待决授权(面板显示卡片)');
+  assert.match(source, /bridgeThread\.watch\(result\.sessionId\)/, 'ask 成功后必须开始会话流');
+  assert.match(source, /bridgeApproval\.intercept\(result\.agent, result\.sessionId\)/, 'ask 成功后必须启用授权拦截');
+  assert.equal(/snapshotEvents\(|eventAt\(|ownEvents\(/.test(source), false,
+    '禁止同步读会话历史(DSH 已弃用;面板只渲染新内容)');
   const session = readFileSync(new URL('../lib/bridge-session.mjs', import.meta.url), 'utf8');
   assert.match(session, /source: \{ kind: 'user' \}/,
     '提问必须以用户输入进对话(plugin source 会被 DSH 渲染成"上下文更新")');

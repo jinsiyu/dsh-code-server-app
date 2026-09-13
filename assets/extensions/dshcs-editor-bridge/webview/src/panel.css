@@ -1,0 +1,283 @@
+/* dshcs-editor-bridge / webview/src/panel.css —— 「问 DSH」面板自己的样式(0.2.3)
+ *
+ * 面板的外壳(标题 / 状态 / 输入框 / 授权卡片)用 VS Code 主题变量,跟编辑器原生面板一致;
+ * 消息正文**不在这里排版** —— 交给 DSH 官方渲染器的 CSS(MarkdownText.module.css /
+ * CodeBlock.module.css),它依赖一套设计令牌(--dsw-* / --dsl-* / --shiki-*),
+ * 由下面这行提供:构建脚本从官方发布物
+ * (`@deepseek-ai/dsh-client-ui-theme` 的 lib/client.js 里内联的 CSS)原样抽出来,
+ * 所以与 DSH 界面用的是同一套令牌(见 scripts/build-webview.mjs)。
+ *
+ * 顺序要紧:@import 必须在最前(官方令牌先落地),后面的覆盖规则才生效。
+ */
+
+@import "./official-tokens.css";
+
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  /* 官方令牌表会设 body 的背景与前景(DSH 的颜色);面板跟随编辑器主题,所以覆盖掉。 */
+  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+  overflow: hidden;
+}
+
+.dshcs-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.dshcs-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.dshcs-header .dshcs-where {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dshcs-header .dshcs-version {
+  opacity: 0.7;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+}
+
+.dshcs-warn {
+  margin: 8px 12px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--vscode-inputValidation-warningBorder, #b89500);
+  background: var(--vscode-inputValidation-warningBackground, rgba(184, 149, 0, 0.15));
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.dshcs-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px 4px;
+}
+
+.dshcs-empty {
+  opacity: 0.6;
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+/* ---- 消息条目:排版交给官方渲染器,这里只管气泡与间距 ---- */
+
+.dshcs-msg {
+  margin-bottom: 14px;
+}
+
+.dshcs-user {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.dshcs-bubble {
+  max-width: 88%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--vscode-input-background, rgba(128, 128, 128, 0.12));
+  border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.25));
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dshcs-bubble[data-status="sending"] {
+  opacity: 0.6;
+}
+
+.dshcs-bubble[data-status="error"] {
+  border-color: var(--vscode-inputValidation-errorBorder, #be1100);
+}
+
+.dshcs-assistant {
+  word-break: break-word;
+}
+
+.dshcs-tool {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 4px 0 10px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.4));
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.dshcs-tool .dshcs-tool-name {
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.dshcs-tool .dshcs-tool-summary {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
+.dshcs-tool .dshcs-tool-state[data-state="error"] {
+  color: var(--vscode-errorForeground, #f48771);
+}
+
+/* ---- 授权卡片:桥里唯一的"非只读"操作,必须一眼看清 ---- */
+
+.dshcs-approval {
+  margin: 8px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--vscode-inputValidation-warningBorder, #b89500);
+  background: var(--vscode-inputValidation-warningBackground, rgba(184, 149, 0, 0.12));
+  border-radius: 6px;
+}
+
+.dshcs-approval[data-decided] {
+  opacity: 0.75;
+}
+
+.dshcs-approval-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.dshcs-approval-title {
+  font-weight: 600;
+}
+
+.dshcs-approval-timer {
+  flex: 1;
+  text-align: right;
+  opacity: 0.8;
+}
+
+.dshcs-approval-body {
+  font-size: 12px;
+  margin-bottom: 6px;
+  word-break: break-word;
+}
+
+.dshcs-approval-tool {
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.dshcs-approval-reason {
+  margin-top: 2px;
+  opacity: 0.9;
+  white-space: pre-wrap;
+}
+
+.dshcs-approval-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dshcs-approval-actions button {
+  padding: 3px 10px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.dshcs-approval-actions button + button {
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.2));
+}
+
+.dshcs-approval-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.dshcs-approval-note {
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+/* ---- 状态行 + 输入框 ---- */
+
+.dshcs-status {
+  padding: 0 12px 6px;
+  font-size: 12px;
+  min-height: 16px;
+  opacity: 0.85;
+}
+
+.dshcs-status[data-status="error"] {
+  color: var(--vscode-errorForeground, #f48771);
+  opacity: 1;
+}
+
+.dshcs-footer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+}
+
+.dshcs-footer textarea {
+  flex: 1;
+  min-height: 46px;
+  max-height: 40vh;
+  resize: vertical;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.35));
+  border-radius: 4px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.dshcs-footer textarea:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.dshcs-footer button {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.dshcs-footer button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
