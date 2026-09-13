@@ -26,6 +26,13 @@ const RENDERER_PACKAGE = typeof __DSHCS_RENDERER_PACKAGE__ === 'string' ? __DSHC
 
 const vscode = acquireVsCodeApi();
 
+/** 宿主形态(0.2.5):`'dsh'` = 跑在 DSH 页面里的浮动对话框里,否则是 VS Code webview 面板。 */
+const HOST = typeof window.__DSHCS_HOST__ === 'string' ? window.__DSHCS_HOST__ : 'webview';
+/** 挂载点:对话框把它的容器交进来;webview 里就是 #root。 */
+const MOUNT = window.__DSHCS_MOUNT__ instanceof HTMLElement
+  ? window.__DSHCS_MOUNT__
+  : document.getElementById('root');
+
 /** 面板外壳的初始视图状态。 */
 const INITIAL = panel.createViewState();
 
@@ -40,7 +47,17 @@ function App() {
   const stickRef = useRef(true);
   const boxRef = useRef(null);
 
-  // 扩展 → 面板的消息。
+  // 对话框形态:壳子直接推状态(同一个 window,不走 postMessage —— DSH 页面里 postMessage 是公共广播)。
+  useEffect(() => {
+    if (HOST !== 'dsh') return undefined;
+    window.__DSHCS_ASK_PUSH__ = (payload) => {
+      if (payload === null || typeof payload !== 'object') return;
+      setView((prev) => panel.applyPayload(prev, { ...payload, type: 'state' }));
+    };
+    return () => { delete window.__DSHCS_ASK_PUSH__; };
+  }, []);
+
+  // 扩展 → 面板的消息(webview 形态)。
   useEffect(() => {
     const onMessage = (event) => {
       const data = event.data;
@@ -62,7 +79,9 @@ function App() {
   }, []);
 
   // 暗色主题:官方令牌表用 body[data-ds-dark-theme] 切换调色板。
+  // **只在 webview 里做**:在 DSH 页面里那个属性属于 DSH 自己,面板不能去改它(会翻掉整个界面主题)。
   useEffect(() => {
+    if (HOST === 'dsh') return undefined;
     const sync = () => {
       const dark = document.body.classList.contains('vscode-dark')
         || document.body.classList.contains('vscode-high-contrast');
@@ -196,4 +215,8 @@ function App() {
   );
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+if (MOUNT === null || MOUNT === undefined) {
+  console.error('[dshcs] 面板挂载点不存在(#root 或 window.__DSHCS_MOUNT__)');
+} else {
+  createRoot(MOUNT).render(<App />);
+}

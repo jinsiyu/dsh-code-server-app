@@ -779,9 +779,194 @@ let React = require('react')
       }
     }
 
+    // ---------- 「问 DSH」对话框(0.3.24)----------
+    // 对话**不在编辑器的侧栏/tab 里**,而是作为一个浮在 DSH 页面上的对话框(用户的原话:
+    // "对话不要用侧边栏,还是改成对话框形式")。这里就是那个对话框的壳:
+    //   - 定时问 host `/ask/state?rev=N`,没变就只回一个数字(不重传对话流);
+    //   - 打开时懒加载面板产物(`/ask/bundle` → thread.js / thread.css 文本)并注入:
+    //     CSS 进一个 <style>(面板样式只在 `.dshcs-panel` 里生效,不碰 DSH 自己的 body),
+    //     JS 进一个 <script>(它调用 acquireVsCodeApi —— 这里给它一个路由到本模块的替身);
+    //   - 面板里的 ask / approve / close 消息 → host 的 `/ask/send|approve|close`。
+    var ASK_POLL_MS = 900
+    var ask = {
+      rev: -1,
+      open: false,
+      mounted: false,
+      pending: null,
+      el: null, body: null, title: null, timer: null, loading: false,
+    }
+
+    /** 面板 → 对话框壳的消息通道(替身 acquireVsCodeApi 把消息交到这里)。 */
+    function askOnMessage(message) {
+      if (message === null || typeof message !== 'object') return
+      if (message.type === 'ready') { askPush(true); return }
+      if (message.type === 'ask' && typeof message.text === 'string') {
+        api('/code-server/ask/send', { text: message.text, mode: ask.pending === null ? undefined : ask.pending.mode })
+          .then(function (result) { ask.rev = -1; askPush(true) })
+          .catch(function () { /* 下一趟轮询会带回状态 */ })
+        return
+      }
+      if (message.type === 'approve' && typeof message.id === 'string') {
+        api('/code-server/ask/approve', { id: message.id, outcome: message.outcome })
+          .then(function (result) {
+            if (result != null && result.ok === false) askNotice(result.error || '授权提交失败')
+            ask.rev = -1
+            askPush(true)
+          })
+          .catch(function (err) { askNotice('授权提交失败:' + String(err && err.message ? err.message : err)) })
+        return
+      }
+      if (message.type === 'close') askClose()
+    }
+
+    /** 把 host 的状态推进面板(面板顶层的 `__DSHCS_ASK_PUSH__` 由 app.jsx 暴露)。 */
+    function askPush(force) {
+      if (ask.el === null) return
+      var push = window.__DSHCS_ASK_PUSH__
+      if (typeof push === 'function') push(ask.pending)
+      else if (force === true) setTimeout(function () { askPush(false) }, 120)
+    }
+
+    /** 状态行里说一句(面板自己在 statusText 里显示;这里只兜底日志)。 */
+    function askNotice(text) {
+      console.warn('[code-server] ask dialog:', text)
+    }
+
+    function askClose() {
+      ask.open = false
+      if (ask.el !== null) ask.el.style.display = 'none'
+      api('/code-server/ask/close', {}).catch(function () { /* 下一趟轮询会纠正 */ })
+    }
+
+    /** 造对话框外壳(只造一次):头部(标题 / 上下文 / ✕)+ 面板挂载点。 */
+    function askEnsureShell() {
+      if (ask.el !== null) return
+      var el = document.createElement('div')
+      el.className = 'dshcs-dialog'
+      el.setAttribute('data-dshcs-dialog', 'ask')
+      el.style.cssText = [
+        'position:fixed', 'right:24px', 'bottom:24px', 'width:460px', 'height:600px',
+        'min-width:320px', 'min-height:280px', 'max-width:96vw', 'max-height:92vh',
+        'resize:both', 'overflow:hidden', 'display:none', 'z-index:2147483000',
+        'border-radius:10px', 'box-shadow:0 18px 48px rgba(0,0,0,.45)',
+        'border:1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.4))',
+        'background:var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))',
+      ].join(';')
+      var head = document.createElement('div')
+      head.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:move;'
+        + 'border-bottom:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.3));'
+        + 'font:var(--dsw-font-markdown-base, 13px/20px sans-serif)'
+      var title = document.createElement('span')
+      title.textContent = 'DSH 对话'
+      title.style.cssText = 'font-weight:600;flex:none'
+      var where = document.createElement('span')
+      where.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
+        + 'color:var(--dsw-alias-label-tertiary, rgba(128,128,128,.9));font-size:12px'
+      var close = document.createElement('button')
+      close.type = 'button'
+      close.textContent = '✕'
+      close.title = '关闭'
+      close.setAttribute('aria-label', '关闭')
+      close.style.cssText = 'flex:none;border:0;background:transparent;color:inherit;cursor:pointer;'
+        + 'font-size:13px;line-height:1;padding:2px 6px;border-radius:4px'
+      close.addEventListener('click', function () { askClose() })
+      head.appendChild(title)
+      head.appendChild(where)
+      head.appendChild(close)
+      var body = document.createElement('div')
+      body.className = 'dshcs-panel'
+      body.setAttribute('data-dshcs-ask-root', '')
+      body.style.cssText = 'height:calc(100% - 33px);overflow:hidden'
+      el.appendChild(head)
+      el.appendChild(body)
+      document.body.appendChild(el)
+      ask.el = el
+      ask.body = body
+      ask.title = where
+      // 拖动:按住头部移动(位置只在本次会话内有效,不做持久化)。
+      var drag = null
+      head.addEventListener('pointerdown', function (event) {
+        if (event.target === close) return
+        var rect = el.getBoundingClientRect()
+        drag = { x: event.clientX, y: event.clientY, left: rect.left, top: rect.top }
+        el.style.right = 'auto'
+        el.style.bottom = 'auto'
+        el.style.left = rect.left + 'px'
+        el.style.top = rect.top + 'px'
+        try { head.setPointerCapture(event.pointerId) } catch (e) { /* 忽略 */ }
+      })
+      head.addEventListener('pointermove', function (event) {
+        if (drag === null) return
+        el.style.left = Math.max(0, Math.min(window.innerWidth - 80, drag.left + (event.clientX - drag.x))) + 'px'
+        el.style.top = Math.max(0, Math.min(window.innerHeight - 40, drag.top + (event.clientY - drag.y))) + 'px'
+      })
+      head.addEventListener('pointerup', function () { drag = null })
+    }
+
+    /** 懒加载面板产物并挂载(只做一次)。 */
+    function askMount() {
+      if (ask.mounted || ask.loading) return
+      ask.loading = true
+      api('/code-server/ask/bundle').then(function (bundle) {
+        ask.loading = false
+        if (bundle == null || bundle.ok !== true) {
+          askNotice(bundle != null && bundle.error ? bundle.error : '面板产物不可用')
+          return
+        }
+        askEnsureShell()
+        if (document.getElementById('dshcs-ask-style') === null) {
+          var style = document.createElement('style')
+          style.id = 'dshcs-ask-style'
+          style.textContent = bundle.css
+          document.head.appendChild(style)
+        }
+        // 面板脚本:给它 acquireVsCodeApi 替身 + 挂载点,再执行。
+        window.__DSHCS_HOST__ = 'dsh'
+        window.__DSHCS_MOUNT__ = ask.body
+        window.acquireVsCodeApi = function () { return { postMessage: askOnMessage } }
+        var script = document.createElement('script')
+        script.textContent = bundle.js
+        document.head.appendChild(script)
+        ask.mounted = true
+        setTimeout(function () { askPush(true) }, 60)
+      }).catch(function (err) {
+        ask.loading = false
+        askNotice('面板产物加载失败:' + String(err && err.message ? err.message : err))
+      })
+    }
+
+    /** 轮询 host 状态:open 就显示并推状态,关了或没变化就什么都不做。 */
+    function askPoll() {
+      api('/code-server/ask/state?rev=' + ask.rev).then(function (result) {
+        if (result == null || result.ok !== true) return
+        if (result.changed !== true) return
+        ask.rev = typeof result.rev === 'number' ? result.rev : -1
+        ask.pending = result
+        if (result.open === true) {
+          askEnsureShell()
+          ask.el.style.display = 'block'
+          if (ask.title !== null) ask.title.textContent = result.contextText || '来自编辑器'
+          ask.open = true
+          askMount()
+          if (ask.mounted) askPush(true)
+        } else if (ask.el !== null) {
+          ask.el.style.display = 'none'
+          ask.open = false
+        }
+      }).catch(function () { /* 宿主没起/旧版:静默重试 */ })
+    }
+
+    function askStart() {
+      if (ask.timer !== null) return
+      ask.timer = setInterval(askPoll, ASK_POLL_MS)
+      setTimeout(askPoll, 1500)
+      console.log('[code-server] ask dialog poller started (every ' + ASK_POLL_MS + 'ms)')
+    }
+
     function apply(ctx) {
       try {
         internalApply(ctx)
+        askStart()
       } catch (err) {
         console.error('[code-server] apply failed:', err && err.stack ? err.stack : String(err))
         try { document.title = 'CS-ERR ' + ((err && err.message) || String(err)) } catch (e) { /* ignore */ }

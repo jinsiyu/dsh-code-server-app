@@ -58,6 +58,8 @@ let pollTimer = null;
 let lastPollAt = 0;
 /** 「问 DSH」面板:null = 没开。`{panel, state, mode}`(状态模型见 lib/ask-panel.js)。 */
 let askPanel = null;
+/** 宿主是否支持 DSH 页面里的悬浮对话框(0.2.5;/sync 的 askDialog 字段)。 */
+let askDialogSupported = false;
 /** 扩展根目录(activate 时记下;面板要按它取 webview 产物 URI)。 */
 let extensionRoot = null;
 /** 是否已经确认过 host 端点可达(避免把"IDE 刚起、扩展先加载"误判为断线)。 */
@@ -388,6 +390,11 @@ async function pollOnce() {
     await handleEvent(event);
   }
   if ((result.events ?? []).length > 0) client.persist();
+  // 能力探测:宿主支持悬浮对话框(0.3.24)⇒ 右键提问不再开编辑器面板。
+  if (result.askDialog === true && !askDialogSupported) {
+    askDialogSupported = true;
+    log('宿主支持 DSH 页面里的对话对话框:右键提问将浮在 DSH 界面上(不再开编辑器面板)');
+  }
   // 对话流 + 授权待决:host 每趟把被观看会话的**新内容**与待决授权一起回来
   // (见 host 侧 lib/bridge-thread.mjs / lib/bridge-approval.mjs),面板有变化才重画。
   if (askPanel !== null && applySync(askPanel.state, result)) refreshAskPanel();
@@ -607,6 +614,20 @@ async function openAskPanelFor(mode) {
   if (captureAskContext(mode) === null) {
     vscode.window.showInformationMessage('没有活动的编辑器:请先打开一个文件。');
     return;
+  }
+  // 0.2.5 起优先用 **DSH 页面里的悬浮对话框**(用户要的"对话框形式":浮在 DSH 界面上,不占编辑器版面)。
+  // 宿主能力由 /sync 的 askDialog 字段探测;老宿主(探测不到)才退回编辑器里的 webview 面板。
+  if (askDialogSupported) {
+    try {
+      const result = await client.askOpen(mode);
+      if (result !== null && result.ok === true) {
+        log(`已请宿主打开对话对话框(mode=${mode}${typeof result.contextText === 'string' ? `,${result.contextText}` : ''})`);
+        return;
+      }
+      log(`宿主没有打开对话框(${result !== null && result.error ? result.error : '未知原因'})→ 退回编辑器面板`);
+    } catch (error) {
+      log(`ask-open 失败(${error && error.message ? error.message : error}) → 退回编辑器面板`);
+    }
   }
   openAskPanel(mode);
 }

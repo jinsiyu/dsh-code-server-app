@@ -12,7 +12,12 @@
 // 工具 / 授权:面板只给一行紧凑摘要(不做逐工具的自定义卡片)。
 
 import { memo, useState } from 'react';
-import { DisclosureRow, IconThinkOutline14, MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives';
+import {
+  DisclosureRow,
+  IconContextInjectionOutline16,
+  IconThinkOutline14,
+  MarkdownText,
+} from '@deepseek-ai/dsh-client-ui-primitives';
 
 /** 官方渲染器的界面文案(面板自己给中文;DSH 界面走它自己的 locale)。 */
 const LABELS = { code: { copyLabel: '复制', copiedLabel: '已复制' }, footnotes: '脚注' };
@@ -66,11 +71,42 @@ function ThinkingRow({ text, running }) {
   );
 }
 
+/**
+ * 一行「注入的上下文」(默认收起):桥拼进消息的位置行 + 选区代码块。
+ *
+ * 与 DSH 界面对注入上下文的处理一致 —— 默认折叠,只留一行摘要;点开才看得到那段代码。
+ * 摘要取位置行(第一行),去掉 `From the editor: ` 前缀(标题已经说了"来自编辑器")。
+ */
+function ContextRow({ text }) {
+  const [expanded, setExpanded] = useState(false);
+  const firstLine = text.split('\n')[0] ?? '';
+  const summary = firstLine.replace(/^From the editor:\s*/i, '');
+  return (
+    <div className="dshcs-context" data-expanded={expanded || undefined}>
+      <DisclosureRow
+        icon={<IconContextInjectionOutline16 size={16} />}
+        title="上下文"
+        open={expanded}
+        expandable
+        expandOnRowClick
+        onToggle={() => setExpanded((value) => !value)}
+        collapsedContent={<span className="dshcs-context-summary">{summary}</span>}
+      >
+        <pre className="dshcs-context-body">{text}</pre>
+      </DisclosureRow>
+    </div>
+  );
+}
+
 export const ThreadEntry = memo(function ThreadEntry({ entry }) {
   if (entry.role === 'user') {
+    const context = typeof entry.context === 'string' ? entry.context : '';
     return (
       <div className="dshcs-msg dshcs-user">
-        <div className="dshcs-bubble" data-status={entry.status ?? undefined}>{entry.text}</div>
+        <div className="dshcs-user-stack">
+          {context === '' ? null : <ContextRow text={context} />}
+          <div className="dshcs-bubble" data-status={entry.status ?? undefined}>{entry.text}</div>
+        </div>
       </div>
     );
   }

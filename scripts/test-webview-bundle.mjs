@@ -73,8 +73,11 @@ await test('webview 产物:thread.js / thread.css / THIRD-PARTY.md 都在,大小
   assert.ok(css > 20 * 1024, `thread.css 只有 ${kb(css)}:官方令牌表没进去?`);
   assert.ok(css < 1024 * 1024, `thread.css 有 ${kb(css)}:异常`);
   // KaTeX 默认打包:字体要在(数学公式的排版全靠它们)。
-  const fonts = readdirSync(new URL(`${WEBVIEW}/fonts`, import.meta.url));
-  assert.ok(fonts.some((name) => name.endsWith('.woff2')), 'KaTeX 字体缺失(默认会打包;是不是用了 --no-katex?)');
+  // KaTeX 默认打包:字体**内联进 CSS**(0.2.5 起 —— 面板会被注入 DSH 页面,相对 url() 在那边 404)。
+  const bundleCss = readFileSync(new URL(`${WEBVIEW}/thread.css`, import.meta.url), 'utf8');
+  assert.ok(bundleCss.includes('data:font/woff2') || bundleCss.includes('data:application/font-woff2'),
+    'KaTeX 字体要内联成 data URI(默认打包;是不是用了 --no-katex?)');
+  assert.ok(!existsSync(new URL(`${WEBVIEW}/fonts`, import.meta.url)), '不再产出 fonts/ 目录(全部内联)');
   // 扩展目录整包发布 ⇒ 产物随 npm 包走(files 里有 assets/extensions/dshcs-editor-bridge)。
   assert.ok(pkg.files.includes('assets/extensions/dshcs-editor-bridge'), '产物必须在 npm 包的文件清单里');
   assert.equal(pkg.scripts['build:webview'], 'node scripts/build-webview.mjs');
@@ -206,8 +209,36 @@ await test('宿主 /sync:带上 thread / approvals / approvalHoldMs / uiVersion'
   assert.match(host, /uiVersion: uiVersion\(\)/, '/sync 要给界面版本(面板比对渲染器版本)');
   assert.match(host, /function uiVersion\(\)/, '要有 uiVersion 助手');
   assert.match(host, /dsh-web-frontend/, '界面版本来自 dsh-web-frontend(那份 UI 就在它里面)');
-  // 面板在不在看,决定授权是否先问面板(关掉面板就不该拦)。
-  assert.match(host, /hasPanel: \(\) => bridgeWatch\.ids\.length > 0/, '授权拦截只在面板看着时生效');
+  // 面板在不在看,决定授权是否先问面板(关掉面板/对话框就不该拦)。
+  assert.match(host, /hasPanel: hasWatcher/, '授权拦截只在有人看着时生效(编辑器面板或 DSH 对话框)');
+});
+
+await test('宿主:悬浮对话框的 5 条路由 + 能力探测 + 上下文折叠(0.3.24)', () => {
+  const host = read('../lib/index.js');
+  for (const route of ['ask/state', 'ask/send', 'ask/approve', 'ask/close', 'ask/bundle']) {
+    assert.ok(host.includes(`${'${API_BASE}'}/ask/${route.split('/')[1]}`), `缺少路由 ${route}`);
+  }
+  assert.match(host, /askDialog: true/, '/sync 要带能力探测(扩展据此改用 ask-open 事件)');
+  assert.match(host, /kind === 'ask-open'/, '桥的 /event 要认 ask-open(右键提问的入口)');
+  assert.match(host, /function askContextFromCache\(mode\)/, '上下文从宿主缓存的编辑器状态里取');
+  assert.match(host, /const \{ agent: _agent, ...payload \} = result/, 'agent 句柄绝不能进 JSON');
+  assert.match(host, /function answerApproval\(id, outcome\)/, '对话框与桥的 /approve 共用同一套白名单校验');
+  const client = read('../src/factory.js');
+  assert.match(client, /function askEnsureShell\(\)/, 'client 半部要造对话框外壳');
+  assert.match(client, /__DSHCS_MOUNT__/, '把挂载点交给面板脚本');
+  assert.match(client, /window\.acquireVsCodeApi = function \(\) \{ return \{ postMessage: askOnMessage \} \}/,
+    '给面板脚本一个 acquireVsCodeApi 替身(消息路由到 client 半部)');
+  assert.match(client, /ask\/state\?rev=/, '轮询要带 rev(没变化时不重传对话流)');
+  // 上下文折叠:host 拆分 → 面板模型收 context → 渲染成默认收起的行。
+  const session = read('../lib/bridge-session.mjs');
+  assert.match(session, /export function splitEditorPrompt\(text\)/, '桥自己拼的消息要能拆回"上下文 + 原话"');
+  const thread = read('../lib/bridge-thread.mjs');
+  assert.match(thread, /splitEditorPrompt\(text\)/, '投影用户消息时要用它拆');
+  const model = read(`${EXT}/lib/ask-panel.js`);
+  assert.match(model, /context: typeof raw\.context === 'string'/, '面板模型要收 context');
+  const threadView = read(`${WEBVIEW}/src/thread.jsx`);
+  assert.match(threadView, /function ContextRow\(\{ text \}\)/, '注入的上下文要有折叠行');
+  assert.match(threadView, /title="上下文"/, '折叠行标题:上下文');
 });
 
 await test('扩展:上报 watch 列表,并把对话流并进面板状态', () => {

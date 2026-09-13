@@ -290,10 +290,23 @@ function createClient(options) {
           approvals: body !== null && Array.isArray(body.approvals) ? body.approvals : [],
           approvalHoldMs: body !== null && Number.isSafeInteger(body.approvalHoldMs) ? body.approvalHoldMs : undefined,
           uiVersion: body !== null && typeof body.uiVersion === 'string' ? body.uiVersion : undefined,
+          // 能力探测(0.3.24):宿主支持 DSH 页面里的悬浮对话框 ⇒ 提问改走 ask-open 事件(不开 webview 面板)。
+          askDialog: body !== null && body.askDialog === true,
         };
       } catch (error) {
         return { ok: false, error: error.message, status: error.status, code: error.code };
       }
+    },
+    /**
+     * 请宿主打开 DSH 页面里的「问 DSH」对话框(0.3.24)。
+     * 只上报警图(mode),上下文由宿主从它自己的编辑器状态缓存里取 —— 扩展不用重复发一份。
+     */
+    async askOpen(mode) {
+      return request(`${BRIDGE_BASE}/event`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'ask-open', mode: mode === 'file' ? 'file' : 'selection' }),
+      });
     },
     /** 把"选中内容 + 问题"投给 DSH 的当前会话。 */
     async ask(payload) {

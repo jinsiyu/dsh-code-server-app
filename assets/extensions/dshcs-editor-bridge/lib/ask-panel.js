@@ -76,6 +76,8 @@ function cleanEntry(raw) {
     text,
     // 思考过程(0.3.23):渲染成默认收起的「思考」行。
     thinking: typeof raw.thinking === 'string' ? raw.thinking.slice(0, MAX_TEXT) : '',
+    // 注入的上下文(0.3.24):桥自己拼的位置行 + 选区代码块,渲染成默认收起的「上下文」行。
+    context: typeof raw.context === 'string' ? raw.context.slice(0, MAX_TEXT) : '',
     streaming: raw.streaming === true,
     name: typeof raw.name === 'string' ? raw.name : null,
     summary: typeof raw.summary === 'string' ? raw.summary : null,
@@ -98,6 +100,7 @@ function entriesSignature(entries) {
       entry.streaming ? 1 : 0,
       entry.text.length,
       entry.thinking.length,
+      entry.context.length,
       entry.summary === null ? '' : entry.summary.length,
     ].join(':'));
   }
@@ -110,6 +113,7 @@ function pendingEntries(state) {
     role: 'user',
     text: item.text,
     thinking: '',
+    context: '',
     streaming: false,
     name: null,
     summary: null,
@@ -374,9 +378,9 @@ function renderPanelHtml({ cspSource, nonce, scriptUri, styleUri }) {
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} data:; font-src ${cspSource}; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <link rel="stylesheet" href="${style}">
-<title>DSH 提问</title>
+<title>DSH 对话</title>
 </head>
-<body>
+<body class="dshcs-panel">
 <div id="root"></div>
 <script nonce="${nonce}" src="${script}"></script>
 </body>

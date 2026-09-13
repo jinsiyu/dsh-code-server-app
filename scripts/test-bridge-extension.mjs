@@ -557,8 +557,9 @@ await test('提问面板:HTML 外壳只加载打包产物,权限收在 localReso
 await test('提问面板:正文交给 DSH 官方渲染器,面板不再自己拼 HTML', () => {
   const webview = '../assets/extensions/dshcs-editor-bridge/webview/src';
   const thread = readFileSync(new URL(`${webview}/thread.jsx`, import.meta.url), 'utf8');
-  assert.match(thread, /import \{ DisclosureRow, IconThinkOutline14, MarkdownText \} from '@deepseek-ai\/dsh-client-ui-primitives'/,
-    '正文与思考行都必须走官方部件');
+  assert.match(thread, /import \{[\s\S]{0,200}DisclosureRow[\s\S]{0,200}IconThinkOutline14[\s\S]{0,200}MarkdownText[\s\S]{0,80}\} from '@deepseek-ai\/dsh-client-ui-primitives'/,
+    '正文 / 思考行 / 上下文行都必须走官方部件');
+  assert.match(thread, /IconContextInjectionOutline16/, '注入的上下文用官方那个"上下文"图标');
   assert.match(thread, /<MarkdownText[\s\S]*streaming=\{entry\.streaming === true\}/,
     '流式条目要把 streaming 传给官方渲染器(增量解析)');
   assert.match(thread, /labels=\{LABELS\}/, '官方渲染器的代码块按钮文案要传进去');

@@ -1500,3 +1500,69 @@ outcome 只有四种 `allowed-once | rejected | cancelled | unavailable`,**没�
   头部有「DSH / 上下文 / 渲染器版本 / ✕」;正文仍是官方渲染结果(标题、表格、高亮、公式)。
 - **回归**:`test-bridge-routes` 27、`test-bridge-extension` 30(+1 SKIP:沙箱不许连命名管道)、
   `test-webview-bundle` 13,其余套件不变绿。
+
+## 23. 0.3.24:对话改成 DSH 页面里的悬浮对话框 + 上下文折叠 + 授权有人看着才拦
+
+0.3.23 用户实测后提的三条:「打开了一个 dsh 对话页面,没有弹出对话框」「授权问题仍然存在」
+「上下文注入没有折叠」。逐条定位与修法:
+
+### 23.1 为什么编辑器里做不出"对话框",于是搬进 DSH 页面
+
+编辑器的 webview **只能是编辑器组里的一个 tab/一列**(`ViewColumn.Beside` 是挤成一条窄栏,
+`ViewColumn.Active` 是占满整个工作台的一页)—— 两条路用户都试过,反馈都是"这不是对话框"。
+VS Code 扩展 API 没有悬浮窗;所以对话框只能画在 **DSH 页面自己**的 DOM 上,由插件的 **client 半部**
+实现(它本来就在 DSH 页面里跑):
+
+| 部分 | 做什么 |
+| --- | --- |
+| client 半部(`src/factory.js`) | 造浮动容器(fixed、右下角、可拖动、可缩放、✕ 关闭);每 900ms 问一次 `/api/code-server/ask/state?rev=N`,**没变化只回一个数字**;打开时懒加载面板产物并注入 |
+| host(`lib/index.js`) | 新增 5 条同源路由 `/api/code-server/ask/{state,send,approve,close,bundle}`;`/sync` 加能力位 `askDialog: true` |
+| 扩展 | 右键命令改成 `POST /code-server-bridge/event {kind:'ask-open', mode}`(**只上报意图**,上下文由 host 从它自己的缓存取);老宿主(探测不到能力位)才退回编辑器面板 |
+
+产物注入而不是 iframe:desktop 的 `/api` 是 **Electron IPC 帧管道**(`host.fetch()`),
+`<iframe src="/api/...">` 在那边根本不可用;所以改成 fetch 文本 + 注入
+(`<style>` 装 CSS、`<script>` 装 JS),面板脚本通过 `window.__DSHCS_MOUNT__` 拿到挂载点。
+
+**注入安全(两条硬约束)**:
+1. 面板 CSS 的排版规则全部挂在 `.dshcs-panel` 下,**绝不出现 `body {}`** —— 注入不改宿主界面;
+2. 从官方令牌表抽出来的 CSS **只保留 `--` 自定义属性声明**(普通声明会改到 DSH 页面);
+   嵌套块(滚动条那条 `@supports`)整段不注入,只在缺 `--dsh-scrollbar-width` 时补官方值。
+   实测(`.spike/webview-preview/dsh.html` 模拟注入):宿主 body 的 `background:#102030 / Georgia 17px`
+   一个都没变,面板里 markdown、思考行、上下文行、授权卡片全部正常。
+
+### 23.2 上下文注入折叠(`splitEditorPrompt`)
+
+桥自己拼的消息长这样(见 `composeEditorPrompt`):第一行 `From the editor: <位置>`、可选一个围栏
+代码块(选区正文)、然后是用户原话。以前面板把**整段**平铺在气泡里 —— 用户看到一大坨跟自己问题无关的代码。
+现在 host 按位置拆开(不能按空行切:选区自己常含空行):
+
+- `lib/bridge-session.mjs` 新增 `splitEditorPrompt(text)` → `{context, question}`;
+- `lib/bridge-thread.mjs` 投影 `user/message` 时用它:上下文进条目的 `context` 字段,`text` 只留原话;
+- 面板渲染成一行**默认收起**的「上下文」行(官方 `DisclosureRow` + `IconContextInjectionOutline16`),
+  摘要就是位置行,点开才看得到代码;认不出来的消息(用户在 DSH 里自己敲的)照旧是普通气泡。
+
+### 23.3 授权:"有人看着"才拦,而且面板/对话框必须真的在看
+
+0.3.23 把窗口放到 5 分钟、前端不再判过期之后,用户仍反馈"授权问题仍然存在" —— 实测复盘是
+**当时没有任何一方在"看"**:编辑器面板是个 tab,用户切走了/关了,`hasPanel()` 为假,授权就直接
+走了官方链路(DSH 界面的卡片)。0.3.24 相应调整:
+
+- "有人在看" = 编辑器面板声明的会话 **∪** 对话框声明的会话(`bridgeWatch.ids` / `dialogIds`),
+  两边任一在看就算在看;
+- 对话框关掉 → `/ask/close` → `dialogIds` 清空 → 拦截器的 500ms 轮询立刻 `next()` 交回官方链路;
+- 面板/对话框里的卡片只要还在(host 仍未决)就可点,窗口 5 分钟(0.3.23 已改)。
+
+### 23.4 其它
+
+- 面板和对话框**共用同一个产物**(`webview/thread.js|css`):host 的 `/ask/bundle` 直接读盘给文本;
+  KaTeX 字体改成 **data URI 内联**(注入到 DSH 页面时相对 `fonts/...` 会 404),`fonts/` 目录不再产出;
+- `lib/bridge-thread.mjs` 与 `lib/bridge-approval.mjs` 各加了 `rev` 修订号,对话框轮询靠它省流量;
+- 面板脚本按 `window.__DSHCS_HOST__`(`'webview'` / `'dsh'`)区分宿主:对话框形态下**不碰**
+  `body[data-ds-dark-theme]`(那是 DSH 自己的主题开关)。
+
+### 23.5 验证
+
+- `test-webview-bundle` 新增两条:5 条 ask 路由 + 能力位 + `answerApproval` 共用校验 + client 半部的
+  壳/替身/轮询 + `splitEditorPrompt` 接线;产物那条改成"字体内联、无 fonts 目录"。
+- 浏览器注入实测(见上):无样式泄漏、上下文默认收起、思考默认收起、授权卡片可点。
+- 回归:`test-bridge-routes` 27、`test-bridge-extension` 30、`test-webview-bundle` 14。

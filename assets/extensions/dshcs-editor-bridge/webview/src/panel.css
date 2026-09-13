@@ -16,20 +16,23 @@
   color-scheme: light dark;
 }
 
-html,
-body,
-#root {
+/* 面板根容器:
+ *  - webview 形态:body 带 .dshcs-panel(见 lib/ask-panel.js 的外壳 HTML);
+ *  - DSH 页面形态(0.2.5):对话框把 .dshcs-panel 放在自己的容器 div 上,
+ *    所有排版规则都挂在这个类下,**绝不碰 DSH 自己的 body**(注入样式不能改宿主界面)。
+ */
+.dshcs-panel {
   height: 100%;
-}
-
-body {
   margin: 0;
-  /* 官方令牌表会设 body 的背景与前景(DSH 的颜色);面板跟随编辑器主题,所以覆盖掉。 */
-  background: var(--vscode-editor-background);
-  color: var(--vscode-foreground);
-  font-family: var(--vscode-font-family);
+  background: var(--vscode-editor-background, var(--dsw-alias-bg-base, #1e1e1e));
+  color: var(--vscode-foreground, var(--dsw-alias-label-primary, #ccc));
+  font-family: var(--vscode-font-family, var(--dsw-font-family, sans-serif));
   font-size: var(--vscode-font-size, 13px);
   overflow: hidden;
+}
+
+.dshcs-panel #root {
+  height: 100%;
 }
 
 .dshcs-app {
@@ -157,8 +160,39 @@ body {
   justify-content: flex-end;
 }
 
-.dshcs-bubble {
+/* 用户消息:注入的上下文(折叠行)+ 问题气泡,右对齐成一组。 */
+.dshcs-user-stack {
   max-width: 88%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.dshcs-context .dshcs-context-summary {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1 1 auto;
+  color: var(--dsw-alias-label-tertiary, var(--vscode-descriptionForeground));
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dshcs-context .dshcs-context-body {
+  margin: 2px 0 4px;
+  padding: 4px 0 4px calc(22px + var(--dsh-content-font-delta, 0px));
+  color: var(--dsw-alias-label-tertiary, var(--vscode-descriptionForeground));
+  font-size: var(--dsh-content-font-size-secondary, 12px);
+  font-family: var(--ds-font-family-code, monospace);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.dshcs-bubble {
   padding: 6px 10px;
   border-radius: 8px;
   background: var(--vscode-input-background, rgba(128, 128, 128, 0.12));

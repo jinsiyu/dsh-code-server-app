@@ -209,13 +209,18 @@ only the editor knows, and lets editor gestures drive the current session.
 
 - The tools are only registered while the bridge is live (so the model never sees an unusable tool), and the
   system-prompt section renders only then too.
-- **Ask panel** (extension 0.2.0; the official renderer since 0.2.3; a **dialog** since 0.2.4): the context-menu
-  command opens a chat window that fills the editor area with a centred, width-limited column (the ✕ in its header
-  closes it) instead of a cramped side column — and the selection can still be changed while it stays open.
+- **Ask panel** (extension 0.2.0; the official renderer since 0.2.3; a **floating dialog over the DSH UI since
+  0.2.5**): the context-menu command no longer opens a panel inside the editor (that is always a tab or a column,
+  never a dialog) — the plugin's client half pops up a draggable, resizable floating chat window in the DSH page
+  itself (bottom-right, ✕ closes it), leaving the editor layout alone. Hosts without that capability fall back to
+  the in-editor webview panel. The selection can still be changed while the dialog stays open.
   The two commands **remember their intent** (0.3.21): "ask about selection" carries a **line range + selection text**
   only when something is actually selected, while "ask about file" **never carries line numbers or a selection** — the
   cursor line is irrelevant to the question and only misleads the agent. With no selection, the selection command also
   degrades to the plain file.
+- **Injected context is collapsed** (0.3.24): the location line plus the selection code block the bridge adds to the
+  message are split out into a collapsed Context row (click it to see the code), while the bubble keeps only the user's
+  own words — the same treatment the DSH UI gives injected context.
 - **The panel renders exactly what DSH renders** (0.3.22): the panel bundles DSH's official Markdown renderer
   (`MarkdownText` from `@deepseek-ai/dsh-client-ui-primitives`) plus the official design tokens — the same
   micromark/mdast pipeline, the same incremental streaming parser, the same shiki highlighting (boot set:

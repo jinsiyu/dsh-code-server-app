@@ -141,7 +141,49 @@ const REQUIRED_TOKENS = [
   '--dsh-scrollbar-width',
 ];
 
-/** 从 ui-theme 的 client.js 里抽出官方令牌表(CSS 文本 = "顶层为 :root/body 的字面量")。 */
+/**
+ * 从一段 CSS 里抠出"令牌块":选择器是 `:root` / `body` / `body[data-…]` 的块,
+ * 每个块只保留**本层**的 `--` 自定义属性声明;`@media` / `@supports` 里的继续往下找。
+ * 这样既能拿到官方令牌,又保证注入 DSH 页面时不会带上任何普通声明(那会改掉宿主界面)。
+ */
+function extractTokenBlocks(css) {
+  const out = [];
+  let index = 0;
+  while (index < css.length) {
+    const open = css.indexOf('{', index);
+    if (open === -1) break;
+    const selector = css.slice(index, open).trim();
+    let depth = 1;
+    let cursor = open + 1;
+    while (cursor < css.length && depth > 0) {
+      if (css[cursor] === '{') depth += 1;
+      else if (css[cursor] === '}') depth -= 1;
+      cursor += 1;
+    }
+    const body = css.slice(open + 1, cursor - 1);
+    if (/^(?::root|html|body)(\[[^\]]*\])*$/.test(selector)) {
+      // 去掉嵌套块后只留本层声明;分号切分即可(值里不含裸分号以外的东西)。
+      const flat = body.replace(/\{[^{}]*\}/g, '');
+      const declarations = flat
+        .split(';')
+        .map((declaration) => declaration.trim())
+        .filter((declaration) => declaration.startsWith('--'));
+      if (declarations.length > 0) out.push(`${selector} {\n${declarations.join(';\n')};\n}`);
+    } else if (selector.startsWith('@')) {
+      out.push(...extractTokenBlocks(body));
+    }
+    index = cursor;
+  }
+  return out;
+}
+
+/**
+ * 从 ui-theme 的 client.js 里抽出官方令牌表(CSS 文本 = "顶层为 :root/body 的字面量")。
+ *
+ * **只保留自定义属性声明**(`--x: …;`):0.2.5 起面板会被注入 DSH 页面里当浮动对话框,
+ * 官方令牌表里若有普通声明(background / font-family …)就会**改掉宿主界面**。
+ * 令牌本身(--dsw-* / --shiki-*)在 DSH 页面里是同样的值,重定义一次幂等;普通声明一律丢掉。
+ */
 function extractOfficialTokens() {
   const file = path.join(themeDir, 'lib', 'client.js');
   const source = fs.readFileSync(file, 'utf8');
@@ -151,15 +193,23 @@ function extractOfficialTokens() {
   while ((match = literal.exec(source)) !== null) {
     const text = match[0].slice(1, -1);
     if (text.length < 200 || !text.includes('--')) continue;
-    // 只认"整段就是令牌表"的字符串(组件 CSS 是 .class{…} / @media…)。
-    if (!/^(?::root|body)[^{]*\{/.test(text)) continue;
-    sheets.push(text.replace(/\\"/g, '"').replace(/\\n/g, '\n'));
+    // 只认"整段就是样式表"的字符串(组件 CSS 是 .class{…} / @media… 也行,里面同样只有令牌)。
+    if (!/^(?::root|body|html|@)/.test(text)) continue;
+    sheets.push(...extractTokenBlocks(text.replace(/\\"/g, '"').replace(/\\n/g, '\n')));
   }
+  // `--dsh-scrollbar-width` 只出现在上面那张嵌套表里(滚动条样式),这里补官方值兜底:
+  // webview 里没有 DSH 页面替我们定义它,少了它代码块的 `scrollbar-width` 会无效(不致命,但没必要)。
+  const scrollbarWidth = '--dsh-scrollbar-width';
+  const fallback = sheets.join('\n').includes(scrollbarWidth)
+    ? []
+    : ['/* 兜底:官方 scrollbar.css 里那条(嵌套 @supports 块,不整段注入)。 */', 'body { --dsh-scrollbar-width: 8px; }'];
   const css = [
-    '/* 官方设计令牌(DSh 界面同一套):由 scripts/build-webview.mjs 从',
-    ` * @deepseek-ai/dsh-client-ui-theme@${themeVersion} 的 lib/client.js 内联 CSS 原样抽出,`,
+    '/* 官方设计令牌(DSH 界面同一套):由 scripts/build-webview.mjs 从',
+    ` * @deepseek-ai/dsh-client-ui-theme@${themeVersion} 的 lib/client.js 内联 CSS 原样抽出;`,
+    ' * **只保留 -- 自定义属性声明**(普通声明会把宿主 DSH 页面也改掉)。',
     ' * 不要手改 —— 这个文件是生成物,重新构建会覆盖。 */',
     ...sheets,
+    ...fallback,
     '',
   ].join('\n');
   const missing = REQUIRED_TOKENS.filter((token) => !css.includes(token));
@@ -247,7 +297,9 @@ const args = [
   '--log-level=warning',
   '--loader:.module.css=local-css',
   ...(withKatex
-    ? ['--loader:.woff2=file', '--loader:.woff=empty', '--loader:.ttf=empty']
+    // 字体**内联成 data URI**(0.2.5 起):面板 CSS 会被注入 DSH 页面当浮动对话框,
+    // 相对 `fonts/...` 的 url() 在那边解析不到(404);内联后 CSS 自带字体,注入哪里都完整。
+    ? ['--loader:.woff2=dataurl', '--loader:.woff=empty', '--loader:.ttf=empty']
     : ['--loader:.woff2=empty', '--loader:.woff=empty', '--loader:.ttf=empty']),
   '--define:process.env.NODE_ENV="production"',
   `--define:__DSHCS_RENDERER_VERSION__=${JSON.stringify(rendererVersion ?? '')}`,
