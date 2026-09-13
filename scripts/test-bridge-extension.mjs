@@ -372,6 +372,32 @@ await test('端点形状:Windows 必须是命名管道名,其它平台必须是�
   rmSync(dir, { recursive: true, force: true });
 });
 
+// ---------------------------------------------------------------- 编辑器右键菜单
+
+await test('编辑器右键菜单:两个提问命令在**最上面**,并且带图标', () => {
+  // 顺序规则(源码实证,VS Code 1.137 `workbench.web.main.internal.js` 的 `_compareMenuItems`):
+  //   if (i === 'navigation') return -1;            // 只有 "navigation" 这一个组被特殊化到最前
+  //   let c = i.localeCompare(n);                   // 其它组按组名比较 ⇒ 自造组名(如 dsh)被排到后面
+  //   let r = e.order || 0, a = t.order || 0;       // 组内按 @order 升序
+  // 菜单解析用 `Number(group.substr(i+1)) || void 0` ⇒ **负 order 合法**,于是 navigation@-2/-1
+  // 稳定排在 VS Code 自己的 navigation@1(转到定义…)之前 = 右键菜单的第一、第二项。
+  const ext = require2(`${EXT}/package.json`);
+  const commands = new Map(ext.contributes.commands.map((command) => [command.command, command]));
+  const selection = commands.get('dsh-code-server.askAboutSelection');
+  const file = commands.get('dsh-code-server.askAboutFile');
+  assert.ok(selection !== undefined && file !== undefined, '两个提问命令必须都注册');
+  for (const [name, command] of [['选中内容', selection], ['当前文件', file]]) {
+    assert.match(String(command.icon), /^\$\([a-z0-9-]+\)$/, `${name}命令必须带 codicon 图标(实际 ${command.icon})`);
+  }
+  const menu = ext.contributes.menus['editor/context'];
+  assert.deepEqual(menu.map((item) => item.group), ['navigation@-2', 'navigation@-1'],
+    '两条必须在 navigation 组里用负 order(否则会被 localeCompare 排到 1_modification 之后)');
+  assert.equal(menu.find((item) => item.command === 'dsh-code-server.askAboutSelection').when, 'editorHasSelection',
+    '「针对选中内容提问」只在有选区时出现');
+  assert.equal(menu.find((item) => item.command === 'dsh-code-server.askAboutFile').when, undefined,
+    '「针对当前文件提问」任何时候都该出现');
+});
+
 // ---------------------------------------------------------------- 事件抽取
 
 await test('写操作抽取:meta.diffs 优先,参数路径兜底,view 不算改动', async () => {
