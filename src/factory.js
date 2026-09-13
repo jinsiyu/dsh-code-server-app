@@ -903,13 +903,72 @@ let React = require('react')
       head.addEventListener('pointerup', function () { drag = null })
     }
 
+    /**
+     * 取面板产物:内存 → sessionStorage(15 分钟)→ host `/ask/bundle`。
+     *
+     * 为什么要缓存 + 预热(0.3.42):产物是官方渲染器那一整套(JS ≈1MB、CSS ≈426KB,KaTeX 字体已内联),
+     * 第一次打开对话框要"取文本 + 注入 + 解析 + 执行",实测就是"第一次启动很耗时"。
+     * 现在页面加载后空闲时**先取好放内存**(用户点开时直接注入),并用 sessionStorage 顶住刷新。
+     */
+    var ASK_BUNDLE_KEY = 'dshcs.ask.bundle'
+    var ASK_BUNDLE_TTL_MS = 15 * 60 * 1000
+    var askBundleCache = null
+
+    function askBundleFromStorage() {
+      try {
+        var raw = window.sessionStorage.getItem(ASK_BUNDLE_KEY)
+        if (raw == null) return null
+        var parsed = JSON.parse(raw)
+        if (parsed == null || typeof parsed.js !== 'string' || typeof parsed.css !== 'string') return null
+        if (Date.now() - Number(parsed.at || 0) > ASK_BUNDLE_TTL_MS) return null
+        return { css: parsed.css, js: parsed.js }
+      } catch (e) {
+        return null
+      }
+    }
+
+    function askBundleToStorage(bundle) {
+      try {
+        window.sessionStorage.setItem(ASK_BUNDLE_KEY, JSON.stringify({ at: Date.now(), css: bundle.css, js: bundle.js }))
+      } catch (e) {
+        // 容量/隐私模式失败都无所谓:内存那份已经够用
+      }
+    }
+
+    /** 预热:页面加载后空闲时先把产物取回来(不挂载、不显示任何东西)。 */
+    function askPreload() {
+      if (askBundleCache !== null || ask.mounted) return
+      var stored = askBundleFromStorage()
+      if (stored !== null) {
+        askBundleCache = stored
+        return
+      }
+      api('/code-server/ask/bundle').then(function (bundle) {
+        if (bundle == null || bundle.ok !== true) return
+        askBundleCache = { css: bundle.css, js: bundle.js }
+        askBundleToStorage(askBundleCache)
+        console.log('[code-server] ask bundle preloaded (' + Math.round((bundle.js.length + bundle.css.length) / 1024) + 'KB)')
+      }).catch(function () { /* 预热失败不打扰:真正打开时会再取一次 */ })
+    }
+
     /** 懒加载面板产物并挂载(只做一次)。 */
     function askMount() {
       if (ask.mounted || ask.loading) return
       ask.loading = true
-      api('/code-server/ask/bundle').then(function (bundle) {
+      var ready = askBundleCache !== null
+        ? Promise.resolve(askBundleCache)
+        : (askBundleFromStorage() !== null
+          ? Promise.resolve(askBundleFromStorage())
+          : api('/code-server/ask/bundle'))
+      ready.then(function (body) {
         ask.loading = false
-        if (bundle == null || bundle.ok !== true) {
+        var bundle = body
+        if (askBundleCache === null && body != null && body.ok === true) {
+          bundle = { css: body.css, js: body.js }
+          askBundleCache = bundle
+          askBundleToStorage(bundle)
+        }
+        if (bundle == null || typeof bundle.js !== 'string') {
           askNotice(bundle != null && bundle.error ? bundle.error : '面板产物不可用')
           return
         }
@@ -959,7 +1018,9 @@ let React = require('react')
     function askStart() {
       if (ask.timer !== null) return
       ask.timer = setInterval(askPoll, ASK_POLL_MS)
-      setTimeout(askPoll, 1500)
+      setTimeout(askPoll, 800)
+      // 空闲时预热面板产物(0.3.42):用户点「问 DSH」时就不必再等一次 1.4MB 的取+解析。
+      setTimeout(askPreload, 3000)
       console.log('[code-server] ask dialog poller started (every ' + ASK_POLL_MS + 'ms)')
     }
 
