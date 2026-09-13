@@ -32,7 +32,9 @@ const BRIDGE_FILENAME = 'bridge.json';
 const BRIDGE_BASE = '/code-server-bridge';
 const TOKEN_HEADER = 'x-dshcs-bridge-token';
 const STATE_FILENAME = 'extension-state.json';
-const REQUEST_TIMEOUT_MS = 3000;
+// 请求超时(0.2.8 起 8s):3s 在实测里太紧 —— 对话流快照一大,宿主序列化就要几秒,
+// 超时会让扩展**丢整份响应**(包括 approvals),表现就是"授权卡片一直不出现"。
+const REQUEST_TIMEOUT_MS = 8000;
 /** 轮询间隔:host 侧事件只是"去看一眼这个文件"的提示,600ms 足够且几乎无开销。 */
 const POLL_INTERVAL_MS = 600;
 /** 宿主配置重读间隔(端点/令牌轮换后最多这么久恢复)。 */

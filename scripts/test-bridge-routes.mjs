@@ -580,7 +580,8 @@ await test('授权拦截:面板先答则返回该 outcome;没人答 / 面板没�
 
 await test('源码级:/sync 带 thread+approvals、ask 建立会话流与授权拦截、提问以用户输入投递', () => {
   const source = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
-  assert.match(source, /thread: bridgeThread\.supported\(\)/, '/sync 必须把对话流带回去(面板靠它渲染)');
+  assert.match(source, /thread: threadChanged \? snapshot : undefined/,
+    '/sync 要带对话流,且**只在变化时**重传(0.3.27:每趟塞 ~1MB 会把 /sync 拖成超时,approvals 也一起丢)');
   assert.match(source, /approvals: bridgeApprovalBoard\.snapshot\(\)/, '/sync 必须带待决授权(面板显示卡片)');
   assert.match(source, /bridgeThread\.watch\(result\.sessionId\)/, 'ask 成功后必须开始会话流');
   assert.match(source, /bridgeApproval\.intercept\(result\.agent, result\.sessionId\)/, 'ask 成功后必须启用授权拦截');

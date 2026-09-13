@@ -203,7 +203,8 @@ await test('对话流:思考过程进面板(含流式 reasoning-delta)', () => {
 
 await test('宿主 /sync:带上 thread / approvals / approvalHoldMs / uiVersion', () => {
   const host = read('../lib/index.js');
-  assert.match(host, /thread: bridgeThread\.supported\(\)/, '/sync 要给被观看会话的对话流');
+  assert.match(host, /thread: threadChanged \? snapshot : undefined/, '/sync 要给对话流(且只在变化时重传)');
+  assert.match(host, /threadRev,/, '/sync 要带对话流修订号(扩展区分"没变化"与"旧宿主")');
   assert.match(host, /approvals: bridgeApprovalBoard\.snapshot\(\)/, '/sync 要给待决授权');
   assert.match(host, /approvalHoldMs: DEFAULT_HOLD_MS/, '授权窗口长度要由宿主给出(面板不猜)');
   assert.match(host, /uiVersion: uiVersion\(\)/, '/sync 要给界面版本(面板比对渲染器版本)');
@@ -248,7 +249,9 @@ await test('扩展:上报 watch 列表,并把对话流并进面板状态', () =>
   const source = read(`${EXT}/extension.js`);
   assert.match(source, /watch: askPanel !== null && askPanel\.state\.sessionId !== null \? \[askPanel\.state\.sessionId\] : \[\]/,
     '每趟轮询要声明"面板在看哪个会话"');
-  assert.match(source, /applySync\(askPanel\.state, result\)/, '对话流要经纯模型并进面板状态');
+  assert.match(source, /applySync\(askPanel\.state, \{ \.\.\.result, thread \}\)/, '对话流要经纯模型并进面板状态');
+  assert.match(source, /result\.threadRev !== undefined \? lastThreadSnapshot : undefined/,
+    'host 没变化时不带 thread ⇒ 扩展要沿用上一份快照(不能当成"旧宿主")');
   assert.doesNotMatch(source, /stalePolls|applyAnswers/, '旧的"回答同步"路径必须彻底删掉(不再有第二条通道)');
   const client = read(`${EXT}/lib/bridge-client.js`);
   assert.match(client, /thread: body !== null && body\.thread !== undefined \? body\.thread : undefined/,

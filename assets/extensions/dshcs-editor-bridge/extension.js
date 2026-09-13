@@ -58,8 +58,10 @@ let pollTimer = null;
 let lastPollAt = 0;
 /** 「问 DSH」面板:null = 没开。`{panel, state, mode}`(状态模型见 lib/ask-panel.js)。 */
 let askPanel = null;
-/** 宿主是否支持 DSH 页面里的悬浮对话框(0.2.5;/sync 的 askDialog 字段)。 */
+/** 宿主是否支持 DSH 页面里的悬浮对话框(0.2.5 探测;0.3.26 起不再自动启用)。 */
 let askDialogSupported = false;
+/** 上一份对话流快照(host 只在变化时回传,这里兜住"没变化"的那些轮询)。 */
+let lastThreadSnapshot;
 /** 扩展根目录(activate 时记下;面板要按它取 webview 产物 URI)。 */
 let extensionRoot = null;
 /** 是否已经确认过 host 端点可达(避免把"IDE 刚起、扩展先加载"误判为断线)。 */
@@ -393,11 +395,19 @@ async function pollOnce() {
   // 能力探测:宿主支持悬浮对话框(0.3.24)⇒ 右键提问不再开编辑器面板。
   if (result.askDialog === true && !askDialogSupported) {
     askDialogSupported = true;
-    log('宿主支持 DSH 页面里的对话对话框:右键提问将浮在 DSH 界面上(不再开编辑器面板)');
+    log('宿主支持 DSH 页面里的对话对话框(本版仍用编辑器面板,见 0.3.26 回退)');
   }
   // 对话流 + 授权待决:host 每趟把被观看会话的**新内容**与待决授权一起回来
   // (见 host 侧 lib/bridge-thread.mjs / lib/bridge-approval.mjs),面板有变化才重画。
-  if (askPanel !== null && applySync(askPanel.state, result)) refreshAskPanel();
+  // 0.3.27 起 host **没变化就不带 thread**(省掉每 600ms 一份 ~1MB 的快照,那会把 /sync 拖成超时,
+  // 于是 approvals 也一起丢掉、卡片永远不出现)⇒ 这里沿用上一份快照。
+  if (askPanel !== null) {
+    const thread = result.thread !== undefined
+      ? result.thread
+      : (result.threadRev !== undefined ? lastThreadSnapshot : undefined);
+    if (result.thread !== undefined) lastThreadSnapshot = result.thread;
+    if (applySync(askPanel.state, { ...result, thread })) refreshAskPanel();
+  }
 }
 
 function startPolling(context) {
