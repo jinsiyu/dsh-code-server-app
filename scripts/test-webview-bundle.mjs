@@ -212,8 +212,8 @@ await test('宿主 /sync:带上 thread / approvals / approvalHoldMs / uiVersion'
   assert.match(host, /dsh-web-frontend/, '界面版本来自 dsh-web-frontend(那份 UI 就在它里面)');
   // 授权拦截的前提(0.3.30/0.3.33):**有人在看 而且** 那个客户端能画卡片。
   // "能不能画"不许拿轮询新鲜度当判据 —— 浏览器后台节流会让它误判(实测了好几轮)。
-  assert.match(host, /bridgeApprovalsUi \|\| \(askDialog\.open && askDialog\.sessionId !== null\)/,
-    '授权拦截:面板自报 或 对话框开着且有会话');
+  assert.match(host, /verdict = watcher && \(bridgeApprovalsUi \|\| dialogCapable\)/,
+    '授权拦截:有人看 + 面板自报或对话框有能力(判定值要落日志)');
   assert.match(host, /bridgeApprovalsUi = body\.approvalsUi === true/, '客户端要声明 approvalsUi');
 });
 
