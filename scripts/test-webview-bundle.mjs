@@ -212,7 +212,7 @@ await test('宿主 /sync:带上 thread / approvals / approvalHoldMs / uiVersion'
   assert.match(host, /dsh-web-frontend/, '界面版本来自 dsh-web-frontend(那份 UI 就在它里面)');
   // 面板在不在看,决定授权是否先问面板(关掉面板/对话框就不该拦)。
   // 授权拦截的前提(0.3.30):**有人在看 而且** 那个客户端能画卡片(否则"抢过来没人看得见")。
-  assert.match(host, /hasPanel: \(\) => hasWatcher\(\) && bridgeApprovalsUi/, '授权拦截:有人看 + 客户端能画卡片');
+  assert.match(host, /hasPanel: \(\) => hasWatcher\(\) && \(bridgeApprovalsUi \|\| askDialogLive\(\)\)/, '授权拦截:有人看 + 客户端能画卡片(面板自报 或 对话框活着)');
   assert.match(host, /bridgeApprovalsUi = body\.approvalsUi === true/, '客户端要声明 approvalsUi');
 });
 
