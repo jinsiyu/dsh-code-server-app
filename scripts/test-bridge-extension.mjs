@@ -557,11 +557,14 @@ await test('提问面板:HTML 外壳只加载打包产物,权限收在 localReso
 await test('提问面板:正文交给 DSH 官方渲染器,面板不再自己拼 HTML', () => {
   const webview = '../assets/extensions/dshcs-editor-bridge/webview/src';
   const thread = readFileSync(new URL(`${webview}/thread.jsx`, import.meta.url), 'utf8');
-  assert.match(thread, /import \{ MarkdownText \} from '@deepseek-ai\/dsh-client-ui-primitives'/,
-    '助手正文必须走官方 MarkdownText(与 DSH 界面同一份代码)');
+  assert.match(thread, /import \{ DisclosureRow, IconThinkOutline14, MarkdownText \} from '@deepseek-ai\/dsh-client-ui-primitives'/,
+    '正文与思考行都必须走官方部件');
   assert.match(thread, /<MarkdownText[\s\S]*streaming=\{entry\.streaming === true\}/,
     '流式条目要把 streaming 传给官方渲染器(增量解析)');
   assert.match(thread, /labels=\{LABELS\}/, '官方渲染器的代码块按钮文案要传进去');
+  assert.match(thread, /useState\(false\)/, '思考行默认**收起**(官方 ReasoningRow 同一默认)');
+  assert.match(thread, /expandOnRowClick/, '整行可点开(与官方一致)');
+  assert.match(thread, /replaceAll\('\*\*', ''\)/, '折叠摘要要去掉 ** 标记(官方同一处理)');
   const app = readFileSync(new URL(`${webview}/app.jsx`, import.meta.url), 'utf8');
   assert.match(app, /import panel from '\.\.\/\.\.\/lib\/ask-panel\.js'/,
     '面板与扩展共用同一份纯模型(lib/ask-panel.js)');
@@ -571,6 +574,50 @@ await test('提问面板:正文交给 DSH 官方渲染器,面板不再自己拼 
   assert.match(approval, /allowed-once/, '只允许「允许一次」(没有"以后都允许"这种入口)');
   assert.match(approval, /rejected/, '要有「拒绝」');
   assert.doesNotMatch(approval, /session|always|永久/, '授权只对这一次动作有效,不该有"记住选择"的入口');
+  // 0.2.3 的 bug:卡片自己按 8 秒判过期 ⇒ 用户点下去时按钮已经灰了("授权框失效了")。
+  assert.doesNotMatch(approval, /expired/, '卡片不许再自己判过期(还有没有效由宿主决定)');
+  assert.match(approval, /const locked = choice !== null/, '只有"已提交"才锁按钮');
+});
+
+await test('提问面板:思考过程进面板(渲染层默认折叠),正文与思考各走各的', () => {
+  const panel = require2(`${EXT}/lib/ask-panel.js`);
+  const state = panel.createPanelState();
+  panel.applySync(state, {
+    thread: {
+      available: true,
+      sessionId: 's1',
+      entries: [
+        { role: 'assistant', text: '结论:有问题。', thinking: '先看第 3 行,再判断……', streaming: false },
+        { role: 'assistant', text: '', thinking: '还在想', streaming: true },
+        { role: 'assistant', thinking: '只有思考没有正文' },
+      ],
+    },
+  });
+  assert.equal(state.entries[0].thinking, '先看第 3 行,再判断……', '思考要进模型(0.3.23)');
+  assert.equal(state.entries[0].text, '结论:有问题。');
+  assert.equal(state.entries[1].thinking, '还在想');
+  assert.equal(state.entries[1].text, '', '正文还没到时 text 是空串(渲染层据此把思考行标成"思考中")');
+  assert.equal(state.entries[2].thinking, '只有思考没有正文');
+  // 没有 thinking 字段(旧宿主 / 用户消息)→ 空串,不炸
+  assert.equal(panel.cleanEntry({ role: 'user', text: '问题' }).thinking, '');
+  // 签名要覆盖 thinking:思考变长也必须触发刷新(流式时正文可能还空着)
+  const sig = panel.entriesSignature(state.entries);
+  const changed = [...state.entries];
+  changed[1] = { ...changed[1], thinking: '还在想,再多想一点' };
+  assert.notEqual(panel.entriesSignature(changed), sig, 'thinking 变长必须被签名识别');
+  // 超长思考同样截断(有界)
+  assert.equal(panel.cleanEntry({ role: 'assistant', thinking: 'x'.repeat(panel.MAX_TEXT + 10) }).thinking.length, panel.MAX_TEXT);
+});
+
+await test('提问面板:对话框形式(开在编辑器区 + ✕ 关闭),不再是侧栏那一列', () => {
+  const source = readFileSync(new URL('../assets/extensions/dshcs-editor-bridge/extension.js', import.meta.url), 'utf8');
+  assert.match(source, /'DSH 对话'/, '面板标题改成对话');
+  assert.match(source, /viewColumn: vscode\.ViewColumn\.Active/, '开在当前编辑器组(占满工作台宽度)');
+  assert.doesNotMatch(source, /vscode\.ViewColumn\.Beside/, '不再用 Beside 挤成一条侧栏');
+  assert.match(source, /message\.type === 'close'[\s\S]{0,160}panel\.dispose\(\)/, '面板上的 ✕ 要能关掉面板');
+  const app = readFileSync(new URL('../assets/extensions/dshcs-editor-bridge/webview/src/app.jsx', import.meta.url), 'utf8');
+  assert.match(app, /postMessage\(\{ type: 'close' \}\)/, '关闭按钮走 postMessage');
+  assert.match(app, /className="dshcs-close"/, '要有关闭按钮');
 });
 
 await test('提问意图:文件级不带行号,选中级只在真有选区时带行号(0.3.21)', () => {

@@ -36,6 +36,10 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* 对话框形状(0.2.4):面板开在编辑器区、占满工作台宽度,内容居中限宽。 */
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
 }
 
 .dshcs-header {
@@ -46,6 +50,11 @@ body {
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
   font-size: 12px;
   opacity: 0.9;
+}
+
+.dshcs-header .dshcs-title {
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 .dshcs-header .dshcs-where {
@@ -59,6 +68,60 @@ body {
   opacity: 0.7;
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 11px;
+}
+
+.dshcs-header .dshcs-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  opacity: 0.75;
+}
+
+.dshcs-header .dshcs-close:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+  opacity: 1;
+}
+
+/* ---- 思考行(默认收起;外形照抄官方 ReasoningRow 的排版语言) ---- */
+
+.dshcs-think {
+  display: flex;
+  flex-direction: column;
+  margin: 2px 0 6px;
+}
+
+.dshcs-think .dshcs-think-separator {
+  flex: none;
+  width: 2px;
+  height: 2px;
+  margin: 0 8px;
+  border-radius: 1px;
+  background: var(--dsw-alias-label-caption, currentColor);
+  display: inline-block;
+}
+
+.dshcs-think .dshcs-think-summary {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1 1 auto;
+  color: var(--dsw-alias-label-tertiary, var(--vscode-descriptionForeground));
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dshcs-think .dshcs-think-body {
+  padding: 4px 0 4px calc(22px + var(--dsh-content-font-delta, 0px));
+  color: var(--dsw-alias-label-tertiary, var(--vscode-descriptionForeground));
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .dshcs-warn {

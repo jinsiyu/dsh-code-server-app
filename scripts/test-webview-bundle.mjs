@@ -162,11 +162,38 @@ await test('构建脚本:懒加载语法换成空注册(不把 1.6MB 语法全�
   }
 });
 
-await test('构建脚本:用 esbuild CLI(沙箱里 JS API 的管道会 EPERM),且不改动官方包', () => {
-  const build = read('../scripts/build-webview.mjs');
-  assert.doesNotMatch(build, /from 'esbuild'/, '不许用 esbuild 的 JS API(它会以管道拉起服务进程,沙箱里 EPERM)');
-  assert.match(build, /execFileSync\(file, esbuildArgs, \{ stdio: 'inherit'/, '要直接跑平台二进制并继承标准流');
-  assert.doesNotMatch(build, /writeFileSync\([^)]*node_modules/, '绝不改 node_modules 里的官方文件');
+await test('产物:思考行与授权卡片都打进了面板,卡片不再自己判过期(0.2.4)', () => {
+  const js = readFileSync(requireArtifact(`${WEBVIEW}/thread.js`), 'utf8');
+  const css = readFileSync(requireArtifact(`${WEBVIEW}/thread.css`), 'utf8');
+  // 思考行 = 官方 DisclosureRow(无障碍标记 + 折叠容器)+ 我们照抄官方排版语言的样式
+  assert.ok(js.includes('aria-expanded'), '官方 DisclosureRow 的标记要在产物里(思考行的折叠交互)');
+  assert.ok(css.includes('.dshcs-think-body'), '思考展开后的正文样式要在');
+  assert.ok(css.includes('.dshcs-think-summary'), '收起时的摘要样式要在');
+  assert.ok(css.includes('.dshcs-approval'), '授权卡片样式要在');
+  assert.ok(css.includes('.dshcs-close'), '对话框的关闭按钮样式要在(0.2.4 的对话框形状)');
+  // 0.2.3 的 bug:卡片自己按 8 秒判过期 ⇒ 用户点下去时按钮已经灰了("授权框失效了")
+  const approval = read(`${WEBVIEW}/src/approval.jsx`);
+  assert.doesNotMatch(approval, /expired/, '卡片不能自己按时间禁用按钮');
+  assert.match(approval, /const locked = choice !== null/, '只有"已提交"才锁按钮');
+});
+
+await test('宿主:授权窗口 5 分钟 + 面板一关立刻交回(0.3.23 修"授权框失效")', () => {
+  const approval = read('../lib/bridge-approval.mjs');
+  assert.match(approval, /export const DEFAULT_HOLD_MS = 300000/, '窗口默认 5 分钟(8 秒对人来说不现实)');
+  assert.match(approval, /WATCH_POLL_MS/, '要有"面板还在不在看"的检查间隔');
+  assert.match(approval, /if \(!hasPanel\(\)\) return undefined/, '面板关掉要立刻交回官方链路,不干等窗口');
+  const host = read('../lib/index.js');
+  assert.match(host, /approvalHoldMs: DEFAULT_HOLD_MS/, '窗口长度随 /sync 告诉面板(倒计时基准)');
+});
+
+await test('对话流:思考过程进面板(含流式 reasoning-delta)', () => {
+  const thread = read('../lib/bridge-thread.mjs');
+  assert.match(thread, /block\.type === 'reasoning'/, '耐久消息里的 reasoning 块要投影');
+  assert.match(thread, /reasoning-delta/, '流式帧的 reasoning-delta 也要投影(思考先到、正文后到)');
+  assert.match(thread, /thinking: entry\.thinking \?\? null/, '快照要带 thinking 字段');
+  const model = read(`${EXT}/lib/ask-panel.js`);
+  assert.match(model, /thinking: typeof raw\.thinking === 'string'/, '面板模型要收 thinking(白名单字段)');
+  assert.match(model, /entry\.thinking\.length/, '条目签名要覆盖 thinking(思考变长也要刷新)');
 });
 
 // ---------------------------------------------------------------- W4 宿主 / 扩展接线

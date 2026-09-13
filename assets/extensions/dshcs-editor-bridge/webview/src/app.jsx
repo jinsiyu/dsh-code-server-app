@@ -143,8 +143,18 @@ function App() {
   return (
     <div className="dshcs-app">
       <header className="dshcs-header">
+        <span className="dshcs-title">DSH</span>
         <span className="dshcs-where">{view.contextText}</span>
         {RENDERER_VERSION === '' ? null : <span className="dshcs-version">渲染器 {RENDERER_VERSION}</span>}
+        <button
+          type="button"
+          className="dshcs-close"
+          title="关闭(Shift+Esc)"
+          aria-label="关闭"
+          onClick={() => vscode.postMessage({ type: 'close' })}
+        >
+          ✕
+        </button>
       </header>
 
       {view.threadError === null ? null : <div className="dshcs-warn">{view.threadError}</div>}
@@ -152,7 +162,7 @@ function App() {
 
       <main className="dshcs-log" ref={logRef} onScroll={onScroll}>
         {view.entries.length === 0
-          ? <div className="dshcs-empty">在下面提问:DSH 的回答会像 DSH 界面那样显示在这里。</div>
+          ? <div className="dshcs-empty">在下面提问:DSH 的回答会像 DSH 界面那样显示在这里(思考折叠、正文按官方渲染)。</div>
           : view.entries.map((entry, index) => (
             <ThreadEntry key={`${entry.role}-${index}-${entry.callId ?? entry.approvalId ?? ''}`} entry={entry} />
           ))}

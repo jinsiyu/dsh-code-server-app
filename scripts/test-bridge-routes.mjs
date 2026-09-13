@@ -397,10 +397,12 @@ await test('会话流:follow 帧投影成对话条目(只新内容、工具配�
   assert.equal(state.entries.length, 0, '历史不渲染(只渲染新内容)');
   assert.equal(thread.threadSnapshot(state).cursor, 42, '开帧的 cursor 要留下(诊断/分页切点)');
 
-  // ② 用户 / 助手文本(assistant 只取 text 块,reasoning 不进面板)
+  // ② 用户 / 助手文本 + 思考块(0.3.23:reasoning 进 thinking 字段,不再丢)
   thread.consumeFrame(state, { type: 'event', event: { type: 'user/message', data: { content: [{ type: 'text', text: '这段逻辑对吗?' }] } } });
   thread.consumeFrame(state, { type: 'event', event: { type: 'assistant/message', data: { message: { content: [{ type: 'reasoning', text: '内心戏' }, { type: 'text', text: '有问题。' }] } } } });
   assert.deepEqual(state.entries.map((e) => [e.role, e.text]), [['user', '这段逻辑对吗?'], ['assistant', '有问题。']]);
+  assert.equal(state.entries[1].thinking, '内心戏', '思考过程要进条目(面板渲染成默认折叠的「思考」行)');
+  assert.equal(thread.threadSnapshot(state).entries[1].thinking, '内心戏', '快照要把 thinking 带出去');
 
   // ③ 工具 call → result 配对(ok / error)
   thread.consumeFrame(state, { type: 'event', event: { type: 'tool/call', data: { callId: 'c1', name: 'pwsh', arguments: JSON.stringify({ command: 'npm test\n--watch' }) } } });
@@ -416,17 +418,19 @@ await test('会话流:follow 帧投影成对话条目(只新内容、工具配�
   thread.consumeFrame(state, { type: 'event', event: { type: 'tool/result', data: { message: { source: { callId: 'nope' }, content: [{}] } } } });
   assert.equal(state.entries.length, before);
 
-  // ④ 助手流:同轮累积;text-delta 之外的块忽略;耐久消息落地后流式条目被替换
+  // ④ 助手流:同轮累积正文与思考;其它块忽略;耐久消息落地后流式条目被替换
   thread.consumeFrame(state, { type: 'assistant-stream', frame: { type: 'start', turn: 9, step: 1 } });
   thread.consumeFrame(state, { type: 'assistant-stream', frame: { type: 'chunk', turn: 9, chunk: { type: 'text-delta', text: '正在' } } });
-  thread.consumeFrame(state, { type: 'assistant-stream', frame: { type: 'chunk', turn: 9, chunk: { type: 'reasoning-delta', text: '(不想显示)' } } });
+  thread.consumeFrame(state, { type: 'assistant-stream', frame: { type: 'chunk', turn: 9, chunk: { type: 'reasoning-delta', text: '先想一下' } } });
   thread.consumeFrame(state, { type: 'assistant-stream', frame: { type: 'chunk', turn: 9, chunk: { type: 'text-delta', text: '回答' } } });
   const streaming = state.entries.filter((e) => e.streaming === true);
   assert.equal(streaming.length, 1, '同一轮只有一条流式条目');
   assert.equal(streaming[0].text, '正在回答');
-  thread.consumeFrame(state, { type: 'event', event: { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '正在回答(完整)' }] } } } });
+  assert.equal(streaming[0].thinking, '先想一下', 'reasoning-delta 要累积到同一条的 thinking(面板先显示"思考中")');
+  thread.consumeFrame(state, { type: 'event', event: { type: 'assistant/message', data: { message: { content: [{ type: 'reasoning', text: '想完了' }, { type: 'text', text: '正在回答(完整)' }] } } } });
   assert.equal(state.entries.filter((e) => e.streaming === true).length, 0, '耐久消息落地后不该再保留流式条目');
   assert.equal(state.entries.at(-1).text, '正在回答(完整)');
+  assert.equal(state.entries.at(-1).thinking, '想完了', '耐久消息里的思考要覆盖流式临时值');
 
   // ⑤ 授权审计行:asked → decided 回填 outcome
   thread.consumeFrame(state, { type: 'event', event: { type: 'approval/asked', data: { id: 'ap1', toolName: 'pwsh', reason: '命令需要授权' } } });
@@ -502,10 +506,11 @@ await test('会话流注册表:watch 幂等、超出上限丢最旧、abort 真�
 
 await test('授权拦截:面板先答则返回该 outcome;没人答 / 面板没开则交给官方链路(next)', async () => {
   // 见 lib/bridge-approval.mjs:从编辑器提问后,工作区外写入 / 命令执行的授权先在面板问一句,
-  // HOLD_MS 内没人答 → next()(官方 GUI 照旧弹卡);缺答案者 fail closed 的语义完全不变。
+  // 窗口内没人答 → next()(官方 GUI 照旧弹卡);缺答案者 fail closed 的语义完全不变。
+  // 0.3.23 起窗口是 5 分钟(8 秒对人来说太短 ⇒ 实测"授权框失效"),而且**面板一关就立刻交回**。
   const approval = await import('../lib/bridge-approval.mjs');
   const board = approval.createApprovalBoard({ holdMs: 40 });
-  const interceptor = approval.createApprovalInterceptor({ board, holdMs: 40, hasPanel: () => panelOpen, log: () => {} });
+  const interceptor = approval.createApprovalInterceptor({ board, holdMs: 40, pollMs: 10, hasPanel: () => panelOpen, log: () => {} });
   let panelOpen = true;
   const handlers = new Map();
   const agent = { ctx: { on: (event, handler) => { handlers.set(event, handler); return () => handlers.delete(event); } } };
@@ -532,6 +537,26 @@ await test('授权拦截:面板先答则返回该 outcome;没人答 / 面板没�
   assert.equal(await timedOut, 'rejected');
   assert.equal(nextCalls, 1, '面板没答 ⇒ 必须 next() 交给官方');
   assert.equal(board.size(), 0, '超时后待决列表要清空');
+
+  // ③b 面板关掉 → **立刻**交回官方链路(不用干等满窗口;0.3.23)
+  const longWindow = approval.createApprovalInterceptor({
+    board,
+    holdMs: 60_000,
+    pollMs: 10,
+    hasPanel: () => false,
+    log: () => {},
+  });
+  const longHandlers = new Map();
+  longWindow.intercept({ ctx: { on: (event, handler) => { longHandlers.set(event, handler); return () => {}; } } }, 'session-b');
+  const started = Date.now();
+  let closedNext = 0;
+  const closed = await longHandlers.get('approval/request')(
+    { id: 'ap-closed', toolName: 'write' },
+    async () => { closedNext += 1; return 'unavailable'; },
+  );
+  assert.equal(closed, 'unavailable', '面板关掉要交回官方链路');
+  assert.equal(closedNext, 1);
+  assert.ok(Date.now() - started < 2000, `面板关掉必须立刻返回(实测 ${Date.now() - started}ms)`);
 
   // ④ 面板没开 → 完全不拦截
   panelOpen = false;

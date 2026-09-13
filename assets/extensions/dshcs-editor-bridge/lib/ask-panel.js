@@ -74,6 +74,8 @@ function cleanEntry(raw) {
   return {
     role,
     text,
+    // 思考过程(0.3.23):渲染成默认收起的「思考」行。
+    thinking: typeof raw.thinking === 'string' ? raw.thinking.slice(0, MAX_TEXT) : '',
     streaming: raw.streaming === true,
     name: typeof raw.name === 'string' ? raw.name : null,
     summary: typeof raw.summary === 'string' ? raw.summary : null,
@@ -84,13 +86,20 @@ function cleanEntry(raw) {
 }
 
 /**
- * 条目签名:正文只会"流式变长"或"被耐久消息原地替换"(此时 streaming 翻转),
+ * 条目签名:正文/思考只会"流式变长"或"被耐久消息原地替换"(此时 streaming 翻转),
  * 所以 角色 + 状态 + 长度 + 是否流式 足够判变化,不必每趟比对几十 KB 文本。
  */
 function entriesSignature(entries) {
   const parts = [];
   for (const entry of entries) {
-    parts.push(`${entry.role}:${entry.status ?? ''}:${entry.streaming ? 1 : 0}:${entry.text.length}:${entry.summary === null ? '' : entry.summary.length}`);
+    parts.push([
+      entry.role,
+      entry.status ?? '',
+      entry.streaming ? 1 : 0,
+      entry.text.length,
+      entry.thinking.length,
+      entry.summary === null ? '' : entry.summary.length,
+    ].join(':'));
   }
   return `${entries.length}|${parts.join(',')}`;
 }
@@ -100,6 +109,7 @@ function pendingEntries(state) {
   return state.pending.map((item) => ({
     role: 'user',
     text: item.text,
+    thinking: '',
     streaming: false,
     name: null,
     summary: null,

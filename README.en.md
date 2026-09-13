@@ -209,9 +209,9 @@ only the editor knows, and lets editor gestures drive the current session.
 
 - The tools are only registered while the bridge is live (so the model never sees an unusable tool), and the
   system-prompt section renders only then too.
-- **Ask panel** (extension 0.2.0; since 0.2.3 the body goes through the official renderer): the context-menu command
-  no longer pops a one-line input box but opens a panel — that session's **new content** on top, input at the bottom.
-  The selection is captured **at send time** (so you can change it while the panel stays open).
+- **Ask panel** (extension 0.2.0; the official renderer since 0.2.3; a **dialog** since 0.2.4): the context-menu
+  command opens a chat window that fills the editor area with a centred, width-limited column (the ✕ in its header
+  closes it) instead of a cramped side column — and the selection can still be changed while it stays open.
   The two commands **remember their intent** (0.3.21): "ask about selection" carries a **line range + selection text**
   only when something is actually selected, while "ask about file" **never carries line numbers or a selection** — the
   cursor line is irrelevant to the question and only misleads the agent. With no selection, the selection command also
@@ -221,9 +221,15 @@ only the editor knows, and lets editor gestures drive the current session.
   micromark/mdast pipeline, the same incremental streaming parser, the same shiki highlighting (boot set:
   typescript / shellscript / json), KaTeX math and the same heading/table typography. Only **new content** is
   rendered (from the moment the panel subscribes); history is **not replayed** and there is no "load earlier".
-- **Approvals are handled right in the panel** (0.3.22): while the panel is open, that session's approval requests
-  ask the panel first (8 s by default). Clicking "allow once" / "reject" settles it immediately; if nobody answers,
-  the request is handed back **unchanged** to the official path (the DSH UI shows the same card).
+- **Thinking shows up like in DSH** (0.3.23): assistant reasoning becomes a Think row — **collapsed by default**,
+  showing its first line (or the latest line while streaming) and expanding on a row click, built from the official
+  `DisclosureRow` plus the official think icon and typography language.
+- **Approvals are handled right in the panel** (0.3.22; window fixed in 0.3.23): while the panel is open, that
+  session's approval requests ask the panel first (5 minutes by default). Clicking "allow once" / "reject" settles it
+  immediately; **closing the panel** or letting the window expire hands the request back **unchanged** to the official
+  path (the DSH UI shows the same card). 0.3.22's 8-second window was far too short for a human — the buttons went
+  grey before anyone could click (reported as "the approval box stopped working"); the window is now 5 minutes and
+  closing the panel hands off immediately instead of waiting it out.
   **Nothing is ever auto-approved** — `allowed-once` can only come from a click, and there is no "always allow".
 - The question enters the DSH session as a **plain user message** (`source: { kind: 'user' }`, host 0.3.19): earlier
   versions used `{kind:'plugin'}`, which DSH renders as a *context update* — it did not look like something the user
@@ -263,7 +269,7 @@ The three `/sync` fields the panel actually consumes (0.3.22):
 |---|---|---|
 | `thread` | **new content** entries (user / assistant / tool / approval) of the session the panel watches; bounded: ≤120 entries per session, ≤8000 chars per body, ≤4 watched sessions | assistant bodies go to the official renderer; tools and approvals become compact summary rows |
 | `approvals` | pending approval requests `[{id, toolName, reason, at}]` (≤4) | renders the card with a countdown; a click posts `/approve` |
-| `approvalHoldMs` / `uiVersion` | the approval window (8000 ms by default) / the DSH UI version | countdown basis; a renderer-version mismatch is surfaced in the panel |
+| `approvalHoldMs` / `uiVersion` | the approval window (300000 ms = 5 minutes by default) / the DSH UI version | countdown basis; a renderer-version mismatch is surfaced in the panel |
 
 > **Why not HTTP (settled in 0.3.13, all three measured)**
 > 1. **Desktop has no HTTP surface at all**: the renderer calls `host.fetch()` through Electron IPC
@@ -304,7 +310,8 @@ user**, so:
    **no free text, paths, or command arguments**, so it can answer questions but never start an action;
    (b) `id` must belong to a request this process created and that is **still pending** (single use);
    (c) `outcome` accepts only `allowed-once` / `rejected` — there is **no "always allow"**;
-   (d) when no panel is watching, or the window (8 s by default) expires, the request goes **back to the official
+   (d) when no panel is watching, the panel is closed, or the window (5 minutes by default) expires, the request goes
+   **back to the official
    path** — never auto-approved (DSH's `approval/request` itself fails closed; this bridge can only keep
    "nobody answered" as "nobody answered"). `pnpm test:webview` asserts these four plus the host-side whitelist.
 3. **Any request carrying `Origin` gets 403.** Browsers always send one (including a sandboxed iframe's literal
@@ -760,9 +767,10 @@ What remains on the plugin side:
 - **Panel assets are pinned to the DSH version**: the renderer is bundled against the UI version of the deployed
   DSH, so after upgrading DSH you must rebuild the panel (`pnpm run build:webview`; the build fails loudly on a
   version mismatch). The panel also shows a mismatch notice at runtime instead of silently using the wrong renderer.
-- **The approval window in the panel is 8 seconds**: while the panel is open, approvals ask the panel first and are
-  handed back to the DSH UI after 8 s — once handed back, that request can **only** be answered in the DSH UI (the
-  panel card says "handed to the DSH UI").
+- **The approval window in the panel is 5 minutes**: while the panel is open, approvals ask the panel first (the card
+  shows a countdown); **closing the panel** or letting the 5 minutes run out hands the request back to the DSH UI —
+  after that, that request can **only** be answered there (the card disappears from the panel and the thread keeps an
+  audit row).
 - **Unsaved buffers are reported, not taken over.** The agent still edits via its own `fs` tools, i.e. against
   disk. What the bridge adds is a notice *before* writing a dirty file, a diff *after*, and a warning instead of
   an overwrite. It does not decide whether the user saves — that would mean changing the agent's read path,

@@ -1450,3 +1450,53 @@ outcome 只有四种 `allowed-once | rejected | cancelled | unavailable`,**没�
 
 
 
+
+## 22. 0.3.23:面板改对话框形状 + 思考过程照官方折叠 + 修好授权窗口
+
+
+这一版全部来自用户实测反馈(0.3.22 发布当天):「对话不要用侧边栏,还是改成对话框形式」
+「思考过程要显示,和官方一样默认折叠」「授权框失效了」。三条都改在面板侧,桥的安全模型不动。
+
+### 22.1 对话框形状(不再挤成侧栏一列)
+
+0.3.22 的面板用 `createWebviewPanel(..., { viewColumn: ViewColumn.Beside })` —— 在"IDE 就在 DSH 右侧栏里"
+的形态下,那等于把本来就不宽的工作台再切成两列,用户看到的就是一条窄栏。改成:
+
+- `ViewColumn.Active`(开在**当前编辑器组**、占满工作台宽度);
+- 面板内容自己居中限宽(`.dshcs-app { max-width: 900px; margin: 0 auto }`),右上角一个 ✕
+  (`postMessage({type:'close'})` → 扩展 `panel.dispose()`)—— 看起来就是一扇对话窗而不是一列记录;
+- 再次右键提问只 `reveal`(不重复开窗)。
+
+### 22.2 思考过程(默认折叠,照官方 ReasoningRow)
+
+- **host**(`lib/bridge-thread.mjs`):内容块类型来自 `packages/llm/llm/src/types.ts` —— `{type:'text'}` 是正文、
+  `{type:'reasoning'}` 是思考。以前只取 text,思考整个丢掉。现在 `partsOfContent()` 同时取两者,
+  条目的 `thinking` 字段进快照;流式帧除 `text-delta` 外也接 `reasoning-delta`(思考通常先来、正文后到),
+  两者累积到**同一条**流式条目上;耐久 `assistant/message` 落地时两个字段一起覆盖。
+- **面板**(`webview/src/thread.jsx`):用官方部件重现官方 `ReasoningRow` —— `DisclosureRow` +
+  `IconThinkOutline14`,**`useState(false)` 默认收起**,收起时显示首行(流式时显示最新一行)、去掉 `**`,
+  点整行展开全文;正文还没到时标题写「思考中」(与官方 `running` 判据一致)。
+- 回归:`test-bridge-routes` 的会话流用例断言 `reasoning` 块与 `reasoning-delta` 都进 `thinking`、
+  快照带该字段、耐久消息覆盖流式值;`test-bridge-extension` 断言模型白名单收 thinking、签名覆盖 thinking
+  (思考变长也要刷新)、渲染层默认收起。
+
+### 22.3 授权窗口:8 秒 → 5 分钟,面板一关就立刻交回
+
+0.3.22 的窗口是 `HOLD_MS = 8000`,而且**面板自己按时间判过期**(`expired` ⇒ 按钮 disabled)。
+实测结果就是"授权框失效了":卡片出现到用户读完、点下去,8 秒早过了,按钮已经是灰的。
+
+- **窗口默认 5 分钟**(`DEFAULT_HOLD_MS = 300000`):面板就在用户眼前,时间不该成为失败原因。
+- **前端不再判过期**:只要卡片还在(host 侧仍未决)按钮就可点;倒计时只是"还有多久交回官方链路"的提示。
+  请求被交回时它会从 `approvals` 里消失,面板改为显示审计行 —— 前端不再自己发明"过期"这个状态。
+- **面板一关就立刻交回**(`WATCH_POLL_MS = 500` 轮询 `hasPanel()`):不干等窗口结束;
+  窗口到点仍没人答也照旧 `next()` 交回官方链路。**永不自动放行**的语义没变(`allowed-once` 只能来自点击)。
+- 回归:`test-bridge-routes` 新增"面板关掉 → 立刻返回(<2s,窗口设 60s)"这条;
+  `test-webview-bundle` 断言 5 分钟窗口、轮询常量、以及前端源码里不再出现 `expired`。
+
+### 22.4 验证
+
+- **真浏览器跑打包产物**(`.spike/webview-preview/`):思考行默认收起且标题为「思考」、点整行展开显示全文;
+  只有思考没有正文时标题为「思考中」;授权卡片倒计时显示"4 分 49 秒后交回 DSH 界面"且**两个按钮可点**;
+  头部有「DSH / 上下文 / 渲染器版本 / ✕」;正文仍是官方渲染结果(标题、表格、高亮、公式)。
+- **回归**:`test-bridge-routes` 27、`test-bridge-extension` 30(+1 SKIP:沙箱不许连命名管道)、
+  `test-webview-bundle` 13,其余套件不变绿。

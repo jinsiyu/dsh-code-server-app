@@ -539,8 +539,10 @@ function openAskPanel(mode = 'selection') {
     }
     const panel = vscode.window.createWebviewPanel(
       'dshAsk',
-      'DSH 提问',
-      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
+      'DSH 对话',
+      // 对话框形状(0.2.4):开在**当前编辑器组**,占满工作台宽度 —— 不再用 `Beside` 挤成一条侧栏。
+      // 面板内容自己居中限宽,看起来就是编辑器上的一扇对话窗;右上角的 ✕ 关掉它。
+      { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
       {
         enableScripts: true,
         retainContextWhenHidden: true,
@@ -568,6 +570,11 @@ function openAskPanel(mode = 'selection') {
       }
       if (message.type === 'approve' && typeof message.id === 'string') {
         void decideApproval(message.id, message.outcome);
+        return;
+      }
+      if (message.type === 'close') {
+        // 面板上的 ✕:关掉它(= 不再看这个会话 ⇒ 待决授权立刻交回 DSH 界面,不用干等窗口)。
+        panel.dispose();
       }
     });
     panel.onDidDispose(() => {
@@ -576,7 +583,8 @@ function openAskPanel(mode = 'selection') {
   }
   askPanel.state.context = contextInfo;
   askPanel.mode = mode;
-  askPanel.panel.reveal(vscode.ViewColumn.Beside, false);
+  // 已经开着就提到前面(对话框不重复开)。
+  askPanel.panel.reveal(vscode.ViewColumn.Active, false);
   refreshAskPanel();
 }
 
