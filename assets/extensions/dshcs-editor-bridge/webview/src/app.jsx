@@ -66,8 +66,20 @@ function App() {
     };
     window.addEventListener('message', onMessage);
     // 面板脚本自己出错也要说出来:静默空白是最难查的一种失败。
-    const onError = (event) => setScriptError(`面板脚本出错:${event && event.message ? event.message : '未知'}`);
-    const onRejection = (event) => setScriptError(`面板脚本出错:${event && event.reason ? String(event.reason) : '未知'}`);
+    // **但"ResizeObserver loop completed with undelivered notifications"不是脚本错误**(0.3.41):
+    // 那是 Chromium 在布局收敛时投递的良性告警(官方渲染器的视口高亮/折叠行都会触发它),
+    // 浏览器自己会重试,重试后一帧内就恢复。把它当成"面板脚本出错"会误导用户去查一个不存在的问题。
+    const BENIGN = /ResizeObserver loop/i;
+    const onError = (event) => {
+      const message = event && event.message ? String(event.message) : '未知';
+      if (BENIGN.test(message)) return;
+      setScriptError(`面板脚本出错:${message}`);
+    };
+    const onRejection = (event) => {
+      const reason = event && event.reason ? String(event.reason) : '未知';
+      if (BENIGN.test(reason)) return;
+      setScriptError(`面板脚本出错:${reason}`);
+    };
     window.addEventListener('error', onError);
     window.addEventListener('unhandledrejection', onRejection);
     vscode.postMessage({ type: 'ready' });
