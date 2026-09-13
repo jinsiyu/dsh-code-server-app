@@ -400,6 +400,13 @@ pnpm run promote -- <version>
 > 这样 `dsh plugin add dsh-code-server-app`(不带版本)和任何按 latest 安装的流程都不会拿到未验证的版本。
 > 子包(`@jinsiyu/dshcs-*`、聚合包)被依赖以精确/插入符版本引用,dist-tag 不影响解析,但同样默认发 `next`。
 > 查看当前标签:`npm dist-tag ls dsh-code-server-app`。
+>
+> **desktop profile 不走命令行安装**(2026-09-13 起的约定):对 desktop 只做 `pnpm pack` + `publish:plugin`(发 `next`),
+> 由用户在 DSH Desktop 里用**官方安装方式**自行安装;不要再把 tarball 文件级覆盖进 `~/.dsh/profiles/desktop` ——
+> 那条路会绕过 desktop 应用自己的供应链校验(24h 新鲜度)与依赖闭包检查,把真实的解析问题掩盖成"装上了但行为怪"。
+> web profile 仍可照旧安装验证。desktop 安装若报"requires missing @microsoft/mxc-sdk@npm:@jinsiyu/dshcs-microsoft-mxc-sdk@0.8.0",
+> 先核对这三者对得上:插件 `optionalDependencies` 的聚合包范围、聚合包 `0.3.10` 声明的别名、以及 mxc 子包 `0.8.0`
+> 在 npm 上确实存在(实测:三者都在;剩下的就是 desktop 自己的策略/缓存)。
 
 `repack:build`(`scripts/vendor-repacks.mjs`)是**唯一的子包产出脚本**,一次生成:
 
