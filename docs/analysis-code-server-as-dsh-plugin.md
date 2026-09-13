@@ -1566,3 +1566,50 @@ VS Code 扩展 API 没有悬浮窗;所以对话框只能画在 **DSH 页面自�
   壳/替身/轮询 + `splitEditorPrompt` 接线;产物那条改成"字体内联、无 fonts 目录"。
 - 浏览器注入实测(见上):无样式泄漏、上下文默认收起、思考默认收起、授权卡片可点。
 - 回归:`test-bridge-routes` 27、`test-bridge-extension` 30、`test-webview-bundle` 14。
+
+## 24. 0.3.22–0.3.39:编辑器侧审批卡片 —— 四条硬结论(全部来自实测日志与源码)
+
+这一条功能从 0.3.22 起反复"看起来没生效",真正的原因有四个,每一个都是独立的坑;记在这里,免得下一版再踩。
+
+### 24.1 `approval/request` 是 **agent 作用域** 的 waterfall,我们挂对了地方
+
+派发点:`packages/interaction/user-approval/src/index.ts:275` ——
+`ctx.waterfall(scopeTarget(req.agent, req.agent), 'approval/request', req, () => 'unavailable')`;
+作用域提取器见 `packages/core/scope/src/scoped-events.generated.ts:24`(`args[0]['agent']`)。
+所以 `agent.ctx.on('approval/request', …)` 能收到 —— **前提是下面 24.2 那条**。
+
+### 24.2 必须 `{ prepend: true }`:官方客户端卡片更早注册
+
+DSH 的审批卡片是客户端侧的 waterfall 监听器(`packages/client/ui-approval/src/client/index.ts:90`
+的 `ctx.remote.$on('approval/request', …)`),它**在用户点击前不会返回**。waterfall 按注册顺序走,
+我们后注册就永远轮不到(实测:请求到达时连 `hasPanel()` 都没被调用过)。
+官方测试里"抢先作答"的写法就是 `{ prepend: true }`
+(`packages/interaction/user-approval/tests/approval.spec.ts:437`)⇒ 我们照抄。
+
+### 24.3 **审批事件没有 `id` 字段**(最关键的一条)
+
+事件形状是 `{agent, toolName, callId?, reason?, signal?}` —— 没有 `id`。
+我们最初的实现是 `if (typeof request.id !== 'string') return next()`,于是**每一次**授权都被静默交回
+官方卡片,而且不留任何日志(0.3.38 才补上入口日志,随即看到 `收到授权请求:pwsh id=undefined`)。
+修法:`id` 只是"面板上那张卡"与"这次请求"的对号键,DSH 侧根本不需要它 ——
+本地生成(`local-<n>`)即可,`board.answer(id, outcome)` 结算的是我们自己的 decision promise。
+
+### 24.4 `/sync` 不能每 600ms 重传整份对话流
+
+对话流快照(≤120 条 × ≤8KB)每趟都塞进 `/sync` 响应,实测把请求拖成 **3 秒超时**;
+超时会让扩展丢掉**整份响应**(包括 `approvals`)⇒ 面板永远看不到卡片。
+现在只在"客户端持有的修订号 ≠ 当前修订号"时才回传(`threadRev` 由扩展声明,旧扩展一律收整份以免误报),
+并把扩展的请求超时放宽到 8 秒。
+
+### 24.5 最终证据链(0.3.39 实测)
+
+```
+hasPanel -> true (hasWatcher=true approvalsUi=false dialogLive=true polls=84 open=true session=session-…)
+收到授权请求:pwsh id=undefined hasPanel=true
+已接住授权,正在等面板/对话框作答(此后再翻 false 会立刻放手)
+decision -> "allowed-once" (typeof=string)
+授权由编辑器面板决定:pwsh → allowed-once          ← 用户在编辑器侧点的
+```
+
+诊断文件:`<home>/.dsh/code-server/bridge-approval.log`(有界 256KB)—— 判据取值、心跳、入口、决策、放手原因全部落盘。
+这一节的价值不只是结论:**在没有读数的情况下,任何"再改一版试试"都是在赌**;先把每一步写成一行日志,再谈修。
