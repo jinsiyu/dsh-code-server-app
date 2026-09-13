@@ -615,19 +615,12 @@ async function openAskPanelFor(mode) {
     vscode.window.showInformationMessage('没有活动的编辑器:请先打开一个文件。');
     return;
   }
-  // 0.2.5 起优先用 **DSH 页面里的悬浮对话框**(用户要的"对话框形式":浮在 DSH 界面上,不占编辑器版面)。
-  // 宿主能力由 /sync 的 askDialog 字段探测;老宿主(探测不到)才退回编辑器里的 webview 面板。
+  // 0.3.26 回退:提问**始终**开编辑器里的 webview 面板。
+  // 0.2.5/0.2.6 试过"浮在 DSH 页面上的对话框",但实测在编辑器侧看不到授权卡片,而面板这条路是
+  // 验证过的(0.3.22/0.3.23 实测卡片就在面板里)。功能优先:先把能看、能批授权的 UI 还给用户;
+  // 对话框那套(client 半部 + /api/code-server/ask/*)留着但**不再自动启用**。
   if (askDialogSupported) {
-    try {
-      const result = await client.askOpen(mode);
-      if (result !== null && result.ok === true) {
-        log(`已请宿主打开对话对话框(mode=${mode}${typeof result.contextText === 'string' ? `,${result.contextText}` : ''})`);
-        return;
-      }
-      log(`宿主没有打开对话框(${result !== null && result.error ? result.error : '未知原因'})→ 退回编辑器面板`);
-    } catch (error) {
-      log(`ask-open 失败(${error && error.message ? error.message : error}) → 退回编辑器面板`);
-    }
+    log('宿主声明支持 DSH 页面对话框;本版仍用编辑器面板(0.3.26 回退,对话框待验证后再启用)');
   }
   openAskPanel(mode);
 }

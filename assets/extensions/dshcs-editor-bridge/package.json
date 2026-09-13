@@ -2,7 +2,7 @@
   "name": "dshcs-editor-bridge",
   "displayName": "DSH Editor Bridge",
   "description": "只读地把编辑器状态(未保存缓冲区、诊断、活动选区)提供给 DSH;右键提问打开 DSH 页面里的悬浮对话对话框(0.2.5;老宿主退回编辑器面板),正文/思考/上下文都用 DSH 官方渲染器,并可就地回答授权请求。由 dsh-code-server-app 插件安装,可禁用。",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "publisher": "dsh-code-server-app",
   "license": "MIT",
   "private": true,
