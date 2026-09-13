@@ -15,7 +15,7 @@
 无安装脚本、无 postinstall);**code-server 的 Node 服务层已由插件自带的 `lib/launcher.mjs` 取代**
 (它直接驱动 `<树>/lib/vscode/out/server-main.js` 的 `loadCodeWithNls()` / `createServer()` / `handleRequest()` /
 `handleUpgrade()`,并补上 `/healthz`、`/manifest.json`、`/_static/*`、`/proxy/:port` 这几条 code-server 原本提供的 HTTP 面);
-原生模块(node-pty / @vscode/sqlite3 / spdlog …)由 `@jinsiyu/dshcs-*-win32-<架构>` 平台包经聚合包按架构自动选中 ——
+原生模块(node-pty / @vscode/sqlite3 / spdlog …)由 `@jinsiyu/dshcs-*` 子包按**真名直接挂在插件依赖上**、按 os/cpu 自动选中 ——
 **无需全局 npm 安装、无需配置 `bin`、无需改 profile 配置、无需第二条安装命令、无需 argon2/C++ 工具链**。
 
 > 0.2.0 起:**argon2 与 code-server 的 136 个运行时依赖(express / proxy-agent / js-yaml / pem / limiter …)
@@ -365,10 +365,11 @@ host 反向请求不到它。所以编辑器状态只能在扩展主动发起的
   "打包(如何出包)"执行 `pnpm install` → `pnpm run build:client` → `pnpm run vendor:vscode` →
   (发布预编译原生包)→ `pnpm pack` + `dsh plugin --profile web add` 即可。
 
-> 本机(BM: Windows 11 ARM64)实测:树/依赖全链路是"平台子包 + 聚合包"供给 ——
-> 树包 `@jinsiyu/dshcs-vscode-server`(当前 4.137.0,50.8 MB tgz)、纯 JS 内部依赖直接进插件
-> `dependencies`、16 个预编译原生包经平台聚合包 `@jinsiyu/dsh-code-server-runtime-win32-<arch>`
-> (按 os/cpu 自动选)装回原名 → healthz 200 → 停止 → 回收全链路验证。
+> 本机(BM: Windows 11 ARM64)实测:树/依赖全链路是"平台子包直挂插件依赖"供给 ——
+> 树包 `@jinsiyu/dshcs-vscode-server`(当前 4.137.0,50.8 MB tgz)、纯 JS 内部依赖与 8 个平台无关
+> 重打包包直接进插件 `dependencies`、8 个平台专属重打包包按 win32-arm64/x64 进
+> `optionalDependencies`(包自带 os/cpu 自动选),原始名字由 `lib/native.js` 补 junction 还原
+> → healthz 200 → 停止 → 回收全链路验证。
 > (0.1.37 时代的主包形态已废弃,见下方"升级 VS Code 树"。)
 
 ## 打包(如何出包)
@@ -398,15 +399,18 @@ pnpm run promote -- <version>
 > `latest` 只保留「最近一个确认无 bug 的版本」,由 `pnpm run promote -- <version>`
 > (= `npm dist-tag add dsh-code-server-app@<version> latest`)在**用户重启 dsh web 确认无误后**才推进。
 > 这样 `dsh plugin add dsh-code-server-app`(不带版本)和任何按 latest 安装的流程都不会拿到未验证的版本。
-> 子包(`@jinsiyu/dshcs-*`、聚合包)被依赖以精确/插入符版本引用,dist-tag 不影响解析,但同样默认发 `next`。
+> 子包(`@jinsiyu/dshcs-*`)被依赖以**精确版本**引用(平台专属的按目标各钉一份),dist-tag 不影响解析,但同样默认发 `next`。
 > 查看当前标签:`npm dist-tag ls dsh-code-server-app`。
 >
 > **desktop profile 不走命令行安装**(2026-09-13 起的约定):对 desktop 只做 `pnpm pack` + `publish:plugin`(发 `next`),
 > 由用户在 DSH Desktop 里用**官方安装方式**自行安装;不要再把 tarball 文件级覆盖进 `~/.dsh/profiles/desktop` ——
-> 那条路会绕过 desktop 应用自己的供应链校验(24h 新鲜度)与依赖闭包检查,把真实的解析问题掩盖成"装上了但行为怪"。
-> web profile 仍可照旧安装验证。desktop 安装若报"requires missing @microsoft/mxc-sdk@npm:@jinsiyu/dshcs-microsoft-mxc-sdk@0.8.0",
-> 先核对这三者对得上:插件 `optionalDependencies` 的聚合包范围、聚合包 `0.3.10` 声明的别名、以及 mxc 子包 `0.8.0`
-> 在 npm 上确实存在(实测:三者都在;剩下的就是 desktop 自己的策略/缓存)。
+> 那条路会绕过 desktop 应用自己的依赖闭包检查,把真实的解析问题掩盖成"装上了但行为怪"。
+> web profile 仍可照旧安装验证。
+>
+> **0.3.45 起没有平台聚合包**,`requires missing @microsoft/mxc-sdk@npm:…` 那类报错不会再出现。根因(实测):
+> pnpm 的**增量 hoisted 安装**会漏链「可选子树里的 `npm:` 别名包」,16 个里漏 9 个(第一个就是 mxc-sdk),而
+> dsh-desktop 在 `pnpm add` 之后**立刻**校验依赖图 ⇒ 首次安装必失败;重启后应用走「删 node_modules + 完整安装」
+> 才补齐 ⇒ 就是你看到的"重启自己装好了"。复现命令与两条修法见 `docs/desktop-first-install-root-cause.md`。
 
 `repack:build`(`scripts/vendor-repacks.mjs`)是**唯一的子包产出脚本**,一次生成:
 
@@ -414,7 +418,7 @@ pnpm run promote -- <version>
 |---|---|---|
 | `@jinsiyu/dshcs-vscode-server@<code-server 版本>` | 精简 VS Code 树(`lib/vscode` + `out/browser` + `src/browser`,**不含** code-server 的 `out/node` 与 136 个运行时依赖) | 平台无关 |
 | `@jinsiyu/dshcs-<名字>[-win32-<arch>]` ×16 | VS Code 内部依赖里需要构建的原生包(node-pty / @vscode/sqlite3 / kerberos / koffi / ssh2 / spdlog / …) | 平台专属带 os/cpu |
-| `@jinsiyu/dsh-code-server-runtime-win32-<arch>` | 平台聚合包:`dependencies` 用 `npm:` 别名把上面 16 个原生包装回原始名字 | win32-<arch> |
+| `lib/vendored.json`(**不是包**) | 「原名 → 重打包子包」表,随插件发布;运行时由 `lib/native.js` 据此补 junction。0.3.45 起**不再产出平台聚合包** | — |
 
 > argon2 已随 code-server 服务层一起移除(0.2.0):`auth` 固定 `none`,需要对外访问请用 `serve: dsh`。
 
@@ -425,7 +429,7 @@ pnpm run promote -- <version>
 | **从已装好的树快照** | `pnpm run vendor:vscode -- --from <code-server 目录>`(秒级) |
 | **开发期让树可直接跑** | `pnpm run vendor:vscode -- --dev-links`(额外把 `lib/vscode/node_modules` 用 junction 补上) |
 | **完整重打子包** | `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack`(不给 `--from` 会自动 npm install 解包 + 编译,耗时) |
-| **只重打树包/聚合包** | `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64 --pack`(复用 `repack/build` 里已有的原生包,不重新分析源树) |
+| **只重打树包 + 依赖表** | `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64 --pack`(复用 `repack/build` 里已有的原生包,不重新分析源树;顺带重写 `lib/vendored.json` 与插件依赖表) |
 | **发布子包** | `pnpm run publish:repacks`(`--dry-run` 预览;`--only <子串>` 过滤;`--otp <code>` / `--limit N` 应对 2FA) |
 | **发布插件本体** | `pnpm run publish:plugin`(发布**已验证过的那份 tarball**,不会重新打包;默认 dist-tag = `next`) |
 | **推进 latest** | `pnpm run promote -- <version>`(用户重启确认无误后;`--dry-run` 先看当前标签) |
@@ -446,6 +450,7 @@ pnpm test:webview            # 面板 webview 产物:官方渲染器与令牌打
 pnpm test:launcher-routes    # launcher 的 HTTP 面(起真进程,较慢)
 pnpm test:workspace-switch   # 切工作区不重启进程
 pnpm test:fullscreen         # 打开标签即全屏
+pnpm test:vendored           # 重打包表 ↔ 插件依赖表一致(无 npm: 别名 / 无聚合包 / vendored.json 进了 files)
 ```
 
 > `test:bridge-routes` 会把 `DSH_HOME` 指向临时目录(否则它会 adopt 开发机上正在跑的那个实例,
@@ -468,9 +473,13 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
   `<profile>\node_modules\@jinsiyu\dshcs-vscode-server\vscode`;
 - VS Code 内部依赖里**纯 JS 的部分**(35 个:xterm / katex / typescript / ws / tar …)也写在插件
   `dependencies`,由 pnpm 装到 profile 的 `node_modules`(hoisted);
-- **二进制部分**全部由 `@jinsiyu/dshcs-*` 平台包提供(每个平台各一份,os/cpu 限定):
-  16 个原生包经**平台聚合包** `@jinsiyu/dsh-code-server-runtime-win32-<arch>` 用 `npm:` 别名装回**原始名字**
-  (`node-pty` / `@vscode/sqlite3` / `@vscode/spdlog` / …),聚合包挂在插件 `optionalDependencies` → pnpm 按架构自动选;
+- **二进制部分**全部由 `@jinsiyu/dshcs-*` 子包提供,且**直接挂在插件依赖上**(0.3.45 起):
+  平台无关的 8 个(`node-pty` / `koffi` / `ssh2` / `cpu-features` / `@parcel/watcher` /
+  `@vscode/fs-copyfile` / `@vscode/proxy-agent` / `@microsoft/mxc-sdk`)写进插件 `dependencies`(真名);
+  平台专属的 8 个(`@vscode/sqlite3` / `spdlog` / `kerberos` / `deviceid` / `native-watchdog` /
+  `windows-registry` / `windows-process-tree` / `windows-ca-certs`)按 win32-arm64 与 win32-x64
+  各一份写进 `optionalDependencies`(真名 + 包自带 os/cpu)→ 一条命令自动选对架构;
+  **原始名字**由 `lib/native.js` 运行时补 junction 还原(见下「运行时布局自愈」);
 - 因此依赖图里**没有任何带 pre/install/postinstall 或 binding.gyp 的包** →
   不需要 profile 的 `allowBuilds`、不执行任何构建、**使用者机器不需要 C++ 工具链**;
 - **升级插件不再重下树**:树包版本按上游 code-server 版本缓存,pnpm 直接复用(约 60MB,解包 ≈197MB)。
@@ -491,18 +500,21 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
   (保留编译好的 `.node` 与全部运行时文件)→ 依赖里的同集包改成 `npm:` 别名 → 平台专属的加
   `os`/`cpu` 与 `-<platform>-<arch>` 后缀;win32 目标还会校验 `.node` 的 PE machine
   (0x8664=x64 / 0xaa64=arm64),防交叉编译产物装错架构;
-- **平台聚合包**把重打包包按原始名字装回去(如 `"node-pty": "npm:@jinsiyu/dshcs-node-pty@1.2.0-beta.15"`),
-  于是 VS Code 的 `import('node-pty')` 不用改;聚合包本身 `os`/`cpu` 限定,
-  插件 `optionalDependencies` 同时声明 win32-arm64 与 win32-x64 两份 → 一条命令自动选对;
+- **原始名字怎么还原**(0.3.45 起):重打包包的真名是 `@<scope>/dshcs-<名字>`,而 VS Code `import` 的是
+  `node-pty` / `@vscode/sqlite3` 这类**原名**;打包期把「原名 → 真名」写进 `lib/vendored.json`(随插件发布),
+  运行时由 `lib/native.js` 在 `<树>/node_modules/<原名>` 补 junction 指向真名包(幂等、可自愈)。
+  **为什么不再用「平台聚合包 + `npm:` 别名」**:pnpm 的增量 hoisted 安装会漏链**可选子树**里的别名包
+  (实测 16 个漏 9 个),而 dsh-desktop 安装后立刻校验依赖图 ⇒ 首次安装必报 requires missing;
+  改成真名直接依赖后,同一条安装命令 + 校验器判据实测全部通过(复现见 `docs/desktop-first-install-root-cause.md`);
 - **解析路径**:host 用 `require.resolve('@jinsiyu/dshcs-vscode-server/package.json')` 找到运行根
   (包内子目录 `vscode/`),入口 `vscode/lib/vscode/out/server-main.js`;VS Code 内部依赖从该运行根向上查找
   (`vscode/lib/vscode/node_modules` → 包 `node_modules` → `<profile>/node_modules`)。
   (旧全量树 `@jinsiyu/dshcs-code-server/code-server` 仍作为回退被识别。)
 - **运行时布局自愈**(`lib/native.js` 的 `ensureRuntimeLayout()`,**激活时(先于 envCheck)与每次启动前**幂等执行):
   host 会在 VS Code 树里补两类 **junction**(Windows junction / POSIX 目录软链):
-  1. `ensureAliasLinks()`:把聚合包带回的原生别名补到 `<树>/node_modules`
-     —— pnpm 会把 `os`/`cpu` 限定的包**嵌套装在聚合包自己的 node_modules 下**,而 VS Code 的
-     `lib/vscode/out/server-main.js` 用 **ESM import**(ESM 不认 `NODE_PATH`),缺了就直接 500;
+  1. `ensureAliasLinks()`:按 `lib/vendored.json` 把 16 个**原始名字**补到 `<树>/node_modules`
+     —— 真名子包装在插件依赖图里,而 VS Code 的 `lib/vscode/out/server-main.js` 用 **ESM import**
+     (ESM 不认 `NODE_PATH`),缺了就直接 500;
   2. `ensureInnerModuleLinks()`:把 VS Code 的**内部依赖目录** `lib/vscode/node_modules` 与
      `lib/vscode/extensions/node_modules` 按两个 `package.json` 的 `dependencies` 补回老布局
      —— 精简树里没有这两个目录,**用显式路径拼依赖的代码**
@@ -538,7 +550,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 
 > 源码路径以 `link:` 安装。开发机上没有 `vendor/vscode` 时先 `pnpm run vendor:vscode -- --dev-links`;
 > 没有平台子包时 host 会回退到包内 `vendor/code-server`(两种布局都支持)。
-> 依赖(内部 JS 依赖 + 平台子包 + 聚合包)同样由 pnpm 安装 —— 本地未发布的 `@jinsiyu/*` 需先发布,
+> 依赖(内部 JS 依赖 + 重打包子包)同样由 pnpm 安装 —— 本地未发布的 `@jinsiyu/*` 需先发布,
 > 或把 `repack/tgz/*.tgz` 以 `file:` 依赖临时装进 profile(见 `.tmp-verify.mjs`)。
 >
 > **改动 client bundle**:编辑 `src/factory.js` 后执行 `pnpm run build:client`
@@ -589,7 +601,8 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 - **换版本后重新出子包并发布**(全部由同一个脚本):
   1. `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack` → 新的树包
      (`@jinsiyu/dshcs-vscode-server@<新版本>`)以及按新内部依赖重建的原生包
-     (脚本会把新的「纯 JS 直装集」写进插件 `dependencies`、更新两个聚合包版本);
+     (脚本会把新的「纯 JS 直装集」写进插件 `dependencies`,并把 16 个重打包包按真名写进
+     `dependencies` / `optionalDependencies`、重写 `lib/vendored.json`);
   2. `pnpm run publish:repacks` → 发布;然后 bump 插件版本 → `pnpm pack` → 发布插件。
 - `productPath`(`<quality>-<commit>`,客户端 WS 路径的组成)**从 `lib/vscode/product.json` 现算**,
   升级树后无需改代码 —— 但也意味着切版本后必须重启 dsh web(路由在激活期注册)。
@@ -619,7 +632,7 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 
 0.2.7 起卡片**没有**「入口」「依赖安装」「环境检测」三行:入口在右侧栏「开始」页的 Code Server 入口框(或官方的文件点击),
 诊断信息不再进 UI —— `/api/code-server/status` 的 `env` 字段仍返回
-树版本 / `productPath` / server 入口、VS Code 内部依赖、**预编译原生包**(平台聚合包名 + 已解析模块数),需要时用脚本查或看 host 日志。
+树版本 / `productPath` / server 入口、VS Code 内部依赖、**预编译原生包**(重打包子包名 + 已解析模块数),需要时用脚本查或看 host 日志。
 
 > 卡片改动经 `scope.watch` 实时生效(host 端 status API 同步返回 `keepResident`、`claimExtensions` 与
 > `fullscreenOnOpen`,客户端立即生效);无需重启 dsh。**新增设置键后首次使用前需重启 dsh web**,

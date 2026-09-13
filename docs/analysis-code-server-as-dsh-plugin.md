@@ -1613,3 +1613,75 @@ decision -> "allowed-once" (typeof=string)
 
 诊断文件:`<home>/.dsh/code-server/bridge-approval.log`(有界 256KB)—— 判据取值、心跳、入口、决策、放手原因全部落盘。
 这一节的价值不只是结论:**在没有读数的情况下,任何"再改一版试试"都是在赌**;先把每一步写成一行日志,再谈修。
+
+## 25. 0.3.45:弃用「平台聚合包 + `npm:` 别名」——用 desktop 自带的 pnpm 复现出第一名牺牲品
+
+用户问的是「为什么官方安装方法第一次安装还会报 `requires missing @microsoft/mxc-sdk@npm:…`,重启就自己装好了」。
+
+### 25.1 先复现,再谈根因
+
+不猜,直接用 desktop 应用自带的 node/pnpm 逐字复刻它的安装命令
+(`<unpacked>/resources/runtime/{node/node.exe,pnpm/bin/pnpm.cjs}`,pnpm **11.7.0**),目录用 desktop 新建
+profile 的等价物(`pnpm-workspace.yaml` 逐字照抄:`nodeLinker: hoisted` / `autoInstallPeers: false` /
+`strictDepBuilds: true` / `minimumReleaseAge: 0`):
+
+```powershell
+& $node $pnpm … add dsh-code-server-app@0.3.44 --save-exact --ignore-scripts
+node .spike/repro-agg/probe.mjs .spike/repro-agg       # 复刻校验器的 packageFrom()
+```
+
+结果(联网/离线各一次,完全一致):**16 个别名目标只有 7 个被链上**,缺的 9 个是
+`@microsoft/mxc-sdk`、`@parcel/watcher`、`@vscode/fs-copyfile`、`@vscode/proxy-agent`、
+`@vscode/windows-ca-certs`、`cpu-features`、`node-pty`、`ssh2`、`koffi`;pnpm 自己的
+`node_modules/.modules.yaml` 把它们连同传递依赖一起记进 `skipped`。
+删掉 `node_modules` 再 `install --frozen-lockfile`(8.5s)⇒ **0 missing**,且全部拍平到 profile 根。
+
+### 25.2 定位到具体一行代码
+
+dsh-desktop 的校验器是 `apps/desktop/src/profile-packages.ts:171-238`;调用它的顺序在
+`project-manager.ts`:`mutate()` → `pnpm add` → `reconcileProfile()`(第 371 行 `rebuild` 在
+`packagesChanged=true` 时为 **false**,不做完整重装)→ `finishPackageOperation()` 的**第一个动作**就是
+`prepareProfile()` → `validateDesktopPluginGraph()`。校验器要求「每个已安装包声明的依赖都要按**声明的键名**
+解析得到」,而 `@microsoft/mxc-sdk` 正好是聚合包依赖表里**排第一**的那个,于是它成了报错里的名字。
+
+重启自愈也来自同一段代码:`runPnpm()` 会先写 `desktop-packages-pending`,只有 `finishPackageOperation()`
+末尾才删 ⇒ 校验失败时标记残留 ⇒ 下次启动走第 377-378 行「删 node_modules + `install --frozen-lockfile`」⇒ 补齐。
+
+### 25.3 三条被推翻的假设(都留了证据)
+
+| 假设 | 实测 |
+| --- | --- |
+| 「只跟 mxc-sdk 有关,把它搬进树包就行」 | ✗ 9 个都缺,搬一个报错只会换成 `@parcel/watcher`(这就是 `docs/plan-mxc-sdk-into-tree.md` 作废的原因) |
+| 「24h 供应链策略挡的」 | ✗ profile 的 `minimumReleaseAge: 0`,lockfile 里解析成功 |
+| 「发布物坏了」 | ✗ 0.8.0 的 fileCount/upackedSize/integrity 与本地 `repack/build` 一致 |
+
+对照实验还定位了触发面:聚合包**直接**做根 optionalDependency(深度 0)时 0 missing;两个聚合包同时装也
+0 missing;真名直接依赖在 `--ignore-scripts` 下 100% 装上 ⇒ 丢包只发生在「深度 ≥2 且父节点是 optional 子树」。
+
+### 25.4 改动(0.3.45)
+
+- `scripts/vendor-repacks.mjs`:不再产出 `@<scope>/dsh-code-server-runtime-<平台>-<架构>`;改为写
+  `lib/vendored.json`(原名 → 真名)并把 16 个重打包包**按真名直接挂到插件依赖上**(平台无关的 8 个进
+  `dependencies`,平台专属的 8 个 × 2 目标进 `optionalDependencies`)。`--reuse` 优先读该表,
+  旧机器上先从聚合包清单/profile 别名迁移一次。
+- `lib/native.js`:删除 `resolveRuntime()` / `runtimePackageName()` / `aliasNodePathDirs()`,改为读表 +
+  `vendoredEntries()` / `nativeRuntimeStatus()`;`ensureAliasLinks()` 按表补 junction。
+- `lib/index.js`:envCheck 用 `nativeRuntimeStatus()`;不再给子进程加 `NODE_PATH`(目录链已由 junction 覆盖)。
+- `scripts/test-vendored-table.mjs`(11 条):钉死「无任何 `npm:` 别名 / 不引用聚合包 / 表与依赖表逐项一致 /
+  `lib/vendored.json` 在 `files` 里」。
+
+### 25.5 验证(同一个安装命令 + 校验器自己的判据)
+
+```powershell
+# 用 desktop 自带 pnpm 装本地 tarball(联网,等同真实条件)
+& $node $pnpm … add <repo>\.spike\pack\dsh-code-server-app-0.3.45.tgz --save-exact --ignore-scripts
+node .spike/validate-graph.mjs .spike/verify-install2 dsh-code-server-app
+#   → checked 109 packages / OK 依赖图完整(校验器判据全部通过)
+node .spike/verify-runtime.mjs .spike/verify-install2/node_modules/dsh-code-server-app
+#   → modules 16, installed 16, resolved 16, missing 0
+```
+
+基线(同一脚本、同一个 0.3.44 profile)报的是 17 条,第一条逐字就是用户看到的那句。
+**结论:根因在 desktop 的「装完就校验」顺序,我们这边能做的是让自己不再依赖那个 pnpm 行为。**
+桌面应用侧的根治办法(改包的 mutation 也走完整安装)记在
+`docs/desktop-first-install-root-cause.md` 第三节,由用户决定是否改那份检出。

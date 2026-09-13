@@ -10,7 +10,7 @@
 > - Microsoft **open-source** extensions (Python, TypeScript debugger, ESLint, …) are mirrored on Open VSX and install normally by search;
 > - **If you need a proprietary Microsoft extension**: download the `.vsix` from the Marketplace page and install it manually with `code-server --install-extension <file>` (or drop it into `--extensions-dir`).
 
-A static profile plugin (npm package with host + client bundle) that ships the **VS Code server tree** from a [code-server](https://github.com/coder/code-server) release as a **platform-independent dependency package** (pack-time artifact `vendor/vscode` → `@jinsiyu/dshcs-vscode-server`, no install scripts, no postinstall). The code-server **Node service layer is replaced by the plugin's own `lib/launcher.mjs`**: it drives `<tree>/lib/vscode/out/server-main.js` (`loadCodeWithNls()` / `createServer()` / `handleRequest()` / `handleUpgrade()`) directly and re-adds the few HTTP endpoints code-server used to provide (`/healthz`, `/manifest.json`, `/_static/*`, `/proxy/:port`). The 16 native modules (node-pty / @vscode/sqlite3 / spdlog / …) come from `@jinsiyu/dshcs-*-win32-<arch>` platform packages selected automatically per architecture by the platform aggregator. VS Code's inner dependencies and the prebuilt native modules are **all installed by the package manager together with the plugin** — no global npm install, no `bin` configuration, no profile config changes, no second install command, **no argon2/C++ toolchain**.
+A static profile plugin (npm package with host + client bundle) that ships the **VS Code server tree** from a [code-server](https://github.com/coder/code-server) release as a **platform-independent dependency package** (pack-time artifact `vendor/vscode` → `@jinsiyu/dshcs-vscode-server`, no install scripts, no postinstall). The code-server **Node service layer is replaced by the plugin's own `lib/launcher.mjs`**: it drives `<tree>/lib/vscode/out/server-main.js` (`loadCodeWithNls()` / `createServer()` / `handleRequest()` / `handleUpgrade()`) directly and re-adds the few HTTP endpoints code-server used to provide (`/healthz`, `/manifest.json`, `/_static/*`, `/proxy/:port`). The 16 native modules (node-pty / @vscode/sqlite3 / spdlog / …) come from `@jinsiyu/dshcs-*` sub-packages declared **directly on the plugin's dependency table** under their real names (os/cpu-gated per target), with the original import names restored by runtime junctions. VS Code's inner dependencies and the prebuilt native modules are **all installed by the package manager together with the plugin** — no global npm install, no `bin` configuration, no profile config changes, no second install command, **no argon2/C++ toolchain**.
 
 > Since 0.3.22 the ask panel renders the session's new content with **DSH's own Markdown renderer** (the same
 > renderer and design tokens as the DSH UI; new content only) and can **answer approval requests in place**
@@ -390,11 +390,12 @@ Diagnostics: `GET /api/code-server/status` exposes
   "Install the plugin (script-free install; code-server bundled)" below — `pnpm install` → `pnpm run build:client` →
   `pnpm run vendor:vscode` → `pnpm pack` + `dsh plugin --profile web add`.
 
-> Verified locally (BM: Windows 11 ARM64): the whole tree/dependency chain is supplied by per-platform
-> sub-packages — the tree package `@jinsiyu/dshcs-vscode-server` (currently 4.137.0, a 50.8 MB tarball),
-> the pure-JS inner dependencies directly in the plugin's `dependencies`, and 16 prebuilt native modules
-> re-exported under their original names by the aggregator `@jinsiyu/dsh-code-server-runtime-win32-<arch>`
-> (picked by os/cpu) → healthz 200 → stopped → fully recycled.
+> Verified locally (BM: Windows 11 ARM64): the whole tree/dependency chain hangs directly off the plugin's
+> dependency table — the tree package `@jinsiyu/dshcs-vscode-server` (currently 4.137.0, a 50.8 MB tarball),
+> the pure-JS inner dependencies plus the 8 platform-independent repacks in `dependencies`, and the 8
+> platform-specific repacks (win32-arm64 / win32-x64) in `optionalDependencies` with their own os/cpu gates;
+> the original names are restored by junctions created at runtime (`lib/native.js`)
+> → healthz 200 → stopped → fully recycled.
 > (The 0.1.37-era "one big platform package" layout is gone — see "Upgrading the VS Code tree" below.)
 
 ## Packaging (how to build the tarball)
@@ -419,7 +420,7 @@ pnpm run promote -- <version>
 > `pnpm run promote -- <version>` (= `npm dist-tag add dsh-code-server-app@<version> latest`)
 > **after the user restarts `dsh web` and confirms it works**. That way
 > `dsh plugin add dsh-code-server-app` (no version) — and anything else resolving `latest` — never picks up an
-> unverified build. Sub-packages (`@jinsiyu/dshcs-*`, the aggregators) are referenced by exact/caret versions,
+> unverified build. Sub-packages (`@jinsiyu/dshcs-*`) are referenced by exact versions,
 > so their dist-tags do not affect resolution, but they default to `next` as well.
 > Inspect the current tags with `npm dist-tag ls dsh-code-server-app`.
 
@@ -436,8 +437,8 @@ pnpm run promote -- <version>
 | Sub-package | Content | os/cpu |
 |---|---|---|
 | `@jinsiyu/dshcs-vscode-server@<code-server version>` | the trimmed VS Code tree (`lib/vscode` + `out/browser` + `src/browser`; **without** code-server's `out/node` and its 136 runtime deps) | platform-independent |
-| `@jinsiyu/dshcs-<name>[-win32-<arch>]` ×24 | the VS Code inner packages that need building (node-pty / @vscode/sqlite3 / kerberos / koffi / ssh2 / …) | gated when platform-specific |
-| `@jinsiyu/dsh-code-server-runtime-win32-<arch>` | platform aggregator: its `dependencies` map those 16 natives back to their original names via `npm:` aliases | win32-<arch> |
+| `@jinsiyu/dshcs-<name>[-win32-<arch>]` ×16 | the VS Code inner packages that need building (node-pty / @vscode/sqlite3 / kerberos / koffi / ssh2 / …) | gated when platform-specific |
+| `lib/vendored.json` (**not** a package) | the "original name → repack sub-package" table shipped inside the plugin; `lib/native.js` uses it to create the junctions. Since 0.3.45 there is **no platform aggregator** | — |
 
 | Goal | Command |
 |---|---|
@@ -445,7 +446,7 @@ pnpm run promote -- <version>
 | **Pin a version** | `pnpm run vendor:vscode -- --version 4.137.0` |
 | **Snapshot from an existing tree** | `pnpm run vendor:vscode -- --from <code-server dir>` (seconds) |
 | **Rebuild every sub-package** | `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack` (without `--from` it npm-installs and compiles the source tree itself — slow) |
-| **Rebuild only the tree/aggregator packages** | `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64 --pack` (reuses the natives already in `repack/build`) |
+| **Rebuild only the tree + dependency table** | `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64 --pack` (reuses the natives already in `repack/build`; also rewrites `lib/vendored.json` and the plugin dependency table) |
 | **Publish sub-packages** | `pnpm run publish:repacks` (`--dry-run` to preview; `--only <substr>` to filter; `--otp <code>` / `--limit N` for 2FA) |
 | **Publish the plugin itself** | `pnpm run publish:plugin` (publishes the exact tarball that was verified; no re-packing; default dist-tag `next`) |
 | **Promote `latest`** | `pnpm run promote -- <version>` (only after the user restarted and confirmed; `--dry-run` shows the current tags first) |
@@ -474,10 +475,13 @@ The main package is only **~110KB** (the plugin's own code plus the launcher); e
   `@jinsiyu/dshcs-code-server/code-server` is still recognised as a fallback);
 - the **pure-JS part** of VS Code's inner dependencies (35 packages: xterm / katex / typescript / ws / tar …) is
   declared in the plugin's `dependencies` and installed by pnpm into the profile's `node_modules` (hoisted);
-- the **binary part** comes entirely from `@jinsiyu/dshcs-*` platform packages: 16 native packages mapped back to their
-  **original names** (`node-pty` / `@vscode/sqlite3` / `@vscode/spdlog` / …) by the **platform aggregator**
-  `@jinsiyu/dsh-code-server-runtime-win32-<arch>` using `npm:` aliases; the aggregators sit in the plugin's
-  `optionalDependencies`, so pnpm auto-selects the right platform;
+- the **binary part** comes entirely from `@jinsiyu/dshcs-*` sub-packages, declared **directly on the plugin's own
+  dependency table** (since 0.3.45): the 8 platform-independent repacks (`node-pty` / `koffi` / `ssh2` /
+  `cpu-features` / `@parcel/watcher` / `@vscode/fs-copyfile` / `@vscode/proxy-agent` / `@microsoft/mxc-sdk`) go into
+  `dependencies` under their real names; the 8 platform-specific ones (`@vscode/sqlite3` / `spdlog` / `kerberos` /
+  `deviceid` / `native-watchdog` / `windows-registry` / `windows-process-tree` / `windows-ca-certs`) go into
+  `optionalDependencies` once per target (real names + their own os/cpu gates), so one command picks the right arch;
+  the **original names** are restored at runtime by junctions created from `lib/vendored.json`;
 - consequently the dependency graph contains **no package with pre/install/postinstall or a `binding.gyp`** →
   no profile `allowBuilds`, no build script ever runs, and **the user machine needs no C++ toolchain**;
 - **upgrading the plugin no longer re-downloads the tree**: the tree package is cached by version
@@ -500,10 +504,15 @@ The main package is only **~110KB** (the plugin's own code plus the launcher); e
   **removed** (the built `.node` and every runtime file stay) → sibling packages in its dependency list become `npm:`
   aliases → platform-specific ones get `os`/`cpu` plus a `-<platform>-<arch>` suffix. For win32 targets the script also
   verifies each `.node` PE machine (0x8664=x64 / 0xaa64=arm64) so a cross-compiled artifact cannot ship the wrong arch;
-- **the platform aggregator** maps those repacks back to their original names (e.g.
-  `"node-pty": "npm:@jinsiyu/dshcs-node-pty@1.2.0-beta.15"`), so VS Code's `import('node-pty')` needs no change; the
-  aggregator is itself `os`/`cpu` gated, and the plugin declares both win32-arm64 and win32-x64 in
-  `optionalDependencies`, so one command picks the right one;
+- **how the original names come back** (since 0.3.45): a repack's real name is `@<scope>/dshcs-<name>` while VS Code
+  imports `node-pty` / `@vscode/sqlite3`; pack time writes the "original name → real name" table into
+  `lib/vendored.json` (shipped with the plugin) and `lib/native.js` creates `<tree>/node_modules/<original name>`
+  junctions to the real directories (idempotent, self-healing).
+  **Why the old "platform aggregator + `npm:` aliases" is gone**: pnpm's incremental hoisted install drops those
+  aliased packages when they sit inside an **optional subtree** (measured: 9 of 16 missing) while dsh-desktop
+  validates the dependency graph right after the install ⇒ the first install always failed with `requires missing`;
+  with real-name direct dependencies the same install command plus the validator's own predicate passes end to end
+  (reproduction in `docs/desktop-first-install-root-cause.md`);
 - **resolution path**: the host finds the tree with `require.resolve('@jinsiyu/dshcs-vscode-server/package.json')`
   (then the inner `vscode/` directory) and the entry is `vscode/lib/vscode/out/server-main.js`; VS Code's inner deps are
   resolved upwards from that root (`vscode/lib/vscode/node_modules` → package `node_modules` → `<profile>/node_modules`).
@@ -511,8 +520,8 @@ The main package is only **~110KB** (the plugin's own code plus the launcher); e
 - **runtime layout self-healing** (`ensureRuntimeLayout()` in `lib/native.js`, idempotent, run **at activation before
   `envCheck` and again before every start**): the host adds two kinds of **junctions** (Windows junctions / POSIX dir
   symlinks) into the tree:
-  1. `ensureAliasLinks()`: re-links the native aliases the aggregator carries into `<tree>/node_modules` — pnpm nests
-     `os`/`cpu`-gated packages under the aggregator's own `node_modules`, and `lib/vscode/out/server-main.js` uses
+  1. `ensureAliasLinks()`: links the 16 **original names** listed in `lib/vendored.json` into `<tree>/node_modules`
+     — the real-name packages live in the plugin's dependency graph, and `lib/vscode/out/server-main.js` uses
      **ESM imports** (ESM ignores `NODE_PATH`), so a missing link means an immediate 500;
   2. `ensureInnerModuleLinks()`: restores VS Code's **inner dependency directories**
      `lib/vscode/node_modules` and `lib/vscode/extensions/node_modules` from the two `package.json` files — the trimmed

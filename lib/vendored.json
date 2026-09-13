@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "generatedBy": "scripts/vendor-repacks.mjs",
+  "scope": "@jinsiyu",
+  "targets": [
+    "win32-arm64",
+    "win32-x64"
+  ],
+  "modules": [
+    {
+      "alias": "@microsoft/mxc-sdk",
+      "package": "@jinsiyu/dshcs-microsoft-mxc-sdk",
+      "version": "0.8.0"
+    },
+    {
+      "alias": "@parcel/watcher",
+      "package": "@jinsiyu/dshcs-parcel-watcher",
+      "version": "2.5.6"
+    },
+    {
+      "alias": "@vscode/deviceid",
+      "package": "@jinsiyu/dshcs-vscode-deviceid",
+      "version": "0.1.5",
+      "platform": true
+    },
+    {
+      "alias": "@vscode/fs-copyfile",
+      "package": "@jinsiyu/dshcs-vscode-fs-copyfile",
+      "version": "2.0.0"
+    },
+    {
+      "alias": "@vscode/native-watchdog",
+      "package": "@jinsiyu/dshcs-vscode-native-watchdog",
+      "version": "1.4.6",
+      "platform": true
+    },
+    {
+      "alias": "@vscode/proxy-agent",
+      "package": "@jinsiyu/dshcs-vscode-proxy-agent",
+      "version": "0.44.0"
+    },
+    {
+      "alias": "@vscode/spdlog",
+      "package": "@jinsiyu/dshcs-vscode-spdlog",
+      "version": "0.15.8",
+      "platform": true
+    },
+    {
+      "alias": "@vscode/sqlite3",
+      "package": "@jinsiyu/dshcs-vscode-sqlite3",
+      "version": "5.1.12-vscode",
+      "platform": true
+    },
+    {
+      "alias": "@vscode/windows-ca-certs",
+      "package": "@jinsiyu/dshcs-vscode-windows-ca-certs",
+      "version": "0.3.4",
+      "platform": true
+    },
+    {
+      "alias": "@vscode/windows-process-tree",
+      "package": "@jinsiyu/dshcs-vscode-windows-process-tree",
+      "version": "0.8.0",
+      "platform": true
+    },
+    {
+      "alias": "@vscode/windows-registry",
+      "package": "@jinsiyu/dshcs-vscode-windows-registry",
+      "version": "1.2.0",
+      "platform": true
+    },
+    {
+      "alias": "cpu-features",
+      "package": "@jinsiyu/dshcs-cpu-features",
+      "version": "0.0.10"
+    },
+    {
+      "alias": "kerberos",
+      "package": "@jinsiyu/dshcs-kerberos",
+      "version": "2.1.1-dshcs.1",
+      "platform": true
+    },
+    {
+      "alias": "koffi",
+      "package": "@jinsiyu/dshcs-koffi",
+      "version": "3.1.2"
+    },
+    {
+      "alias": "node-pty",
+      "package": "@jinsiyu/dshcs-node-pty",
+      "version": "1.2.0-beta.15"
+    },
+    {
+      "alias": "ssh2",
+      "package": "@jinsiyu/dshcs-ssh2",
+      "version": "1.17.0"
+    }
+  ]
+}

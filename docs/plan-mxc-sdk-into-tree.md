@@ -1,5 +1,11 @@
 # 计划:mxc-sdk 搬进"树包",聚合包不再用 `npm:` 别名(方案 A)
 
+> **状态:已作废(2026-09-13 实测推翻),不要按本文实施。**
+> 用 desktop 自带 pnpm 逐字复刻 `pnpm add` 后测得:聚合包 16 个别名目标里有 **9 个没被链上**
+> (mxc-sdk 只是依赖表里排第一的那个),它们的传递依赖也一起被 pnpm 标成 `skipped`;
+> 完整重装才会全部就位。所以只搬 mxc-sdk,报错只会换成 `@parcel/watcher`。
+> 根因、复现命令与两条修法见 **`docs/desktop-first-install-root-cause.md`**。
+>
 > 状态:**未执行**,待新一轮实施。目标是把 desktop 官方安装报的那条错根除掉:
 > `desktop profile: dsh-code-server-app -> @jinsiyu/dsh-code-server-runtime-win32-arm64 requires missing @microsoft/mxc-sdk@npm:@jinsiyu/dshcs-microsoft-mxc-sdk@0.8.0`
 

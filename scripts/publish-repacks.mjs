@@ -1,7 +1,8 @@
-// scripts/publish-repacks.mjs — 把 repack/ 下的预编译包与平台聚合包发布到 npm。
+// scripts/publish-repacks.mjs — 把 repack/ 下的预编译子包(VS Code 树 + 重打包原生包)发布到 npm。
 //
 // 前提:先 `node scripts/vendor-repacks.mjs --target win32-arm64,win32-x64 --pack`
-//       生成 repack/build/*(重打包的原生包)与 repack/aggregator/*(平台聚合包)。
+//       生成 repack/build/*(重打包的原生包)与树包。0.3.45 起**不再有平台聚合包**
+//       (重打包包直接挂在插件依赖上,见 docs/desktop-first-install-root-cause.md)。
 //       本脚本只负责发布(以及发布前的最小校验)。
 //
 // 用法:
@@ -119,6 +120,8 @@ function collect() {
       out.push({ dir, name: manifest.name, version: manifest.version, aggregator: false, platform: manifest.cpu?.[0] ?? null });
     }
   }
+  // 历史包袱:0.3.44 及更早会生成 repack/aggregator/*(平台聚合包)。目录还在时一并发布,
+  // 以免老插件的 optionalDependencies(`^0.3.x`)解析不到;0.3.45 起不再生成。
   const aggRoot = join(repackDir, 'aggregator');
   if (existsSync(aggRoot)) {
     for (const target of readdirSync(aggRoot).sort()) {

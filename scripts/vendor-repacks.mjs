@@ -9,8 +9,10 @@
 //      + src/browser),不含 code-server 的 out/node 与它的 136 个依赖(那层由 lib/launcher.mjs 取代);
 //   ② @<scope>/dshcs-<名字>[-<platform>-<arch>]@<版本>  需要构建的原生包(node-pty / @vscode/sqlite3 /
 //      kerberos / koffi / ssh2 / …),依赖链上命中它们的包也一并重打包(含 optionalDependencies);
-//   ③ @<scope>/dsh-code-server-runtime-<platform>-<arch>@<插件版本>  平台聚合包:用 npm: 别名把 ② 装回
-//      原始名字,VS Code 的 require/import 无需改动;插件按 os/cpu 声明 ①(常规)+ ③(可选)依赖。
+//   ③ 插件依赖表 + lib/vendored.json —— **0.3.45 起不再有平台聚合包**:平台无关的重打包包写进插件
+//      `dependencies`(真名),平台专属的写进 `optionalDependencies`(真名 + 包自带 os/cpu,每目标一份);
+//      原始名字(node-pty / @vscode/sqlite3 …)由 lib/native.js 在运行时按 lib/vendored.json 补 junction。
+//      为什么弃用「平台聚合包 + npm: 别名」:见 docs/desktop-first-install-root-cause.md。
 //
 // 用法:node scripts/vendor-repacks.mjs [--from <已完整安装的 code-server 树>]
 //        [--target win32-arm64,win32-x64] [--scope @jinsiyu] [--pack]
@@ -395,63 +397,15 @@ function hostMapFromProfile() {
   return best;
 }
 
-/** --reuse:从现有 repack/build + 聚合包清单还原「重打包集」,不重新分析源树。
- *  @returns {{repack: Map<string,{pkg:{version:string},platformSpecific:boolean}>, declare:{name:string,version:string}[], reusedItems:{dir:string,file:string}[]}} */
-function reuseExisting(targets, hostKey) {
+/** --reuse:从现有 repack/build + 重打包表还原「重打包集」,不重新分析源树。
+ *  @returns {{modules:{alias:string,package:string,version:string,platform:boolean}[],
+ *             declare:{name:string,version:string}[], reusedItems:{dir:string,file:string}[]}} */
+function reuseExisting(targets) {
   const buildRoot = join(OUT, 'build');
   if (!existsSync(buildRoot)) throw new Error('--reuse 需要 repack/build 已存在(先跑一次完整流程)');
-  const byTarget = new Map();
-  for (const target of targets) {
-    const agg = readJson(join(OUT, 'aggregator', target, 'package.json'));
-    if (agg === null) continue;
-    const map = new Map();
-    for (const [orig, spec] of Object.entries(agg.dependencies ?? {})) {
-      // 旧的聚合包清单里可能仍带 argon2(已随 code-server 服务层移除)
-      if (orig === 'argon2') continue;
-      const hit = /^npm:(.+)@([^@]+)$/.exec(spec);
-      if (hit === null) throw new Error(`无法解析聚合包依赖 ${orig}: ${spec}`);
-      map.set(orig, { pkgName: hit[1], version: hit[2] });
-    }
-    byTarget.set(target, map);
-  }
-  if (byTarget.size === 0) {
-    const base = hostMapFromProfile();
-    if (base === null) {
-      throw new Error('--reuse 需要 repack/aggregator/*/package.json 或一个已安装的 profile 用于还原映射');
-    }
-    byTarget.set(hostKey, base);
-  } else {
-    // 与已安装 profile 的别名取并集:聚合包清单可能在上一次失败的重建里丢过条目
-    const hostTarget = byTarget.has(hostKey) ? hostKey : targets[0];
-    const base = hostMapFromProfile();
-    if (base !== null) {
-      const merged = new Map(byTarget.get(hostTarget));
-      let added = 0;
-      for (const [orig, info] of base) {
-        if (!merged.has(orig)) { merged.set(orig, info); added += 1; }
-      }
-      if (added > 0) console.log(`[repack] --reuse:聚合包清单缺 ${added} 个条目 → 已用 profile 别名补齐`);
-      byTarget.set(hostTarget, merged);
-    }
-  }
-  const known = byTarget.get(hostKey) ?? byTarget.get(targets[0]);
-  // 其余目标:按后缀替换推导(平台专属包名只在结尾的 -<platform>-<arch> 上不同)
-  const knownTarget = byTarget.has(hostKey) ? hostKey : targets[0];
-  for (const target of targets) {
-    if (byTarget.has(target)) continue;
-    const map = new Map();
-    for (const [orig, info] of known) {
-      const pkgName = info.pkgName.endsWith(`-${knownTarget}`)
-        ? `${info.pkgName.slice(0, -knownTarget.length)}${target}`
-        : info.pkgName;
-      map.set(orig, { pkgName, version: info.version });
-    }
-    byTarget.set(target, map);
-  }
-  const hostSet = byTarget.get(knownTarget);
-  const repack = new Map();
-  for (const [orig, info] of hostSet) {
-    repack.set(orig, { pkg: { version: info.version }, platformSpecific: info.pkgName.endsWith(`-${knownTarget}`) });
+  const modules = readModules(targets);
+  if (modules.length === 0) {
+    throw new Error('--reuse 需要 lib/vendored.json、repack/aggregator/*/package.json 或一个已安装的 profile 用于还原重打包表');
   }
   // 已有原生包目录 → plan 项;顺带清掉将被重建的树目录(旧 code-server / argon2 目录一并清理)
   const reusedItems = [];
@@ -464,50 +418,125 @@ function reuseExisting(targets, hostKey) {
     if (m === null) continue;
     reusedItems.push({ dir: join(buildRoot, ent), file: tgzName(m.name, m.version) });
   }
-  // 纯 JS 直装集:插件现有 dependencies 里非 @jinsiyu 的项
+  // 纯 JS 直装集:插件现有 dependencies 里既不是树包、也不是重打包子包的项
+  const vendoredNames = new Set(modules.map((m) => m.package));
   const pluginPkg = readJson(join(pkgRoot, 'package.json'));
   const declare = Object.entries(pluginPkg.dependencies ?? {})
-    .filter(([name]) => !/^@jinsiyu\//.test(name))
+    .filter(([name]) => !vendoredNames.has(name) && !/\/(?:dshcs-vscode-server|dshcs-code-server)$/.test(name))
     .map(([name, version]) => ({ name, version }));
   rmSync(join(OUT, 'aggregator'), { recursive: true, force: true });
-  console.log(`[repack] --reuse:复用 ${reusedItems.length} 个已打包目录、${repack.size} 个重打包条目、${declare.length} 个纯 JS 直装依赖`);
-  return { repack, declare, reusedItems };
+  console.log(`[repack] --reuse:复用 ${reusedItems.length} 个已打包目录、${modules.length} 个重打包条目、${declare.length} 个纯 JS 直装依赖`);
+  return { modules, declare, reusedItems };
+}
+
+/** 重打包子包的平台后缀(平台专属包才有),如 `@<scope>/dshcs-kerberos-win32-arm64`。 */
+const PLATFORM_SUFFIX = /-(win32|darwin|linux)-(arm64|x64)$/;
+
+/** 由「原名 + 真包名 + 版本」得到重打包条目(平台专属的存**基名**,运行时按目标拼后缀)。 */
+function moduleEntry(alias, pkgName, version) {
+  const hit = PLATFORM_SUFFIX.exec(pkgName);
+  return hit === null
+    ? { alias, package: pkgName, version, platform: false }
+    : { alias, package: pkgName.slice(0, -hit[0].length), version, platform: true };
+}
+
+/** 读「原名 → 重打包子包」表:优先 lib/vendored.json(0.3.45 起),
+ *  否则从平台聚合包清单(0.3.44 及更早)或已安装 profile 迁移,再否则返回空表。 */
+function readModules(targets) {
+  const vendoredFile = join(pkgRoot, 'lib', 'vendored.json');
+  const doc = readJson(vendoredFile);
+  if (doc !== null && Array.isArray(doc.modules) && doc.modules.length > 0) {
+    const modules = doc.modules
+      .filter((m) => m !== null && typeof m === 'object' && typeof m.alias === 'string' && typeof m.package === 'string')
+      .map((m) => ({
+        alias: m.alias,
+        package: m.package,
+        version: typeof m.version === 'string' ? m.version : null,
+        platform: m.platform === true,
+      }))
+      .sort((a, b) => a.alias.localeCompare(b.alias));
+    if (modules.length > 0) {
+      console.log(`[repack] 读 lib/vendored.json:${modules.length} 个重打包条目`);
+      return modules;
+    }
+  }
+  // 迁移:旧的聚合包清单(每个目标一份,dependencies 里是 npm: 别名)
+  let source = null;
+  for (const target of targets) {
+    const agg = readJson(join(OUT, 'aggregator', target, 'package.json'));
+    if (agg === null) continue;
+    const map = new Map();
+    for (const [orig, spec] of Object.entries(agg.dependencies ?? {})) {
+      // 旧的聚合包清单里可能仍带 argon2(已随 code-server 服务层移除)
+      if (orig === 'argon2') continue;
+      const hit = /^npm:(.+)@([^@]+)$/.exec(spec);
+      if (hit === null) throw new Error(`无法解析聚合包依赖 ${orig}: ${spec}`);
+      map.set(orig, { pkgName: hit[1], version: hit[2] });
+    }
+    if (map.size > 0) { source = { label: `repack/aggregator/${target}`, map }; break; }
+  }
+  // 与已安装 profile 的别名取并集:聚合包清单可能在上一次失败的重建里丢过条目
+  const base = hostMapFromProfile();
+  if (source === null && base === null) return [];
+  const merged = new Map(source !== null ? source.map : []);
+  if (base !== null) {
+    let added = 0;
+    for (const [orig, info] of base) {
+      if (!merged.has(orig)) { merged.set(orig, info); added += 1; }
+    }
+    if (added > 0) console.log(`[repack] 重打包表缺 ${added} 个条目 → 已用 profile 别名补齐`);
+  }
+  const modules = [...merged]
+    .map(([alias, info]) => moduleEntry(alias, info.pkgName, info.version))
+    .sort((a, b) => a.alias.localeCompare(b.alias));
+  console.log(`[repack] 迁移 ${modules.length} 个重打包条目(${source !== null ? source.label : 'profile 别名'})→ 将写入 lib/vendored.json`);
+  return modules;
 }
 
 function main() {
   const hostKey = `${process.platform}-${process.arch}`;
   const targets = TARGETS.length > 0 ? TARGETS : [hostKey];
-  const pluginVersion = readJson(join(pkgRoot, 'package.json'))?.version ?? '0.0.0';
 
-  let repack;
+  let repack = null;
+  let modules;
   let declare;
   let reusedItems = [];
   let autoSourceTree = null;
   if (REUSE) {
-    ({ repack, declare, reusedItems } = reuseExisting(targets, hostKey));
+    ({ modules, declare, reusedItems } = reuseExisting(targets));
   } else {
     const autoSource = FROM === null;
     const sourceTree = autoSource ? prepareSourceTree() : FROM;
     if (autoSource) autoSourceTree = sourceTree;
     ({ repack, declare } = analyze(sourceTree));
+    modules = [...repack]
+      .map(([name, r]) => ({
+        alias: name,
+        package: `${SCOPE}/dshcs-${flat(name)}`,
+        version: r.pkg.version,
+        platform: r.platformSpecific,
+      }))
+      .sort((a, b) => a.alias.localeCompare(b.alias));
     rmSync(OUT, { recursive: true, force: true });
   }
-  console.log(`\n重打包集(${repack.size}):`);
-  for (const [name, r] of [...repack].sort()) {
-    console.log(`  ${name}@${r.pkg.version} ${r.platformSpecific ? '[平台专属]' : '[全平台]'}`);
+  console.log(`\n重打包集(${modules.length}):`);
+  for (const m of modules) {
+    console.log(`  ${m.alias}@${m.version} → ${m.package}${m.platform ? `-<平台>` : ''} ${m.platform ? '[平台专属]' : '[全平台]'}`);
   }
   console.log(`\n直装集(${declare.length}): ${declare.map((d) => d.name).join(', ')}\n`);
 
   mkdirSync(join(OUT, 'build'), { recursive: true });
 
-  // 每个目标的包名映射
+  // 每个目标的包名映射:平台专属的按目标拼后缀,平台无关的到处同名
   const byTarget = new Map();
   for (const target of targets) {
-    const suffix = `-${target}`;
-    const map = new Map(); // 原包名 -> { pkgName, version }
-    for (const [name, r] of repack) {
-      const pkgName = `${SCOPE}/dshcs-${flat(name)}${r.platformSpecific ? suffix : ''}`;
-      map.set(name, { pkgName, version: r.pkg.version, platformSpecific: r.platformSpecific });
+    const map = new Map(); // 原包名 -> { pkgName, version, platformSpecific }
+    for (const m of modules) {
+      map.set(m.alias, {
+        pkgName: `${m.package}${m.platform ? `-${target}` : ''}`,
+        version: m.version,
+        platformSpecific: m.platform,
+      });
     }
     byTarget.set(target, map);
   }
@@ -599,45 +628,45 @@ function main() {
     }
     if (crossTree !== null) rmSync(crossTree, { recursive: true, force: true });
   }
-  // 3) 聚合包(每平台一个):dependencies 用 npm: 别名把重打包包装回原名
-  for (const target of targets) {
-    const map = byTarget.get(target);
-    const aggName = `${SCOPE}/dsh-code-server-runtime-${target}`;
-    const aggDir = join(OUT, 'aggregator', target);
-    mkdirSync(aggDir, { recursive: true });
-    const deps = {};
-    for (const [name] of repack) deps[name] = `npm:${map.get(name).pkgName}@${map.get(name).version}`;
-    writeFileSync(join(aggDir, 'package.json'), JSON.stringify({
-      name: aggName,
-      version: pluginVersion,
-      description: `Prebuilt native modules for the VS Code server tree on ${target} `
-        + '(node-pty, @vscode/sqlite3, kerberos, @vscode/spdlog, …), '
-        + 'so that installing the VS Code inner dependencies needs no build approval or C++ toolchain.',
-      os: [target.split('-')[0]],
-      cpu: [target.split('-')[1]],
-      dependencies: deps,
-      license: 'MIT',
-      repository: readJson(join(pkgRoot, 'package.json'))?.repository ?? undefined,
-    }, null, 2) + '\n', 'utf8');
-    plan.push({ dir: aggDir, file: tgzName(aggName, pluginVersion), aggregator: true, target });
-  }
+  // 3) 重打包表(lib/vendored.json,随插件发布):运行时用它把真名子包补成原始名字
+  const vendoredDoc = {
+    schemaVersion: 1,
+    generatedBy: 'scripts/vendor-repacks.mjs',
+    scope: SCOPE,
+    targets,
+    modules: modules.map((m) => {
+      const entry = { alias: m.alias, package: m.package, version: m.version };
+      if (m.platform) entry.platform = true;
+      return entry;
+    }),
+  };
+  writeFileSync(join(pkgRoot, 'lib', 'vendored.json'), `${JSON.stringify(vendoredDoc, null, 2)}\n`, 'utf8');
+  const independent = modules.filter((m) => !m.platform);
+  const specific = modules.filter((m) => m.platform);
+  console.log(`[repack] 重打包表 → lib/vendored.json(${modules.length} 个:全平台 ${independent.length} / 平台专属 ${specific.length})`);
 
   writeFileSync(join(OUT, 'pack-plan.json'), JSON.stringify(plan, null, 2) + '\n', 'utf8');
   console.log(`[repack] 生成 ${plan.length} 个待打包目录 → repack/ (计划:repack/pack-plan.json)`);
 
-  // 4) 改写插件 package.json 的依赖:纯 JS 直装集 + VS Code 树包(平台无关);
-  //    平台专属的(原生包)通过聚合包按 os/cpu 自动选。
+  // 4) 改写插件 package.json 的依赖:树 + 纯 JS 直装集 + **全平台**重打包包写 dependencies(真名);
+  //    平台专属的重打包包按目标写 optionalDependencies(真名 + 包自带 os/cpu,包管理器按架构自动选)。
+  //    这样每个包在依赖图里都是「根项目的直接依赖」,不依赖 pnpm 对可选子树别名的处理
+  //    (见 docs/desktop-first-install-root-cause.md)。
   const pkgFile = join(pkgRoot, 'package.json');
   const pluginPkg = readJson(pkgFile);
   pluginPkg.dependencies = Object.fromEntries([
     [vscodePkg.name, vscodePkg.version],
     ...declare.map((d) => [d.name, d.version]),
+    ...independent.map((m) => [m.package, m.version]),
   ].sort(([a], [b]) => a.localeCompare(b)));
   pluginPkg.optionalDependencies = Object.fromEntries(targets
-    .map((t) => [`${SCOPE}/dsh-code-server-runtime-${t}`, `^${pluginVersion}`]));
+    .flatMap((t) => specific.map((m) => [`${m.package}-${t}`, m.version]))
+    .sort(([a], [b]) => a.localeCompare(b)));
   writeFileSync(pkgFile, JSON.stringify(pluginPkg, null, 2) + '\n', 'utf8');
-  console.log(`[repack] 已写入 package.json:dependencies ${pluginPkg.dependencies ? Object.keys(pluginPkg.dependencies).length : 0} 个`
-    + `(VS Code 树 + 纯 JS),optionalDependencies ${targets.length} 个平台聚合包`);
+  console.log(`[repack] 已写入 package.json:dependencies ${Object.keys(pluginPkg.dependencies).length} 个`
+    + `(VS Code 树 + 纯 JS + ${independent.length} 个全平台重打包包),`
+    + `optionalDependencies ${Object.keys(pluginPkg.optionalDependencies).length} 个`
+    + `(${specific.length} 个平台专属重打包包 × ${targets.length} 个目标)`);
 
   // 5) 可选:直接打包
   if (DO_PACK) {
