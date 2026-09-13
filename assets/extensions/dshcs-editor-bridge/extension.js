@@ -62,8 +62,8 @@ let askPanel = null;
 let askDialogSupported = false;
 /** 上一份对话流快照(host 只在变化时回传,这里兜住"没变化"的那些轮询)。 */
 let lastThreadSnapshot;
-/** 上一份对话流修订号(随请求上报,告诉 host 本扩展懂修订号协议)。 */
-let lastThreadRev = 0;
+/** 本扩展**当前持有**的对话流修订号(随请求上报;-1 = 一份都还没有 ⇒ host 必须发). */
+let lastThreadRev = -1;
 /** 扩展根目录(activate 时记下;面板要按它取 webview 产物 URI)。 */
 let extensionRoot = null;
 /** 是否已经确认过 host 端点可达(避免把"IDE 刚起、扩展先加载"误判为断线)。 */
@@ -412,6 +412,12 @@ async function pollOnce() {
       : (result.threadRev !== undefined ? lastThreadSnapshot : undefined);
     if (result.thread !== undefined) lastThreadSnapshot = result.thread;
     if (Number.isSafeInteger(result.threadRev)) lastThreadRev = result.threadRev;
+    // 刚开面板、手里还没有任何快照,而 host 说"没变化"(它只看到我们持有 -1)→ 等下一份,别误报
+    // "宿主没有对话流能力"(0.3.29)。
+    if (result.thread === undefined && lastThreadSnapshot === undefined) {
+      refreshAskPanel();
+      return;
+    }
     if (applySync(askPanel.state, { ...result, thread })) refreshAskPanel();
   }
 }
