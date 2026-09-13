@@ -12,7 +12,7 @@
 //
 // 用法:node scripts/test-bridge-routes.mjs
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
@@ -319,6 +319,40 @@ await test('扩展安装必须带全 lib/,并且装进**内置**目录(用户级
   writeFileSync(join(extensionsDir, '.obsolete'), JSON.stringify({ 'dsh-code-server-app.dshcs-open-file-0.0.2': true }), 'utf8');
   plugin.installBundledExtensions(extensionsDir, userDataDir, { treeRoot });
   assert.equal(existsSync(join(extensionsDir, '.obsolete')), false, '只剩本插件的标记时应删掉整个文件');
+});
+
+await test('adopt 判据:内容一致时 updated 为空,且能算出"扩展文件比 IDE 进程新"', async () => {
+  // adopt(接管固定端口上正在运行的 IDE)不会重新加载扩展 ⇒ host 必须能自己判断
+  // "跑着的扩展宿主里是不是升级前的旧代码":updated 非空,或扩展文件 mtime > IDE 进程启动时间。
+  const dir = mkdtempSync(join(tmpdir(), 'dshcs-stale-'));
+  const treeRoot = join(dir, 'tree');
+  const builtin = join(treeRoot, 'lib', 'vscode', 'extensions');
+  mkdirSync(builtin, { recursive: true });
+  const extensionsDir = join(dir, 'extensions');
+  mkdirSync(extensionsDir, { recursive: true });
+  const userData = join(dir, 'user-data');
+
+  const first = plugin.installBundledExtensions(extensionsDir, userData, { treeRoot });
+  assert.ok(first.updated.length > 0, '首次安装必然有更新');
+  const second = plugin.installBundledExtensions(extensionsDir, userData, { treeRoot });
+  assert.deepEqual(second.updated, [], '内容一致时不该报更新(⇒ adopt 是安全的)');
+
+  const newestReal = plugin.newestBundledExtensionMtime(extensionsDir, { treeRoot });
+  assert.ok(Number.isFinite(newestReal), `应能取到 mtime: ${newestReal}`);
+  assert.ok(newestReal >= statSync(join(builtin, 'dshcs-editor-bridge', 'extension.js')).mtimeMs,
+    '取的是安装后文件里最新的那个');
+
+  // 把所有已装文件的时间统一改老 → 判据必须跟着变(说明它 stat 的是**安装目录**里的文件)
+  const old = Date.now() - 3600_000;
+  for (const name of ['dshcs-open-file', 'dshcs-editor-bridge']) {
+    for (const rel of plugin.listExtensionFiles(join(builtin, name))) {
+      utimesSync(join(builtin, name, rel), new Date(old), new Date(old));
+    }
+  }
+  const newestOld = plugin.newestBundledExtensionMtime(extensionsDir, { treeRoot });
+  assert.ok(Math.abs(newestOld - old) < 2000, `改老后应读到老时间: ${newestOld} vs ${old}`);
+  assert.equal(newestOld > Date.now() - 1800_000, false, '一小时前写的文件不该被当成"比刚启动的 IDE 新"');
+  rmSync(dir, { recursive: true, force: true });
 });
 
 await test('源码级:桥不再挂 /api,扩展侧路径由 BRIDGE_BASE 拼出', async () => {
