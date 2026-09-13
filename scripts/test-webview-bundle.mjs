@@ -218,7 +218,10 @@ await test('宿主:悬浮对话框的 5 条路由 + 能力探测 + 上下文折�
   for (const route of ['ask/state', 'ask/send', 'ask/approve', 'ask/close', 'ask/bundle']) {
     assert.ok(host.includes(`${'${API_BASE}'}/ask/${route.split('/')[1]}`), `缺少路由 ${route}`);
   }
-  assert.match(host, /askDialog: true/, '/sync 要带能力探测(扩展据此改用 ask-open 事件)');
+  assert.match(host, /askDialog: askDialogLive\(\)/,
+    '/sync 的能力位必须建立在"客户端半部真的在轮询"之上(否则不许让扩展放弃面板)');
+  assert.match(host, /function askDialogLive\(\)/, '要有对话框存活判据(0.3.25 的教训)');
+  assert.match(host, /askDialog\.lastPollAt = Date\.now\(\)/, '/ask/state 每次轮询都要记时间(存活证据)');
   assert.match(host, /kind === 'ask-open'/, '桥的 /event 要认 ask-open(右键提问的入口)');
   assert.match(host, /function askContextFromCache\(mode\)/, '上下文从宿主缓存的编辑器状态里取');
   assert.match(host, /const \{ agent: _agent, ...payload \} = result/, 'agent 句柄绝不能进 JSON');
