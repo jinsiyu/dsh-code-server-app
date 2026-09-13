@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import http from 'node:http';
 
 // **必须最先做**:DSH_HOME 决定 dataRoot/pid.json/endpoint.json 的位置。开发机上真 IDE 正在跑,
 // 不隔离的话 apply() 会 adopt 那个实例,测试断言全错,还会改写真实的 bridge.json
@@ -36,12 +37,13 @@ async function test(name, fn) {
 }
 
 /** 与 test-plugin-apply.mjs 同款桩 ctx(不含 tools/agents/systemPrompt → 走退化路径)。
- *  0.3.9 起桥挂在 DSH 的 **webServer** 上(不是 /api),所以桩里必须有 webServer,
- *  并且 `inject(['webServer'], cb)` 要真的回调(真 cordis 就是这么做的),否则桥永远不挂载。 */
+ *  0.3.13 起桥**不再依赖 webServer**:传输是本机 IPC(命名管道 / unix socket),
+ *  由 apply() 里的 `ctx.effect` 起监听口 —— 所以桩的 `effect` 必须真的执行回调
+ *  (真 cordis 就是这么做的),否则桥端点在测试里永远不会起来。 */
 function makeStubCtx({ routes, webRoutes }) {
   const settingsValue = { keepResident: true, claimExtensions: '*;!md', serve: 'loopback', port: 0, host: '127.0.0.1' };
+  const effects = [];
   const webServer = {
-    // 桥的 origin 由 webServer.port 算出来(OS 分配时 config.port 是 0,必须读实际端口)
     port: 18080,
     config: { host: '127.0.0.1', port: 18080 },
     register: (route) => { webRoutes.set(route.path, route); return () => { webRoutes.delete(route.path); }; },
@@ -62,7 +64,11 @@ function makeStubCtx({ routes, webRoutes }) {
       if (Array.isArray(deps) && deps.includes('webServer') && typeof cb === 'function') cb({ ...ctx, webServer });
       return () => {};
     },
-    effect: () => () => {},
+    effect: (fn) => {
+      const dispose = fn();
+      effects.push(typeof dispose === 'function' ? dispose : () => {});
+      return () => {};
+    },
     provide: () => {},
     logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
     log: () => {},
@@ -83,8 +89,10 @@ const extensionsDir = join(HOME, 'extensions');
 
 const plugin = await import('../lib/index.js');
 const bridge = await import('../lib/bridge.mjs');
+const bridgeIpc = await import('../lib/bridge-ipc.mjs');
 
-await plugin.apply(makeStubCtx({ routes, webRoutes }), {
+const stubCtx = makeStubCtx({ routes, webRoutes });
+await plugin.apply(stubCtx, {
   keepResident: false,
   serve: 'loopback',
   port: 0,
@@ -93,50 +101,98 @@ await plugin.apply(makeStubCtx({ routes, webRoutes }), {
   extensionsDir,
 });
 
-/** 直接驱动挂载点:走真实的 Node 路由 → Fetch 适配器 → 分发 → guard 这条链。
- *  (0.3.7 的测试只调 handler 本体,因此漏掉了"请求根本到不了 handler"这类问题。) */
+/** 驱动 /status 这条普通 /api 路由,拿到桥的真实状态(端点、是否 supported)。
+ *  用真 handler:顺便验证 status 不再泄露令牌。 */
+async function bridgeStatus() {
+  const route = routes.get('/api/code-server/status');
+  assert.ok(route !== undefined, '/api/code-server/status 必须注册');
+  const response = await route.fetch(new Request('http://127.0.0.1/api/code-server/status'));
+  return (await response.json()).bridge;
+}
+
+/** 等桥的本机 IPC 监听口起来(apply 里是异步起的)。 */
+async function waitForEndpoint(timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const status = await bridgeStatus();
+    if (status.endpoint !== null && status.supported === true) return status;
+    if (Date.now() > deadline) return status;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/** 直接驱动本机 IPC 监听口:真实传输(命名管道 / unix socket)→ 真实 Node 路由 → Fetch 适配器
+ *  → 分发 → guard 这条**完整**链。0.3.13 起这就是扩展走的那条路。
+ *
+ *  沙箱说明:workspace-write 下**连接**命名管道会 EPERM(监听是允许的,这是本机沙箱边界,
+ *  与代码正确性无关;真实部署没有这个问题)。遇到 EPERM 时把 `unreachable` 置位,
+ *  由调用方报 SKIP 而不是假装通过。 */
+let ipcUnreachable = null;
 async function callBridge(path, { method = 'GET', headers = {}, body = null } = {}) {
-  const route = webRoutes.get(bridge.BRIDGE_BASE);
-  assert.ok(route !== undefined, `webServer 上必须挂载 ${bridge.BRIDGE_BASE}`);
-  const { Readable } = await import('node:stream');
-  const req = Readable.from(body === null ? [] : [Buffer.from(body)]);
-  req.method = method;
-  req.url = path;
-  req.headers = headers;
-  const state = { status: 0, headers: {}, text: '' };
-  const res = {
-    headersSent: false,
-    writableEnded: false,
-    writeHead(code, hdrs) { state.status = code; Object.assign(state.headers, hdrs ?? {}); this.headersSent = true; return this; },
-    end(chunk) {
-      if (chunk !== undefined && chunk !== null) {
-        state.text += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
-      }
-      this.writableEnded = true;
-      return this;
-    },
-  };
-  await route.handler(req, res);
-  return { ...state, json: () => JSON.parse(state.text) };
+  const endpoint = (await waitForEndpoint()).endpoint;
+  if (endpoint === null) return { status: 0, headers: {}, text: '', json: () => null, unreachable: 'no endpoint' };
+  if (ipcUnreachable !== null) return { status: 0, headers: {}, text: '', json: () => null, unreachable: ipcUnreachable };
+  const payload = body === null ? null : Buffer.from(body, 'utf8');
+  try {
+    return await new Promise((resolve, reject) => {
+      const req = http.request({
+        socketPath: endpoint,
+        path,
+        method,
+        headers: payload === null ? headers : Object.assign({ 'content-length': String(payload.length) }, headers),
+        timeout: 3000,
+      }, (res) => {
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          resolve({ status: res.statusCode, headers: res.headers, text, json: () => JSON.parse(text), unreachable: null });
+        });
+      });
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      req.on('error', reject);
+      if (payload !== null) req.write(payload);
+      req.end();
+    });
+  } catch (error) {
+    if (error && error.code === 'EPERM') {
+      ipcUnreachable = 'EPERM(沙箱不允许连接命名管道)';
+      return { status: 0, headers: {}, text: '', json: () => null, unreachable: ipcUnreachable };
+    }
+    throw error;
+  }
+}
+
+/** 传输类用例的统一入口:沙箱里 EPERM → 记 SKIP(不静默通过)。 */
+function skipIfUnreachable(result, name) {
+  if (result !== undefined && result.unreachable !== null && result.unreachable !== undefined) {
+    console.log(`SKIP ${name}:${result.unreachable}`);
+    return true;
+  }
+  return false;
 }
 
 const BRIDGE_SUFFIXES = ['/health', '/sync', '/ask', '/event'];
 /** 与 host 侧 lib/bridge.mjs 的 BRIDGE_TOKEN_HEADER 同名同值(扩展侧另有一份字面量)。 */
 const TOKEN_HEADER = 'x-dshcs-bridge-token';
 
-await test('桥挂在 DSH webServer 的 BRIDGE_BASE 前缀上(不是 /api)', async () => {
+await test('桥走本机 IPC(命名管道 / unix socket),既不在 /api 下、也不依赖 webServer', async () => {
   assert.equal(bridge.BRIDGE_BASE, '/code-server-bridge', '前缀是对外契约:改它必须同时改扩展侧常量');
-  assert.ok(webRoutes.has(bridge.BRIDGE_BASE), `webServer 应挂载 ${bridge.BRIDGE_BASE}`);
-  assert.equal(webRoutes.get(bridge.BRIDGE_BASE).kind, 'prefix', '必须是 prefix 路由(要覆盖 /health /sync …)');
-  // 回归:0.3.7 把桥挂在 /api 下,而 Connection 的 cookie fence 会在到达插件路由之前 401 掉
+  const status = await waitForEndpoint();
+  assert.equal(status.supported, true, '桥端点应就绪(desktop 与 web 同一套传输)');
+  assert.ok(bridgeIpc.isBridgeEndpoint(status.endpoint), `端点必须是本机 IPC 路径:${status.endpoint}`);
+  // 回归一:0.3.7 把桥挂在 /api 下,Connection 的 cookie fence 会在到达插件路由之前 401 掉
   // 扩展宿主(Node 进程,没有浏览器 cookie)的请求 —— 那样桥永远不会真正同步。
   for (const suffix of BRIDGE_SUFFIXES) {
     assert.equal(routes.has(`/api/code-server/bridge${suffix}`), false, `不该再在 /api 下注册 ${suffix}`);
   }
+  // 回归二:0.3.9–0.3.12 挂在 DSH 的 webServer 前缀上,而 desktop 没有 webServer ⇒ 桥在桌面端永远休眠。
+  assert.equal(webRoutes.has(bridge.BRIDGE_BASE), false, '桥不该再挂到 webServer 上(desktop 没有它)');
 });
 
 await test('四条路由可达,未知后缀 404(绝不落到 VS Code 那边)', async () => {
   const unknown = await callBridge('/code-server-bridge/nope');
+  if (skipIfUnreachable(unknown, '四条路由可达')) return;
   assert.equal(unknown.status, 404, `未知后缀应 404(实际 ${unknown.status})`);
   const suffixWithPost = await callBridge('/code-server-bridge/health', { method: 'POST' });
   assert.equal(suffixWithPost.status, 405, '方法不符应 405');
@@ -154,17 +210,20 @@ await test('命名空间只读:只认这 4 条后缀,写/执行类一律 404', a
   }
   for (const bad of ['/write', '/edit', '/exec', '/run', '/shell', '/apply', '/save', '/delete', '/create']) {
     const res = await callBridge(`/code-server-bridge${bad}`, { method: 'POST', body: '{}' });
+    if (skipIfUnreachable(res, '命名空间只读')) return;
     assert.equal(res.status, 404, `${bad} 必须 404(实际 ${res.status})`);
   }
 });
 
 await test('health 无需令牌(便于重启后一眼确认),且不返回任何编辑器数据', async () => {
   const res = await callBridge('/code-server-bridge/health');
+  if (skipIfUnreachable(res, 'health 探活')) return;
   assert.equal(res.status, 200, `实际 ${res.status}`);
   const body = res.json();
   assert.equal(body.ok, true);
   assert.equal(body.bridge, false, '桩 ctx 下没有 IDE 在跑,桥应为未启用');
-  assert.equal(body.url, null);
+  assert.equal(body.transport, 'ipc');
+  assert.equal(body.endpoint, null);
   assert.ok(!/token/i.test(JSON.stringify(body)), 'health 不允许出现任何 token 字段');
 });
 
@@ -172,9 +231,11 @@ await test('带 Origin 的请求 → 403(必须穿过适配器仍然成立)', as
   // 这条是适配器的关键回归:undici 的 `new Request(url, {headers})` 会把 origin 当 forbidden header
   // **归一化掉**,所以适配器必须把 Node 的原始 headers 挂到 request 上给 guard 读
   // (见 lib/bridge.mjs 的 bridgeGuard 与 test 里那条 undici 实测记录)。
+  // 本机 IPC 上浏览器根本连不上,这条检查是纵深防御(端点被别的本机进程代理时仍然有效)。
   const res = await callBridge('/code-server-bridge/sync', {
     method: 'POST', headers: { origin: 'http://evil.example' }, body: '{}',
   });
+  if (skipIfUnreachable(res, 'Origin 403')) return;
   assert.equal(res.status, 403, `实际 ${res.status}`);
   assert.match(res.json().error, /Origin/, '错误信息应说明是 Origin 被拒');
 });
@@ -183,6 +244,7 @@ await test('桥未启用 → 503(与 401 区分:扩展据此休眠而不是重�
   const res = await callBridge('/code-server-bridge/sync', {
     method: 'POST', headers: { [TOKEN_HEADER]: 'whatever-0123456789abcdef' }, body: '{}',
   });
+  if (skipIfUnreachable(res, '桥未启用 503')) return;
   assert.equal(res.status, 503, `实际 ${res.status}`);
 });
 
@@ -307,18 +369,24 @@ await test('status 快照带 bridge 状态,但绝不泄露令牌', async () => {
   assert.ok(typeof body.bridge.file === 'string' && body.bridge.file.endsWith('bridge.json'));
 });
 
-await test('配置读写:原子写 / 读回 / 删掉 / 坏内容视为未配置', () => {
-  const url = 'http://127.0.0.1:8123';
+await test('配置读写:原子写 / 读回 / 删掉 / 坏内容视为未配置(0.3.13 起是 pipe,不是 url)', () => {
+  const pipe = '\\\\.\\pipe\\dshcs-bridge-4242-abcdefabcdef';
   const token = 'abctoken-0123456789abcdef';
-  const file = bridge.writeBridgeConfig(extensionsDir, { url, token, pid: 42, startedAt: 7 });
+  const file = bridge.writeBridgeConfig(extensionsDir, { pipe, token, pid: 42, startedAt: 7 });
   assert.ok(file.endsWith('bridge.json'), `实际 ${file}`);
+  const raw = JSON.parse(readFileSync(file, 'utf8'));
+  assert.equal(raw.version, 2, '传输换了 → 版本号必须跟着走(旧扩展读到 v2 会自己休眠)');
+  assert.equal(raw.pipe, pipe);
+  assert.equal(raw.url, undefined, 'url 字段必须消失(否则旧客户端会拿它去发 HTTP)');
   const read = bridge.readBridgeConfig(extensionsDir);
-  assert.equal(read.url, url);
+  assert.equal(read.pipe, pipe);
   assert.equal(read.token, token);
   assert.equal(read.pid, 42);
   // 用户手改坏 / 半截文件 → 视为"没有配置",扩展应当休眠而不是拿垃圾配置去连
-  bridge.writeBridgeConfig(extensionsDir, { url, token: 'short', pid: null, startedAt: null });
+  bridge.writeBridgeConfig(extensionsDir, { pipe, token: 'short', pid: null, startedAt: null });
   assert.equal(bridge.readBridgeConfig(extensionsDir), null, '非法令牌应视为未配置');
+  bridge.writeBridgeConfig(extensionsDir, { pipe: 'not-a-pipe', token, pid: null, startedAt: null });
+  assert.equal(bridge.readBridgeConfig(extensionsDir), null, '非本机 IPC 端点应视为未配置');
   assert.equal(bridge.removeBridgeConfig(extensionsDir), true);
   assert.equal(bridge.readBridgeConfig(extensionsDir), null);
 });

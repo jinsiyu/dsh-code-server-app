@@ -208,34 +208,40 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
   并永远跳过它 —— 每一轮启动都再标一次,**桥因此从来没有上报过状态**。
   要关掉桥请用插件设置 `editorBridge=false`(不挂桥、不注册工具),不要再指望在扩展视图里卸载它。
 
-### 三条通道(0.3.9 起走 DSH webServer 的 `/code-server-bridge`)
+### 三条通道(0.3.13 起走**本机 IPC**:Windows 命名管道 / unix socket)
 
 ```
 扩展 → host     POST /code-server-bridge/sync   一趟来回:上报编辑器状态 + 取回待处理事件
 扩展 → host     POST /code-server-bridge/ask    把编辑器里的提问投进当前会话
 扩展 → host     GET  /code-server-bridge/health 无鉴权探活(便于重启后一眼确认)
 扩展 → host     POST /code-server-bridge/event  扩展上报打开/关闭文件等(进 host 日志尾)
-host  → 扩展    <extensionsDir>/.dshcs-bridge/bridge.json  base URL + 令牌(扩展每 5s 重读)
+host  → 扩展    <extensionsDir>/.dshcs-bridge/bridge.json  端点 + 令牌(扩展每 5s 重读)
                 (目录由 host 注入的 `DSHCS_EXTENSIONS_DIR` 告知 —— 扩展装在内置目录里,自己推不出来)
 ```
 
-> **为什么不在 `/api` 下(0.3.9 修正)**:Connection 给 `/api` 装了 Host/Origin/cookie fence
-> (`packages/client/connection/src/index.ts` 里 `requestRejection` → 无 cookie 即 401),而桥的客户端
-> 是扩展宿主里的 **Node 进程** —— 它永远拿不到浏览器 cookie,请求在到达插件路由之前就被挡掉了。
-> 实测(0.3.7):扩展按 `/api/code-server/bridge/sync` 轮询,要么 405(打到 launcher/VS Code)、
-> 要么 401(打到 DSH 的 /api fence),**桥从来没有真正同步过**。
-> 现在桥挂在 DSH 自己的 webServer 前缀下,鉴权完全由桥自己的令牌承担(见下)。
-> 代价:桥需要 DSH 提供 `webServer` —— **web profile 有,desktop 没有**。
-> desktop 下 host 不写 `bridge.json`(宁可休眠,不可指向死地址),并在日志里说明;
-> **文件打开不受影响**(它走信号文件,与 serve 模式无关)。
+请求走 `http.request({ socketPath })`(`fetch` 不支持 socket),**不开任何端口**。
+
+> **为什么不是 HTTP(0.3.13 定论,三条都实测过)**
+> 1. **desktop 根本没有 HTTP 面**:渲染进程经 Electron IPC 调 `host.fetch()`
+>    (`apps/desktop-host/src/index.ts:308` 的 `createSharedFetchHandler('/api')`)—— 那是进程内函数调用,
+>    进程外不可达;插件能挂 HTTP 的只有 web profile 的 `webServer`。
+> 2. **`/api` 也不行**:Connection 给 `/api` 装了 Host/Origin/cookie fence
+>    (`packages/client/connection/src/index.ts` 里 `requestRejection` → 无 cookie 即 401),而桥的客户端
+>    是扩展宿主里的 **Node 进程** —— 它永远拿不到浏览器 cookie。实测(0.3.7):扩展按
+>    `/api/code-server/bridge/sync` 轮询,要么 405(打到 launcher/VS Code)、要么 401(打到 /api fence),
+>    **桥从来没有真正同步过**。
+> 3. 桥的两端本来就是**同一台机器上的两个进程**(扩展宿主 ← 插件 spawn 的 IDE ← 插件)。
+>    本机 IPC 比开端口更小:没有网络面、没有 Host/Origin 混淆代理问题,**web 与 desktop 走同一条路**。
+>    令牌校验照旧保留(见下),Windows 管道名带随机后缀、POSIX socket 文件 `chmod 0600`。
+>
+> 历史:0.3.9–0.3.12 挂在 DSH 的 `webServer` 前缀下 —— 于是 desktop 永远休眠(没有 webServer)。
 
 **为什么状态是"推"而不是"拉"**:扩展宿主是 VS Code server 的一个子进程,**不监听任何端口** ——
 host 反向请求不到它。所以编辑器状态只能在扩展主动发起的那趟轮询里带上来,host 缓存后给工具读
 (缓存滞后最多一个轮询周期 600ms,超过 10s 没更新就判为过期,工具会明说"状态已过期");
 
-**为什么不用 SSE/WebSocket**:扩展宿主里没有 HTTP 服务器,而 DSH 侧能给的无非是请求/响应
-(Connection 的 fetch 通道只允许 `GET | HEAD | POST`,流式要另走已被 `dsh-api-gateway` 占用的 WS mux)。
-轮询反而给了两条好性质:幂等(丢一次事件只是少一次提示,数据本身永远在编辑器里),以及状态天然最新(每趟都刷新)。
+**为什么不用 SSE/WebSocket**:扩展宿主里没有 HTTP 服务器,而桥的形态是"每 600ms 一趟请求/响应"。
+轮询给了两条好性质:幂等(丢一次事件只是少一次提示,数据本身永远在编辑器里),以及状态天然最新(每趟都刷新)。
 
 ### 安全模型(四条不变量,改 `lib/bridge.mjs` 之前先读)
 
@@ -593,13 +599,14 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
 | POST | `/api/code-server/stop` | 停止并回收进程树 |
 | POST | `/api/code-server/setup` | **兼容空操作**:0.1.36 起依赖由包管理器安装,调用只重新自检 `env` 并返回 |
 | POST | `/api/code-server/open-file` | body `{ file }` — 写信号文件,由内置扩展 `dshcs-open-file` 在 code-server 中打开 |
-| GET | `/code-server-bridge/health` | 编辑器桥探活(**无鉴权**;只回答"桥活着吗",不含任何编辑器数据)。挂 DSH 的 webServer,不在 `/api` 下 |
+| GET | `/code-server-bridge/health` | 编辑器桥探活(**无鉴权**;只回答"桥活着吗",不含任何编辑器数据)。走**本机 IPC**(命名管道 / unix socket),不在 `/api` 下、也不需要 `webServer` |
 | POST | `/code-server-bridge/sync` | 编辑器桥:扩展上报状态(`{context, diagnostics, workspace, at}`)并取回事件;`?since=<seq>` 是事件游标。需 `x-dshcs-bridge-token`,**带 Origin 一律 403** |
 | POST | `/code-server-bridge/ask` | 编辑器桥:把编辑器里的提问投进当前会话(`{text, file?, lineStart?, lineEnd?, selection?, languageId?}`);没有可投递的会话时回 **409** |
 | POST | `/code-server-bridge/event` | 编辑器桥:扩展上报打开/关闭文件等(进 host 日志尾)。需令牌 |
 
 > 桥的四条路由都自带令牌鉴权(它们**不依赖** DSH 的 cookie fence —— 扩展宿主拿不到浏览器 cookie),
-> 且永远只读。这也是它们**不能**挂在 `/api` 下的原因(见「与 DSH 的协同」)。
+> 且永远只读。传输是本机 IPC(0.3.13 起),所以 **web 与 desktop 同一套**:
+> 端点由 host 写在 `bridge.json` 的 `pipe` 字段里,扩展用 `http.request({ socketPath })` 访问。
 
 > 除桥之外,插件不再注册任何插件自有 HTTP 路由;code-server 图标已内联为 data URI(client bundle 内),
 > 因此客户端不请求任何插件自有 HTTP 资源。
@@ -611,7 +618,10 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
 - 右侧栏标签、guide 入口框、文件地址认领、设置卡片在 desktop 下与 web 相同(code-server 仍是本机 `http://127.0.0.1:<port>` 的 iframe;
   桌面端 `webSecurity: true` 且页面无 CSP 限制,跨源 iframe 正常加载)。
   桌面端同样自带 `dsh-client-ui-sidebar-right`(见 desktop 构建 seed 包列表),因此 0.2.3 的
-  "只支持带右侧栏的 DSH" 对 desktop 不构成降级;唯一差别是 desktop 无 `webServer`,`serve: dsh` 会自动回退 loopback。
+  "只支持带右侧栏的 DSH" 对 desktop 不构成降级;`serve: dsh` 会自动回退 loopback(那条路确实需要 webServer)。
+- **编辑器桥在 desktop 下可用(0.3.13 起)**:桥走本机 IPC(命名管道),与 `webServer` 无关 ——
+  扩展宿主是插件自己 spawn 的 IDE 的子进程,两端都在同一台机器上。host 注入 `DSHCS_EXTENSIONS_DIR` 后
+  扩展即可找到 `bridge.json`;`/status` 的 `bridge.supported/endpoint` 在 desktop 下同样是 `true`/管道名。
 - 安装到 desktop profile:桌面端插件管理窗(**不是** CLI,见下)。
 - **桌面端安装的 24 小时供应链策略(实测,2026-09-10,已用它装上 0.2.4)**:
   - CLI 路径不可用:`dsh plugin --profile desktop …` 会被拒绝(*"profile "desktop" is managed exclusively by the Electron application"*),
@@ -651,12 +661,11 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
 
 ## 已知限制
 
-- **编辑器桥需要 DSH 提供 `webServer`**(0.3.9 修正):桥的客户端是扩展宿主里的 Node 进程,
-  它只能通过 HTTP 打到 DSH 自己的 origin(桥挂在 `BRIDGE_BASE` 前缀下,自带令牌鉴权)。
-  **web profile(`serve: dsh` 或 loopback 都行)有 webServer → 桥可用;desktop 没有 → 不启用**
-  (status 的 `bridge.supported=false`,host 不写 `bridge.json`,日志里说明一次)。
-  **文件打开不受影响**:它走信号文件,与 serve 模式和 webServer 都无关。
-  0.3.7 及以前把桥挂在 `/api/code-server/bridge/*`,被 Connection 的 cookie fence 401 挡死 —— 那是个 bug。
+- **~~编辑器桥需要 DSH 提供 `webServer`~~ 已不成立(0.3.13 修正)**:桥改走**本机 IPC**
+  (Windows 命名管道 / unix socket,`http.request({ socketPath })`),**web 与 desktop 同一套**,
+  不需要 `webServer`、也不开端口。历史:0.3.9–0.3.12 挂在 DSH 的 webServer 前缀下 ⇒ desktop 永远休眠;
+  0.3.7 及以前挂在 `/api/code-server/bridge/*` ⇒ 被 Connection 的 cookie fence 401 挡死。
+  **文件打开**从来不受影响(它走信号文件)。
 - **`/code-server-bridge/health` 的 `bridge` 字段不代表扩展在跑**(0.3.12 澄清):它只表示"桥的目标已就绪"。
   扩展是否真的在跑,看 exthost 日志里有没有它的激活记录,或直接用 `editor_context` 试一次 ——
   0.3.0–0.3.11 就是"health 说 bridge:true、扩展却从没被加载"的状态(原因见上:用户级安装被标 `.obsolete`)。

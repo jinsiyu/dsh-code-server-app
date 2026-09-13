@@ -353,7 +353,7 @@ async function pollOnce() {
   }
   if (!connected) {
     connected = true;
-    log(`已连接宿主 ${client.config.url}`);
+    log(`已连接宿主(${client.config.pipe})`);
     updateStatusBar();
   }
   lastPollAt = Date.now();
@@ -378,7 +378,7 @@ function updateStatusBar() {
   if (statusBar === null) return;
   if (connected && client !== null && client.config !== null) {
     statusBar.text = '$(plug) DSH';
-    statusBar.tooltip = `编辑器桥已连接:${client.config.url}\n上次轮询:${lastPollAt === 0 ? '—' : new Date(lastPollAt).toLocaleTimeString()}\n点击查看日志`;
+    statusBar.tooltip = `编辑器桥已连接:${client.config.pipe}\n上次轮询:${lastPollAt === 0 ? '—' : new Date(lastPollAt).toLocaleTimeString()}\n点击查看日志`;
     statusBar.command = 'dsh-code-server.showBridgeLog';
     statusBar.show();
   } else {
@@ -464,7 +464,7 @@ function activate(context) {
     log('未找到桥配置(休眠)。DSH 插件启用编辑器桥并启动 IDE 后,这里会自动连上。');
   } else {
     client.restore();
-    log(`发现桥配置:${client.config.url}`);
+    log(`发现桥配置:${client.config.pipe}`);
   }
 
   // host 请求时才现算,这里只维护"上次计数",用于日志与将来的变化上报。
@@ -511,9 +511,9 @@ function activate(context) {
   // 定期重读配置(令牌/端口轮换后最多 CONFIG_REREAD_MS 恢复)。
   const refreshTimer = setInterval(() => {
     if (client === null) return;
-    const before = client.config === null ? null : client.config.url;
+    const before = client.config === null ? null : client.config.pipe;
     const next = client.refresh();
-    const after = next === null ? null : next.url;
+    const after = next === null ? null : next.pipe;
     if (before !== after) {
       log(`桥目标变化:${before ?? '(休眠)'} → ${after ?? '(休眠)'}`);
       if (after !== null) client.restore();

@@ -1195,3 +1195,65 @@ editor_diagnostics → 没有匹配的诊断
 - 验证要**分层到能被观察**:先看 exthost 有没有激活(是/否),再看工具返回有没有数据(是/否);
   一次只推进一层,才能立刻定位断在哪。
 
+## 19. 0.3.13:适配 desktop —— 桥改走本机 IPC(命名管道 / unix socket)
+
+> 需求:**适配 desktop 模式**。桌面端此前桥永远休眠(`bridge.supported=false`),
+> 原因是传输选错了 —— 桥一直挂在"某种 HTTP 面"上,而 desktop 根本没有 HTTP 面。
+
+### 19.1 事实核对(三处源码,决定了设计)
+
+1. **desktop 的 `/api` 是进程内函数调用,进程外不可达**:`apps/desktop-host/src/index.ts:308`
+   `const api = connection.createSharedFetchHandler('/api')`,由 Electron preload 暴露给渲染进程的
+   `host.fetch(command, body)` 调用 —— 只有渲染进程能用,而且它不是网络请求。
+2. **`/api` 即使有 HTTP 面也不行**:`packages/client/connection/src/index.ts:119-139` 里,
+   `/api` 路由**只在有 `webServer` 服务时才注册**(`ctx.inject(['webServer'], …)`),而且 handler 第一件事就是
+   `connection.requestRejection(req)`(Host/Origin fence + 浏览器 cookie 认证)。扩展宿主是 Node 进程 →
+   没有 cookie → 401。
+3. **DSH 没有给插件用的本机 IPC 设施**:`git grep -ln socketPath -- packages apps` 命中 0 处;
+   所以这条路要插件自己搭 —— 但本仓库已经有两处先例:`lib/launcher.mjs --pipe`(IDE 的服务端挂载)
+   与 `lib/index.js` 的 `healthCheckPipe`。
+
+### 19.2 修法:桥的传输换成**本机 IPC**,web 与 desktop 同一条路
+
+新增 `lib/bridge-ipc.mjs`(host 侧传输层):
+
+- `bridgeEndpointPath(root, pid)`:Windows → `\\.\pipe\dshcs-bridge-<pid>-<12hex>`(随机后缀不可猜);
+  其它平台 → `<dataRoot>/bridge-<pid>-<12hex>.sock`,POSIX 上 `chmod 0600`,关闭时删除,
+  启动时顺带清掉 24h 以前的残留 socket(崩溃留下的,不碰别人正在用的);
+- `startBridgeListener({socketPath, handler})`:`http.createServer(handler).listen(socketPath)`,
+  失败时 reject(调用方据此**不写 bridge.json**,宁可休眠)。
+- host 侧 `net`/`http` 直接复用原有链路:Node req/res → `nodeRouteFromFetch` → `dispatchBridge` → `bridgeGuard`
+  —— 路由表、只读白名单、令牌、Origin 403 全部不变。
+
+扩展侧(`lib/bridge-client.js`):`bridge.json` 的字段从 `url` 变成 `pipe`(配置 `version` 1→2),
+请求从 `fetch(url)` 换成 `http.request({socketPath})`(`fetch` 不支持 socket),并校验端点形状
+(Windows 必须是命名管道名、其它平台必须是绝对路径);旧版 v1 配置一律视为"未配置"→ 休眠。
+
+其它同步改动:
+
+- `lib/index.js`:`ctx.inject(['webServer'])` 里那段桥挂载删掉,改由 `ctx.effect` 起/停本机 IPC 监听口
+  (设置项 `editorBridge=false` 时把监听口一起关掉);`/status` 的 `bridge.supported` 改为"监听口在不在"
+  (**desktop 现在也是 true**),并把 `url` 字段换成 `endpoint`;`/health` 返回 `transport:"ipc"` + `endpoint`;
+- `lib/bridge.mjs`:`writeBridgeConfig`/`readBridgeConfig` 走 `pipe`,`bridgeUrl()` 删除(没人用了);
+- `package.json` 的 `files` 加上 `lib/bridge-ipc.mjs`。
+
+### 19.3 回归与验收
+
+- `scripts/test-bridge-routes.mjs`:**不再用桩 webServer**,而是让 `apply()` 真的把监听口起起来
+  (桩 ctx 的 `effect` 真的执行回调),再用**真实命名管道**驱动四条路由 —— 覆盖
+  `404 / 405 / 401 / 403 / 503 / health 无鉴权`;并断言"桥不再挂到 webServer 上"。
+- `scripts/test-bridge-extension.mjs`:客户端用例改注入 `requestImpl`(断言 `socketPath`、`path`、令牌头),
+  新增**端到端**用例:host 侧 `startBridgeListener` + 扩展侧 `defaultRequest` 在一条真管道上跑完整轮
+  (含"宿主没在跑 → `ok:false, status:0`"),以及"v1 配置(url)必须判为未配置"。
+- **沙箱边界**:workspace-write 下**连接**命名管道是 EPERM(监听允许)——
+  这类用例在沙箱里打印 `SKIP …EPERM`,不静默通过;放宽后 6 个用例全部真实执行。
+  这是本机沙箱限制,与代码正确性无关(生产里 `serve: dsh` 的管道一直这么用)。
+
+### 19.4 教训
+
+- **传输是设计决策,不是"顺手用现成的"**:0.3.0 起桥三次换传输(`/api` → `webServer` 前缀 → 本机 IPC),
+  每次都是因为"现成的那条路"只在某一个部署形态里成立。桥的两端是**同一台机器上的两个进程**,
+  这个事实本身就是最强的约束 —— 直接用它,不必绕道网络栈。
+- **"支持某平台"要落到具体事实**(有没有 HTTP 面、谁来调、进程边界在哪),不能停在"应该能通"。
+  这次的三条事实各自十行源码,却决定了整套传输的取舍。
+

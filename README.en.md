@@ -213,36 +213,43 @@ only the editor knows, and lets editor gestures drive the current session.
   every start, so **the bridge never reported any state**. To turn the bridge off use the plugin setting
   `editorBridge=false` (no mount, no tools) rather than uninstalling the extension from the Extensions view.
 
-### The channels (since 0.3.9 they live on DSH's webServer under `/code-server-bridge`)
+### The channels (since 0.3.13 over **local IPC**: a Windows named pipe / unix socket)
 
 ```
 extension → host   POST /code-server-bridge/sync    one round trip: push editor state + take pending events
 extension → host   POST /code-server-bridge/ask     push an editor question into the current session
 extension → host   GET  /code-server-bridge/health  unauthenticated liveness probe
 extension → host   POST /code-server-bridge/event   extension reports open/close etc. (host log tail)
-host → extension   <extensionsDir>/.dshcs-bridge/bridge.json   base URL + token, re-read by the extension every 5s
+host → extension   <extensionsDir>/.dshcs-bridge/bridge.json   endpoint + token, re-read every 5s
                    (the directory is announced via the host-injected `DSHCS_EXTENSIONS_DIR` — the extension lives in
                    the built-in tree now, so it cannot derive it from its own path)
 ```
 
-> **Why not under `/api` (fixed in 0.3.9)**: Connection puts a Host/Origin/cookie fence on `/api`
-> (`requestRejection` in `packages/client/connection/src/index.ts` → 401 without a cookie), while the bridge's
-> client is a **Node process inside the extension host** — it can never hold a browser cookie, so its requests were
-> rejected before ever reaching the plugin's route. Measured on 0.3.7: the extension polled
-> `/api/code-server/bridge/sync` and got either 405 (it reached the launcher/VS Code instead) or 401 (the /api
-> fence) — the bridge had never actually synced. It now mounts on DSH's own webServer with its own token as the
-> only gate. The cost: the bridge needs DSH to provide `webServer` — **the web profile has it, desktop does not**.
-> On desktop the host writes no `bridge.json` (dormant beats pointing at a dead address) and says so in the log;
-> **file opening is unaffected** (it uses the signal file and works in every mode).
+Requests use `http.request({ socketPath })` (`fetch` has no socket support) and **no port is ever opened**.
+
+> **Why not HTTP (settled in 0.3.13, all three measured)**
+> 1. **Desktop has no HTTP surface at all**: the renderer calls `host.fetch()` through Electron IPC
+>    (`createSharedFetchHandler('/api')` in `apps/desktop-host/src/index.ts:308`) — an in-process call, unreachable
+>    from another process; the only HTTP a plugin can mount is the web profile's `webServer`.
+> 2. **`/api` cannot carry it either**: Connection puts a Host/Origin/cookie fence on `/api`
+>    (`requestRejection` in `packages/client/connection/src/index.ts` → 401 without a cookie), while the bridge's
+>    client is a **Node process inside the extension host** — it can never hold a browser cookie. Measured on 0.3.7:
+>    polling `/api/code-server/bridge/sync` returned either 405 (it reached the launcher/VS Code) or 401 (the fence)
+>    — the bridge had never actually synced.
+> 3. The two ends are **processes on the same machine** anyway (extension host ← the IDE the plugin spawned ← the
+>    plugin). Local IPC is strictly smaller than a port: no network surface, no Host/Origin confused-deputy path, and
+>    **web and desktop share one path**. Token auth stays (see below); the Windows pipe name carries a random suffix
+>    and the POSIX socket file is `chmod 0600`.
+>
+> History: 0.3.9–0.3.12 mounted it on DSH's `webServer` prefix — which left desktop permanently dormant.
 
 **Why state is pushed, not pulled**: the extension host is a child process of the VS Code server and **listens on
 no port** — the host cannot call into it. Editor state therefore rides the extension's own polling request, and
 the host caches it for the tools (at most one 600 ms cycle behind; older than 10 s and the tool says so instead
 of passing stale data off as fresh).
 
-**Why no SSE/WebSocket**: the extension host has no HTTP server of its own, and everything DSH can offer is
-request/response (the Connection fetch channel allows only `GET | HEAD | POST`; streaming would need the WS mux
-already owned by `dsh-api-gateway`). Polling also buys two useful properties: it is idempotent (a dropped event
+**Why no SSE/WebSocket**: the extension host has no HTTP server of its own; the bridge's shape is one
+request/response round trip every 600 ms. Polling also buys two useful properties: it is idempotent (a dropped event
 only costs one notification — the data always lives in the editor) and the cached state is inherently fresh.
 
 ### Security model (four invariants; read before touching `lib/bridge.mjs`)
@@ -592,7 +599,7 @@ Host/Origin fence and browser auth); in the desktop profile `apps/desktop-host` 
 | POST | `/api/code-server/stop` | Stop and recycle the process tree |
 | POST | `/api/code-server/setup` | **Compatibility no-op**: since 0.1.36 dependencies are installed by the package manager, so this only re-runs the env self-check and returns |
 | POST | `/api/code-server/open-file` | body `{ file }` — writes the signal consumed by the built-in `dshcs-open-file` extension to open the file in code-server |
-| GET | `/code-server-bridge/health` | editor-bridge liveness (**unauthenticated**; no editor data). Mounted on DSH's webServer, not under `/api` |
+| GET | `/code-server-bridge/health` | editor-bridge liveness (**unauthenticated**; no editor data). Runs over **local IPC** (named pipe / unix socket), not under `/api`, and needs no `webServer` |
 | POST | `/code-server-bridge/sync` | editor bridge: the extension pushes state (`{context, diagnostics, workspace, at}`) and takes back events; `?since=<seq>` is the event cursor. Requires `x-dshcs-bridge-token`, and **any Origin header is 403** |
 | POST | `/code-server-bridge/ask` | editor bridge: push an editor question into the current session (`{text, file?, lineStart?, lineEnd?, selection?, languageId?}`); **409** when no session can receive it |
 | POST | `/code-server-bridge/event` | editor bridge: extension reports open/close and similar (host log tail). Requires the token |
@@ -610,7 +617,11 @@ Host/Origin fence and browser auth); in the desktop profile `apps/desktop-host` 
 - The right-sidebar tab, guide entry box, file-address claim, and settings card behave the same as in web (code-server remains an
   iframe to the local `http://127.0.0.1:<port>`; the desktop renderer uses `webSecurity: true` with no CSP, so the cross-origin iframe loads).
   The desktop build ships `dsh-client-ui-sidebar-right` in its seed package set as well, so the 0.2.3 "right-sidebar DSH only" rule is
-  not a regression for desktop; the only difference is the missing `webServer`, where `serve: dsh` falls back to loopback.
+  not a regression for desktop; the only difference is the missing `webServer`, where `serve: dsh` falls back to loopback (that path
+  genuinely needs a webServer).
+- **The editor bridge works on desktop since 0.3.13**: it runs over local IPC (named pipe) and does not involve `webServer` at all —
+  the extension host is a child of the IDE the plugin itself spawned, so both ends are on the same machine. The host injects
+  `DSHCS_EXTENSIONS_DIR`, the extension finds `bridge.json`, and `/status` reports `bridge.supported=true` with the pipe name.
 - Install into the desktop profile through the **desktop plugin manager** (not the CLI, see below).
 - **Desktop installs face a 24-hour supply-chain policy (measured 2026-09-10; this is how 0.2.4 got installed)**:
   - the CLI path is unavailable: `dsh plugin --profile desktop …` is rejected (*"profile "desktop" is managed exclusively by the
@@ -671,13 +682,11 @@ What remains on the plugin side:
 
 ## Known limitations
 
-- **The editor bridge needs DSH to provide `webServer`** (corrected in 0.3.9): its client is a Node process inside
-  the extension host, which can only reach DSH over HTTP at DSH's own origin (the bridge mounts under
-  `BRIDGE_BASE` with its own token). **The web profile has webServer (both `serve: dsh` and loopback) → the bridge
-  works; desktop has none → it stays disabled** (`bridge.supported=false`, no `bridge.json` is written, one log
-  line explains it). **File opening is unaffected**: it uses the signal file and works regardless of mode.
-  Up to 0.3.7 the bridge was registered under `/api/code-server/bridge/*` and was killed by Connection's cookie
-  fence (401) — that was a bug.
+- **~~The editor bridge needs DSH to provide `webServer`~~ no longer true (fixed in 0.3.13)**: the bridge now runs
+  over **local IPC** (Windows named pipe / unix socket via `http.request({ socketPath })`), so **web and desktop share
+  one path**, with no `webServer` and no open port. History: 0.3.9–0.3.12 mounted it under DSH's webServer prefix
+  (⇒ desktop stayed dormant); up to 0.3.7 it was registered under `/api/code-server/bridge/*` and was killed by
+  Connection's cookie fence (401). **File opening** was never affected (it uses the signal file).
 - **`/code-server-bridge/health`'s `bridge` field does not mean the extension is running** (clarified in 0.3.12):
   it only says the bridge *target* is configured. Whether the extension actually runs shows up in the exthost log
   or by simply calling `editor_context` — 0.3.0–0.3.11 sat in the state "health says bridge:true, extension never
