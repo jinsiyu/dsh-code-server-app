@@ -184,8 +184,12 @@ await test('宿主:授权窗口 5 分钟 + 面板一关立刻交回(0.3.23 修"�
   const approval = read('../lib/bridge-approval.mjs');
   assert.match(approval, /export const DEFAULT_HOLD_MS = 300000/, '窗口默认 5 分钟(8 秒对人来说不现实)');
   assert.match(approval, /WATCH_POLL_MS/, '要有"面板还在不在看"的检查间隔');
-  assert.match(approval, /if \(!hasPanel\(\)\) return undefined/, '面板关掉要立刻交回官方链路,不干等窗口');
+  assert.match(approval, /if \(!hasPanel\(\)\) \{/, '面板/对话框关掉要立刻交回官方链路,不干等窗口(0.3.37 起带日志)');
   const host = read('../lib/index.js');
+  // 0.3.40:关掉对话框必须**解除武装**,否则 10 分钟 TTL 内还会接住请求却没地方显示卡片。
+  assert.match(host, /askDialog\.armed === true && askDialog\.polls > 0/, '能力判据必须要求"武装中"');
+  assert.match(host, /askDialog\.armed = false;/, '/ask/close 立即解除武装');
+  assert.match(host, /askDialog\.lastPollAt = 0;/, '/ask/close 顺手清掉心跳时间戳');
   assert.match(host, /approvalHoldMs: DEFAULT_HOLD_MS/, '窗口长度随 /sync 告诉面板(倒计时基准)');
 });
 
