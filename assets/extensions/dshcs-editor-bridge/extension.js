@@ -376,6 +376,10 @@ async function pollOnce() {
     // 声明"本扩展懂对话流修订号"(0.2.9):host 才会在没变化时省略 thread 省流量。
     // 不声明(旧扩展)时 host 照旧发整份快照 —— 否则旧扩展会误报"宿主没有对话流能力"。
     threadRev: lastThreadRev,
+    // 声明"我这边能把授权卡片画出来"(0.3.30):面板开着 **且** 对话流正常(不是那条"宿主没有对话流能力"
+    // 的坏状态)。宿主只在它为 true 时才敢抢答授权 —— 否则"抢过来却没人看得见"就是用户遇到的
+    // "没弹出授权"(官方卡片被我们吞了,面板又不画)。
+    approvalsUi: askPanel !== null && askPanel.state.available === true,
   };
   const result = await client.sync(payload);
   if (result.ok !== true) {
@@ -641,8 +645,19 @@ async function openAskPanelFor(mode) {
   // 0.2.5/0.2.6 试过"浮在 DSH 页面上的对话框",但实测在编辑器侧看不到授权卡片,而面板这条路是
   // 验证过的(0.3.22/0.3.23 实测卡片就在面板里)。功能优先:先把能看、能批授权的 UI 还给用户;
   // 对话框那套(client 半部 + /api/code-server/ask/*)留着但**不再自动启用**。
+  // 0.3.30:把悬浮对话框还回来(用户要的形态),但只在宿主证明客户端半部在轮询时才用
+  // (askDialogSupported 现在等于 askDialogLive());否则安静退回编辑器面板 —— 两条路都能看能批授权。
   if (askDialogSupported) {
-    log('宿主声明支持 DSH 页面对话框;本版仍用编辑器面板(0.3.26 回退,对话框待验证后再启用)');
+    try {
+      const result = await client.askOpen(mode);
+      if (result !== null && result.ok === true) {
+        log('已请宿主打开悬浮对话框(mode=' + mode + ')');
+        return;
+      }
+      log('宿主没有打开对话框(' + (result !== null && result.error ? result.error : '未知原因') + ')→ 退回编辑器面板');
+    } catch (error) {
+      log('ask-open 失败(' + (error && error.message ? error.message : error) + ') → 退回编辑器面板');
+    }
   }
   openAskPanel(mode);
 }
