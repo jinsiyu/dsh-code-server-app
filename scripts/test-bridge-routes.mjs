@@ -284,7 +284,11 @@ await test('扩展安装必须带全 lib/,并且装进**内置**目录(用户级
   writeFileSync(join(extensionsDir, '.obsolete'),
     JSON.stringify({ 'dsh-code-server-app.dshcs-editor-bridge-0.1.0': true, 'other.publisher-ext-1.0.0': true }), 'utf8');
 
-  plugin.installBundledExtensions(extensionsDir, userDataDir, { treeRoot });
+  const first = plugin.installBundledExtensions(extensionsDir, userDataDir, { treeRoot });
+  // 返回值供 adopt 路径判断"运行中的 IDE 里是旧代码"(updated 为空 ⇒ 接管是安全的)
+  assert.ok(first.updated.includes('dshcs-editor-bridge'), `首次安装应报告已更新: ${JSON.stringify(first)}`);
+  assert.ok(first.updated.includes('dshcs-open-file'), '两个内置扩展都该装进去');
+  assert.deepEqual(first.cleared, ['dsh-code-server-app.dshcs-editor-bridge-0.1.0'], '只清本插件的标记');
 
   const srcDir = new URL('../assets/extensions/dshcs-editor-bridge/', import.meta.url);
   const dstDir = join(builtinDir, 'dshcs-editor-bridge');
@@ -301,13 +305,16 @@ await test('扩展安装必须带全 lib/,并且装进**内置**目录(用户级
   const obsolete = JSON.parse(readFileSync(join(extensionsDir, '.obsolete'), 'utf8'));
   assert.equal(obsolete['dsh-code-server-app.dshcs-editor-bridge-0.1.0'], undefined, '自锁标记必须被清掉');
   assert.equal(obsolete['other.publisher-ext-1.0.0'], true, '别的扩展的标记不能动');
-  // 幂等:再装一次不该报错也不该改写内容
-  plugin.installBundledExtensions(extensionsDir, userDataDir, { treeRoot });
+  // 幂等:再装一次不该报错也不该改写内容,而且 **updated 必须为空** ——
+  // adopt(接管正在运行的 IDE)路径就靠这个判断"里面跑的是不是旧代码"。
+  const second = plugin.installBundledExtensions(extensionsDir, userDataDir, { treeRoot });
+  assert.deepEqual(second.updated, [], `内容一致时不该报更新: ${JSON.stringify(second)}`);
   assert.ok(readFileSync(join(dstDir, 'lib/bridge-client.js')).equals(readFileSync(new URL('lib/bridge-client.js', srcDir))));
-  // 源目录里没有的文件必须被清掉(升级后不留旧文件)
+  // 源目录里没有的文件必须被清掉(升级后不留旧文件),这算一次更新
   writeFileSync(join(dstDir, 'stale-from-old-version.js'), 'old', 'utf8');
-  plugin.installBundledExtensions(extensionsDir, userDataDir, { treeRoot });
+  const third = plugin.installBundledExtensions(extensionsDir, userDataDir, { treeRoot });
   assert.equal(existsSync(join(dstDir, 'stale-from-old-version.js')), false, '陈旧文件应被清理');
+  assert.ok(third.updated.includes('dshcs-editor-bridge'), '清掉陈旧文件也算"扩展被动过"');
   // .obsolete 只剩别的扩展 → 文件保留;只有本插件的标记时 → 文件删掉
   writeFileSync(join(extensionsDir, '.obsolete'), JSON.stringify({ 'dsh-code-server-app.dshcs-open-file-0.0.2': true }), 'utf8');
   plugin.installBundledExtensions(extensionsDir, userDataDir, { treeRoot });
