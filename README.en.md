@@ -528,6 +528,32 @@ One-time setup (repository / account side, no files involved):
   - Alternative: add an `NPM_TOKEN` repository secret and set the repository variable
     `NPM_AUTH_MODE=token` (that mode does not attach provenance). Note npm is restricting legacy
     2FA-bypassing tokens, so OIDC is the durable option — once it works, delete the token.
+
+**Authentication for `repacks.yml` (the platform-specific sub-packages)** — two routes; the workflow picks
+one itself (with no `NPM_TOKEN` it uses OIDC):
+
+- **A. `NPM_TOKEN` (least friction today)**
+  1. npmjs.com → avatar → **Access Tokens** → **Generate New Token** → **Granular Access Token**;
+  2. any name (e.g. `github-actions-repacks`) and an expiry (90 days is fine);
+  3. **Packages and scopes** = **Read and write**, tick only the **`@jinsiyu`** scope (not "All packages");
+  4. you **must** tick **"Bypass two-factor authentication (2FA)"** — otherwise an unattended publish
+     stalls waiting for a one-time password;
+  5. the token is shown **once** — copy it immediately;
+  6. GitHub repository → Settings → Secrets and variables → **Actions** → **New repository secret**,
+     the name **must** be `NPM_TOKEN` (that is what the workflow reads).
+  ⚠️ Per npm's announcements: since 2026-07-31 bypass-2FA tokens can no longer perform account/package
+  management, and **from January 2027 they lose direct publish** (only reading private packages plus staging
+  a publish, which a maintainer approves with 2FA) — so plan to move to B.
+- **B. per-package trusted publishing (the durable route)**: npm trust entries are **per package**
+  (since 2026-09 a package may have several, but there is **no scope-level** entry), so these 25 packages
+  need 25 entries. Generate the commands, then run them one by one after a single browser authorization:
+  ```powershell
+  node -e "const t=require('./lib/vendored.json');const p=require('./package.json');const tree=Object.keys(p.dependencies).find(n=>n.endsWith('/dshcs-vscode-server'));const names=[tree,t.modules.flatMap(m=>m.platform?t.targets.map(x=>m.package+'-'+x):m.package)];require('fs').writeFileSync('trust-all.txt',names.flat().map(n=>'npm trust github '+n+' --file repacks.yml --allow-publish -y').join('\n')+'\n')"
+  Get-Content trust-all.txt | ForEach-Object { Invoke-Expression $_ }
+  ```
+  Afterwards delete `NPM_TOKEN` (the workflow then uses OIDC). npm also lets each entry be **staging-only**
+  (a version only goes live after you approve it with 2FA) — safer, but each batch then needs manual
+  approvals for several versions.
 - **Optional** repository variable `DSH_UI_VERSION` = the version of `@deepseek-ai/dsh-web-frontend` in the current
   deployment: when set, `release.yml` enforces that the panel renderer matches the deployed UI (the local
   `build:webview` always checks this; a runner has no DSH deployment).

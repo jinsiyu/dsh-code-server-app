@@ -518,6 +518,25 @@ pnpm run promote -- 0.3.47                 # 4) 确认无误后推 latest(手动
   - 备选:仓库 Secrets 加 `NPM_TOKEN`,并设仓库 Variables `NPM_AUTH_MODE=token`(该模式不发
     provenance)。注意 npm 正在收紧"绕过 2FA 的旧式 token"(见 registry 的
     bypass2fa-deprecation 提示),所以 OIDC 是更长期的做法;它一旦可用就该把 NPM_TOKEN 删掉。
+- **`repacks.yml`(平台专属子包)的认证** —— 两条路,workflow 自己判断(没配 `NPM_TOKEN` 就走 OIDC):
+  - **A. `NPM_TOKEN`(目前最省事)**
+    1. npmjs.com → 头像 → **Access Tokens** → **Generate New Token** → **Granular Access Token**;
+    2. 名字随意(如 `github-actions-repacks`),给一个有效期(如 90 天);
+    3. **Packages and scopes** 选 **Read and write**,只勾 **`@jinsiyu`** 作用域(别选 All packages);
+    4. **必须勾 "Bypass two-factor authentication (2FA)"** —— 否则无人值守发布会卡在要一次性口令;
+    5. 生成后令牌**只显示一次**,立刻复制;
+    6. GitHub 仓库 → Settings → Secrets and variables → **Actions** → **New repository secret**,
+       名字**必须**是 `NPM_TOKEN`(workflow 里读的就是它),值粘贴令牌。
+    ⚠️ npm 官方已公告:2026-07-31 起 bypass-2FA 令牌**不能再做账号/包管理类操作**,并且
+    **2027-01 起将失去直接发布**(只剩读取私有包 + 暂存发布,要维护者用 2FA 批准)⇒ 长期请迁到 B。
+  - **B. per-package trusted publishing(长期方案)**:npm 的信任关系是**按包**配的(2026-09 起一个包
+    可以配多条,但**没有作用域级**),这批 25 个包要 25 条。先生成命令,再在浏览器授权一次后逐条执行:
+    ```powershell
+    node -e "const t=require('./lib/vendored.json');const p=require('./package.json');const tree=Object.keys(p.dependencies).find(n=>n.endsWith('/dshcs-vscode-server'));const names=[tree,t.modules.flatMap(m=>m.platform?t.targets.map(x=>m.package+'-'+x):m.package)];require('fs').writeFileSync('trust-all.txt',names.flat().map(n=>'npm trust github '+n+' --file repacks.yml --allow-publish -y').join('\n')+'\n')"
+    Get-Content trust-all.txt | ForEach-Object { Invoke-Expression $_ }
+    ```
+    配完把 `NPM_TOKEN` 删掉即可(workflow 会自动走 OIDC)。npm 也允许把每条配置设成**只允许暂存发布**
+    (版本要你 2FA 批准才生效)—— 更安全,但每批子包都要你手动批准多个版本,按需取舍。
 - **可选**仓库 Variables `DSH_UI_VERSION` = 当前部署里 `@deepseek-ai/dsh-web-frontend` 的版本:设了之后
   `release.yml` 会强制面板渲染器版本与部署一致(本机 `build:webview` 本来就会比,runner 上没有 DSH 部署)。
 

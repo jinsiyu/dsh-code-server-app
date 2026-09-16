@@ -18,10 +18,17 @@
 #   · win32-arm64 job:`--only win32-arm64` ⇒ 只发 arm64 专用。
 #   两者集合不相交 ⇒ 可以并发,不会有两个 job 抢同一个包名。
 #
-# 认证:这批子包**不能**用插件的 OIDC trusted publishing(npm 的信任关系是**按包**配的,26 个子包
-# 要建 26 条)。所以这里走 `NPM_TOKEN`(仓库 Secrets,粒度令牌:对 `@jinsiyu` 作用域有 publish 权限,
-# 需要勾选 bypass 2FA —— 否则无人值守时会让 CLI 要一次性口令)。要改走 OIDC 也行:在 npm 网页上给
-# 每个子包各加一条 Trusted Publisher(workflow 填 `repacks.yml`,环境留空),然后删掉 token 分支。
+# 认证(两条路都支持,workflow 自己判断):
+#   A. `NPM_TOKEN`(仓库 Secrets;粒度令牌:对 `@jinsiyu` 作用域有 publish 权限 + 勾 bypass 2FA)
+#      —— 最省事,但 npm 已公告 **2027-01 起 bypass-2FA 令牌将失去直接发布**(只剩读取 + 暂存发布,
+#      要维护者用 2FA 批准)。所以它是"现在能用、以后要迁"的方案。
+#   B. **per-package trusted publishing(OIDC)**:给每个子包各加一条 Trusted Publisher
+#      (workflow 填 `repacks.yml`,environment 留空)。npm 的信任关系是**按包**配的(2026-09 起
+#      一个包可以配多条,但**没有作用域级**),这批有 25 个包 ⇒ 25 条。一条循环(浏览器授权一次后可连续跑):
+#        for p in @jinsiyu/dshcs-cpu-features @jinsiyu/dshcs-kerberos-win32-arm64 … ; do
+#          npm trust github "$p" --file repacks.yml --allow-publish -y; done
+#      (完整包名列表 = lib/vendored.json 的 modules × targets + @jinsiyu/dshcs-vscode-server)
+#   没配 NPM_TOKEN 时,下面的发布步骤直接走 OIDC(不再写 .npmrc)。
 #
 # 用法(手动触发,见 Actions → repacks → Run workflow):
 #   publish=false(默认) → 只构建 + 上传 repack/tgz/*.tgz
@@ -59,6 +66,7 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write # 子包走 OIDC(per-package trusted publishing)时需要
 
 jobs:
   win32-x64:
@@ -141,16 +149,19 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if (-not $env:NPM_TOKEN) { throw 'publish=true 但仓库没有 NPM_TOKEN secret(见 .github/workflows/repacks.yml 头部注释)' }
-          "//registry.npmjs.org/:_authToken=$env:NPM_TOKEN" | Out-File -FilePath .npmrc -Encoding ascii -NoNewline
-          Write-Host "已写入 .npmrc(publish-repacks.mjs 会 --userconfig 指向它)"
+          if ($env:NPM_TOKEN) {
+            "//registry.npmjs.org/:_authToken=$env:NPM_TOKEN" | Out-File -FilePath .npmrc -Encoding ascii -NoNewline
+            Write-Host "认证:NPM_TOKEN(已写入 .npmrc,publish-repacks.mjs 会 --userconfig 指向它)"
+          } else {
+            Write-Host "认证:OIDC trusted publishing(没配 NPM_TOKEN)⇒ 每个子包都需要一条 Trusted Publisher,workflow 名 repacks.yml"
+          }
           $ErrorActionPreference = 'Continue'
           node scripts/publish-repacks.mjs --tag $env:DIST_TAG 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\publish.log"
           $code = $LASTEXITCODE
           Remove-Item .npmrc -Force -ErrorAction SilentlyContinue
           if ($code -ne 0) {
             Write-Host "::error::发布失败(exit $code)"
-            Select-String -Path "$env:RUNNER_TEMP\publish.log" -Pattern 'npm error|npm ERR|403|404|409|E402|EPUBLISH|ENEEDAUTH|EOTP|forbidden' |
+            Select-String -Path "$env:RUNNER_TEMP\publish.log" -Pattern 'npm error|npm ERR|403|404|409|E402|EPUBLISH|ENEEDAUTH|EOTP|forbidden|trusted' |
               Select-Object -Last 10 | ForEach-Object { Write-Host "::error:: $($_.Line)" }
             exit $code
           }
@@ -243,15 +254,19 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if (-not $env:NPM_TOKEN) { throw 'publish=true 但仓库没有 NPM_TOKEN secret(见 .github/workflows/repacks.yml 头部注释)' }
-          "//registry.npmjs.org/:_authToken=$env:NPM_TOKEN" | Out-File -FilePath .npmrc -Encoding ascii -NoNewline
+          if ($env:NPM_TOKEN) {
+            "//registry.npmjs.org/:_authToken=$env:NPM_TOKEN" | Out-File -FilePath .npmrc -Encoding ascii -NoNewline
+            Write-Host "认证:NPM_TOKEN"
+          } else {
+            Write-Host "认证:OIDC trusted publishing(没配 NPM_TOKEN)⇒ 每个子包都需要一条 Trusted Publisher,workflow 名 repacks.yml"
+          }
           $ErrorActionPreference = 'Continue'
           node scripts/publish-repacks.mjs --tag $env:DIST_TAG --only win32-arm64 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\publish.log"
           $code = $LASTEXITCODE
           Remove-Item .npmrc -Force -ErrorAction SilentlyContinue
           if ($code -ne 0) {
             Write-Host "::error::发布失败(exit $code)"
-            Select-String -Path "$env:RUNNER_TEMP\publish.log" -Pattern 'npm error|npm ERR|403|404|409|E402|EPUBLISH|ENEEDAUTH|EOTP|forbidden' |
+            Select-String -Path "$env:RUNNER_TEMP\publish.log" -Pattern 'npm error|npm ERR|403|404|409|E402|EPUBLISH|ENEEDAUTH|EOTP|forbidden|trusted' |
               Select-Object -Last 10 | ForEach-Object { Write-Host "::error:: $($_.Line)" }
             exit $code
           }
