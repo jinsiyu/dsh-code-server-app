@@ -283,8 +283,14 @@ function prepareSourceTree() {
   rmSync(tmp, { recursive: true, force: true });
   mkdirSync(tmp, { recursive: true });
   console.log(`[repack] 准备完整源树 code-server@${vendorVersion} → ${tmp}`);
+  // **必须显式 --prefix**:不给它时 npm 会往上找"最近的 package.json"当项目根 —— 而 tmp 就在
+  // 仓库目录里面(<pkgRoot>/.vendor-tmp/repack-src-<pid>),于是包被装进 <pkgRoot>/node_modules,
+  // 而下面按 <tmp>/node_modules/code-server 去找 ⇒ readJson() 拿到 null ⇒ analyze() 读
+  // `.dependencies` 时直接 TypeError。2026-09-16 在 ubuntu-latest 上实测到:日志里连
+  // 「解包内部依赖」都没有(innerDirs 是空的),因为树根本不在那儿。vendor-vscode-server.mjs
+  // 的同一步带了 --prefix,所以那条路一直是对的 —— 这里补齐。
   npm(['install', `code-server@${vendorVersion}`, '--ignore-scripts', '--omit=dev',
-    '--no-audit', '--no-fund', '--no-save'], tmp);
+    '--no-audit', '--no-fund', '--no-save', '--prefix', tmp], tmp);
   const tree = join(tmp, 'node_modules', 'code-server');
   const innerDirs = [join('lib', 'vscode'), join('lib', 'vscode', 'extensions')]
     .map((rel) => join(tree, rel))
