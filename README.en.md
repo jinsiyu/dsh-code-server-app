@@ -457,6 +457,72 @@ pnpm run promote -- <version>
 > silently upgrade code-server). Upgrading code-server requires an explicit `pnpm run vendor:latest`
 > (or `--force` / `--version`) **plus** republishing the sub-packages.
 
+## GitHub Actions (CI + tag-triggered release)
+
+Both workflows live in `.github/workflows/`, and the regression list exists exactly once
+(`scripts/run-all-tests.mjs`, i.e. `pnpm test`):
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yml` | push to `main` / PR / manual | `ubuntu-latest` + `windows-latest` matrix: `pnpm install --frozen-lockfile` → `build:client` → `build:webview` → `pnpm test` (the whole suite) → `vendor:check` (report only) → upload `lib/client.js` and the panel assets |
+| `release.yml` | push a `v<version>` tag / manual (rehearsal, never publishes) | prepares `vendor/vscode` **at the version pinned in `dependencies`** → builds → full suite → `pnpm pack` → verifies the tarball manifest → publishes to npm **`next`** → creates a GitHub Release with the tgz attached |
+
+The regression suite (also the single list CI uses) is:
+
+```powershell
+pnpm test                    # runs them all: scripts/run-all-tests.mjs
+pnpm test:apply              # apply() under a stub ctx
+pnpm test:claim-types        # claim-type syntax and defaults
+pnpm test:bridge-routes      # bridge route whitelist / Origin-vs-token order / token header agreement
+pnpm test:bridge-extension   # extension-side pure logic (dirty buffers, diagnostics, diff, delivery, panel state)
+pnpm test:webview            # panel bundle: official renderer + tokens, version match, the four /approve constraints
+pnpm test:launcher-routes    # launcher HTTP surface (spawns a real process; slow)
+pnpm test:workspace-switch   # switching workspaces does not restart the process
+pnpm test:fullscreen         # opening the tab goes fullscreen
+pnpm test:vendored           # repack table ↔ plugin dependency table (no npm: aliases, no aggregator)
+```
+
+**The dist-tag policy is unchanged**: `release.yml` only publishes `next` and never touches `latest`; `latest` is
+still moved by hand with `pnpm run promote -- <version>` after a restart of `dsh web` confirms the build is good.
+
+Release flow (now it is just a tag):
+
+```powershell
+# 1) bump package.json's version → commit to main → wait for ci.yml to go green
+# 2) install it locally into the web profile, restart DSH, confirm it works
+git tag v0.3.47; git push origin v0.3.47   # 3) release.yml rebuilds the tarball, publishes next, opens a Release
+pnpm run promote -- 0.3.47                 # 4) promote latest by hand once confirmed
+```
+
+One-time setup (repository / account side, no files involved):
+
+- **npm trusted publishing (recommended, no long-lived credential)**: npmjs.com → `dsh-code-server-app` →
+  Trusted Publisher → GitHub Actions, repository `jinsiyu/dsh-code-server-app`, workflow `release.yml`.
+  Alternative: add an `NPM_TOKEN` repository secret and set the repository variable `NPM_AUTH_MODE=token`
+  (that mode does not attach provenance).
+- **Optional** repository variable `DSH_UI_VERSION` = the version of `@deepseek-ai/dsh-web-frontend` in the current
+  deployment: when set, `release.yml` enforces that the panel renderer matches the deployed UI (the local
+  `build:webview` always checks this; a runner has no DSH deployment).
+
+Things you must know:
+
+- **`release.yml` rebuilds the tarball on the runner; it does not upload the file built on your machine.** Same
+  commit + same pinned tree version ⇒ same content, the only differences being the `platform` / `preparedAt` /
+  `sizeMB` metadata in `vendor/VENDOR.json` (at runtime only `codeServerVersion` and `productPath` are read).
+  That is why step 4 above still installs into the web profile before promoting `latest`.
+- **CI never runs `pnpm pack`**: on a fresh clone its `prepack` pulls `code-server@latest` from the registry, which
+  does not match the tree version pinned in `dependencies` (it would break the "tree package is pinned exactly"
+  assertion). Packing happens only in `release.yml`, after
+  `node scripts/vendor-vscode-server.mjs --version <pinned>`.
+- **Release gates** (any failure stops the run; `next` is never advanced): tag ≠ `package.json.version`, the
+  version already exists on npm, the tree version does not match (`test:vendored`), the suite fails, or
+  `DSH_UI_VERSION` mismatches.
+- The first release must use a **version that has never been published** (npm versions are immutable).
+  `release.yml` supports a `workflow_dispatch` **rehearsal** (full pipeline, nothing published) — run it once
+  before pushing a real tag.
+- `pnpm-lock.yaml` is **committed** now (CI installs with `--frozen-lockfile` and the cache key is derived from
+  it); it is not in `package.json`'s `files` allow-list, so it never ships in the npm package.
+
 ## Install the plugin (one command; all dependencies installed by the package manager)
 
 ```powershell

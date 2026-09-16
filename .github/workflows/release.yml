@@ -1,0 +1,225 @@
+# release.yml —— 推 `v<version>` 标签即:重建 tarball → 全量回归 → 发 npm `next` → 建 GitHub Release(附 tgz)。
+#
+# 与 README「dist-tag 政策」的关系(不变):
+#   · 本工作流**只发 `next`**,绝不碰 `latest`;`latest` 仍由 `pnpm run promote -- <version>`
+#     在用户重启 dsh web 确认无误后手动推进。
+#   · 发的是**同一 commit + 同一个钉死的 VS Code 树版本**重建出来的 tarball。与"本机验证过的那份"
+#     唯一差异是 vendor/VENDOR.json 里的 platform / preparedAt / sizeMB 这类元数据(运行时只消费
+#     codeServerVersion 与 productPath,见 lib/vendor.js)。
+#
+# 为什么必须显式 `--version <pinned>`:
+#   全新 clone 上 `pnpm pack` 的 prepack 会跑 vendor-vscode-server,而它在没有本地源树时会去 registry
+#   取 `code-server@latest` ⇒ VENDOR.json 与 dependencies 里钉的 `@jinsiyu/dshcs-vscode-server@<版本>`
+#   不同步 ⇒ test-vendored-table 的「树包精确钉版本」断言失败。这里先按 package.json 的钉法把树
+#   准备好,prepack 因此变成 no-op(它仍会重跑一次 build:webview,幂等)。
+#
+# 认证:npm trusted publishing(OIDC,`id-token: write`)优先,无需长期凭据;
+#   需要在 npmjs.com 上把包 `dsh-code-server-app` 的 Trusted Publisher 指到本仓库 + 本文件名。
+#   备选:仓库 Secrets 加 `NPM_TOKEN`,并设仓库 Variables 的 `NPM_AUTH_MODE=token`(则不发 provenance)。
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  # 演练:完整跑一遍(安装 → 构建 → 回归 → 打包 → 上传 tgz 产物),但**不发布、不建 Release**。
+  # 发布只可能由 tag 触发(见下面各步的 if 条件)。
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # gh release create
+  id-token: write # npm trusted publishing(provenance)
+
+jobs:
+  release:
+    name: release (${{ github.ref_name }})
+    runs-on: ubuntu-latest # tarball 平台无关;VENDOR.json 的 platform 字段仅为元数据
+    timeout-minutes: 90
+    env:
+      # 'token' ⇒ 用 NPM_TOKEN(不附 provenance);其它/未设置 ⇒ OIDC trusted publishing
+      NPM_AUTH_MODE: ${{ vars.NPM_AUTH_MODE }}
+      # 可选:当前部署里 @deepseek-ai/dsh-web-frontend 的版本(设了才做下面的 UI 版本守卫)
+      DSH_UI_VERSION: ${{ vars.DSH_UI_VERSION }}
+    steps:
+      - name: 检出
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: 安装 Node 24 并缓存 pnpm store
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # ---- 门禁 1:tag 与 package.json.version 必须一致 --------------------------------------
+      - name: 版本守卫(tag == package.json.version)
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p 'require("./package.json").version')"
+          echo "tag=$TAG package.json=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag v$TAG 与 package.json 的 $PKG 不一致;请改 package.json 或重打 tag"
+            exit 1
+          fi
+
+      # ---- 门禁 2:该版本不能已经在 npm 上(npm 版本不可变) ---------------------------------
+      # 演练(workflow_dispatch)时只告警:那时 package.json 的版本按设计可能已发布过。
+      - name: 重复发布守卫(版本是否已在 npm)
+        run: |
+          V="$(node -p 'require("./package.json").version')"
+          if npm view "dsh-code-server-app@$V" version >/dev/null 2>&1; then
+            if [ "${{ github.event_name }}" = "push" ]; then
+              echo "::error::dsh-code-server-app@$V 已在 npm 上,不能重复发布;请 bump 版本后重新打 tag"
+              exit 1
+            fi
+            echo "::warning::dsh-code-server-app@$V 已发布(演练中,仅提示)"
+          else
+            echo "版本 $V 尚未发布"
+          fi
+
+      - name: 安装依赖(--frozen-lockfile)
+        run: pnpm install --frozen-lockfile
+
+      # ---- 把 VS Code 树钉到 package.json 里声明的那一版 ------------------------------------
+      - name: 解析树包版本(dependencies 里唯一的 dshcs-vscode-server)
+        id: tree
+        run: |
+          set -euo pipefail
+          TREE="$(node -e 'const p=require("./package.json");const k=Object.keys(p.dependencies).filter(n=>/\/dshcs-vscode-server$/.test(n));if(k.length!==1){console.error("dependencies 里 dshcs-vscode-server 应恰好一个:",k);process.exit(1)}process.stdout.write(p.dependencies[k[0]])')"
+          echo "tree_version=$TREE"
+          echo "tree_version=$TREE" >> "$GITHUB_OUTPUT"
+
+      - name: 准备内置 VS Code 树(显式钉版本,不取上游 latest)
+        run: node scripts/vendor-vscode-server.mjs --version "${{ steps.tree.outputs.tree_version }}"
+
+      - name: 构建 client bundle
+        run: pnpm run build:client
+
+      # 必须在回归之前:test-webview-bundle 见到产物才真验(缺产物时它逐项 SKIP)。
+      # 后面 pnpm pack 的 prepack 会再跑一次(幂等)。
+      - name: 构建「问 DSH」面板 webview
+        run: pnpm run build:webview
+
+      # ---- 门禁 3:全套回归(与 ci.yml 同一份清单)-------------------------------------------
+      - name: 全量回归(pnpm test)
+        run: pnpm run test
+
+      # ---- 门禁 4:面板渲染器必须与部署的 DSH 界面同版本 --------------------------------------
+      # 本地 build:webview 会自动比对部署;runner 上没有 DSH 部署 ⇒ 这一步靠仓库变量补上,
+      # 未配置时只告警(不会静默通过:summary 里明确写"未校验")。
+      - name: UI 版本守卫(渲染器 vs 部署的 DSH 界面)
+        run: |
+          set -euo pipefail
+          if [ -z "${DSH_UI_VERSION:-}" ]; then
+            echo "::warning::未设置仓库变量 DSH_UI_VERSION ⇒ 跳过部署 UI 版本校验(本地 build:webview 会做这一步)"
+            echo "ui_version_check=skipped(未配置 DSH_UI_VERSION)" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          HAVE="$(node -p 'require("./package.json").devDependencies["@deepseek-ai/dsh-client-ui-primitives"]')"
+          echo "部署 UI=$DSH_UI_VERSION 渲染器=$HAVE"
+          if [ "$HAVE" != "$DSH_UI_VERSION" ]; then
+            echo "::error::面板渲染器是 $HAVE,部署的 DSH 界面是 $DSH_UI_VERSION —— 面板排版会不一致;请把 devDependencies 的两个 @deepseek-ai/dsh-client-ui-* 升到 $DSH_UI_VERSION"
+            exit 1
+          fi
+          echo "ui_version_check=ok($HAVE)" >> "$GITHUB_ENV"
+
+      - name: 打包(pnpm pack;prepack 对树是 no-op,会重跑 build:webview)
+        run: |
+          set -euo pipefail
+          pnpm pack
+
+      # ---- 门禁 5:tarball 必须含 package.json files 里声明的每一条 --------------------------
+      - name: 校验 tarball 清单
+        run: |
+          set -euo pipefail
+          V="$(node -p 'require("./package.json").version')"
+          TGZ="dsh-code-server-app-$V.tgz"
+          test -f "$TGZ" || { echo "::error::没有产出 $TGZ"; exit 1; }
+          tar -tzf "$TGZ" | sed 's|^package/||' > /tmp/tar-list.txt
+          node -e 'const fs=require("fs");const files=require("./package.json").files;const list=new Set(fs.readFileSync("/tmp/tar-list.txt","utf8").split("\n").filter(Boolean));const missing=files.filter(f=>!list.has(f)&&![...list].some(x=>x.startsWith(f.replace(/\/+$/,"")+"/")));if(missing.length){console.error("tarball 缺:",missing);process.exit(1)}console.log("tarball 清单完整:"+files.length+" 条")'
+          ls -l "$TGZ"
+
+      - name: 上传 tarball 产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: tarball-${{ github.ref_name }}-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          path: dsh-code-server-app-*.tgz
+
+      # ---- 发布:仅 tag 触发;只发 next ------------------------------------------------------
+      - name: 准备 npm 凭据(仅 token 模式;OIDC 模式无需任何凭据)
+        if: github.event_name == 'push' && env.NPM_AUTH_MODE == 'token'
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo "::error::NPM_AUTH_MODE=token 但仓库没有 NPM_TOKEN secret"
+            exit 1
+          fi
+          # .npmrc 被 .gitignore 排除;publish-plugin.mjs 见到它就自动 --userconfig
+          printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > .npmrc
+          echo "已写入 .npmrc(token 模式)"
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: 发布到 npm(dist-tag = next;latest 不动)
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          if [ "${NPM_AUTH_MODE:-}" = "token" ]; then
+            npm whoami --registry https://registry.npmjs.org/
+            node scripts/publish-plugin.mjs
+          else
+            echo "认证:OIDC trusted publishing(附 provenance)"
+            node scripts/publish-plugin.mjs --provenance
+          fi
+          echo "=== 当前标签 ==="
+          npm dist-tag ls dsh-code-server-app
+
+      # ---- Release:附 tarball,便于事后核对/回滚参考 -----------------------------------------
+      - name: 创建 GitHub Release(附 tarball)
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          V="$(node -p 'require("./package.json").version')"
+          gh release create "$GITHUB_REF_NAME" "dsh-code-server-app-$V.tgz" \
+            --title "$GITHUB_REF_NAME" --generate-notes
+
+      - name: 汇总
+        if: always()
+        run: |
+          V="$(node -p 'require("./package.json").version')"
+          {
+            echo "### release 结果"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 触发 | \`${{ github.event_name }}\` \`${{ github.ref_name }}\` |"
+            echo "| 版本 | \`$V\` |"
+            echo "| 树版本 | \`${{ steps.tree.outputs.tree_version }}\` |"
+            echo "| npm 认证 | \`${NPM_AUTH_MODE:-oidc(OIDC trusted publishing)}\` |"
+            echo "| UI 版本守卫 | \`${ui_version_check:-未执行}\` |"
+            echo ""
+            if [ "${{ github.event_name }}" != "push" ]; then
+              echo "本次是**演练**(workflow_dispatch):没有发布、没有建 Release。"
+            elif [ "${{ job.status }}" != "success" ]; then
+              echo "**本次没有发布成功**(${{ job.status }})—— 请先看失败的那一步;npm 上仍是上一个版本。"
+            else
+              echo "已发 \`next\`;**\`latest\` 未动** —— 重启 dsh web 确认无误后再执行:"
+              echo ""
+              echo '```'
+              echo "pnpm run promote -- $V"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

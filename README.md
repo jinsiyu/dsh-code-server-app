@@ -442,6 +442,8 @@ pnpm run promote -- <version>
 ### 回归脚本(改完跑一遍)
 
 ```powershell
+pnpm test                    # 一次跑完下面全部(scripts/run-all-tests.mjs;CI 与发布前用的也是它)
+# ↑ 是唯一清单:新增回归脚本只改 scripts/run-all-tests.mjs,CI/README 都跟着它走
 pnpm test:apply              # 桩 ctx 下跑通 apply(回归:apply 期的 ReferenceError)
 pnpm test:claim-types        # 认领类型语法与默认值
 pnpm test:bridge-routes      # 编辑器桥:路由表白名单(只读 + /approve)/ Origin 与令牌的判定顺序 / 令牌头三处一致
@@ -455,6 +457,54 @@ pnpm test:vendored           # 重打包表 ↔ 插件依赖表一致(无 npm: �
 
 > `test:bridge-routes` 会把 `DSH_HOME` 指向临时目录(否则它会 adopt 开发机上正在跑的那个实例,
 > 并改写真实的 `bridge.json`);脚本最后有一条"隔离自检"断言真实配置一字未动。
+> `pnpm test` 失败也继续跑完其余脚本(一次看到全部坏点);有的脚本在环境不满足时自己 SKIP 并
+> exit 0(如 `test:launcher-routes` 找不到"内部依赖已建链接"的 VS Code 树),属于通过。
+
+## GitHub Actions(CI + 打 tag 发布)
+
+两个工作流都在 `.github/workflows/`,回归清单只有一份(`scripts/run-all-tests.mjs`,即 `pnpm test`):
+
+| 工作流 | 触发 | 做什么 |
+|---|---|---|
+| `ci.yml` | push `main` / PR / 手动 | `ubuntu-latest` + `windows-latest` 双平台:`pnpm install --frozen-lockfile` → `build:client` → `build:webview` → `pnpm test`(全套回归)→ `vendor:check` 只报告版本差 → 上传 `lib/client.js` 与面板产物 |
+| `release.yml` | 推 `v<version>` 标签 / 手动(演练,不发布) | 按 `dependencies` 钉的版本准备 `vendor/vscode` → 构建 → 全套回归 → `pnpm pack` → 校验 tarball 清单 → 发 npm **`next`** → 建 GitHub Release(附 tgz) |
+
+**dist-tag 政策不变**:`release.yml` 只发 `next`,绝不碰 `latest`;`latest` 仍由 `pnpm run promote -- <version>`
+在重启 dsh web 确认无误后手动推进(README 上方「打包」一节)。
+
+发布流程(现在只差打一个 tag):
+
+```powershell
+# 1) bump package.json 的 version → 提交到 main → 等 ci.yml 绿
+# 2) 本机照「打包」在 web profile 装一次、重启 DSH 确认无误(desktop 仍只发包、不命令行安装)
+git tag v0.3.47; git push origin v0.3.47   # 3) release.yml 自动:重建 tarball → 发 next → 建 Release
+pnpm run promote -- 0.3.47                 # 4) 确认无误后推 latest(手动,不经 CI)
+```
+
+一次性配置(仓库 / 账号侧,非文件改动):
+
+- **npm trusted publishing(推荐,无长期凭据)**:npmjs.com → `dsh-code-server-app` → Trusted Publisher →
+  GitHub Actions,仓库填 `jinsiyu/dsh-code-server-app`,workflow 填 `release.yml`。
+  备选:仓库 Secrets 加 `NPM_TOKEN`,并设仓库 Variables `NPM_AUTH_MODE=token`(该模式不发 provenance)。
+- **可选**仓库 Variables `DSH_UI_VERSION` = 当前部署里 `@deepseek-ai/dsh-web-frontend` 的版本:设了之后
+  `release.yml` 会强制面板渲染器版本与部署一致(本机 `build:webview` 本来就会比,runner 上没有 DSH 部署)。
+
+几条必须知道的:
+
+- **`release.yml` 是在 runner 上重建 tarball,发的不是本机那份文件**:同一 commit + 同一个钉死的树版本
+  ⇒ 内容一致,唯一差异是 `vendor/VENDOR.json` 里的 `platform` / `preparedAt` / `sizeMB` 元数据(运行时只读
+  `codeServerVersion` 与 `productPath`)。所以第 4 步 promote 之前,照旧在 web profile 装一次验证。
+- **CI 不打 `pnpm pack`**:全新 clone 上 prepack 会去 npm 取 `code-server@latest`,与 `dependencies` 里钉的
+  树版本不同步(反而会把「树包精确钉版本」搞挂)。打包只在 `release.yml` 里做,且显式
+  `node scripts/vendor-vscode-server.mjs --version <pinned>`。
+- **发布门禁**(任一不过即中止,`next` 不会被推进):tag ≠ `package.json.version`、该版本已存在于 npm、
+  树包版本不一致(`test:vendored` 的「树包精确钉版本」断言)、回归失败、`DSH_UI_VERSION` 不匹配。
+- 首次发布必须用一个**没发过的版本号**(npm 版本不可变);`release.yml` 支持 `workflow_dispatch` **演练**
+  (完整跑一遍但不发布、不建 Release),建议先演练一次再打真 tag。
+- 锁文件 `pnpm-lock.yaml` **已入库**(CI 用 `--frozen-lockfile` 做可复现安装,缓存 key 也靠它);它不在
+  `package.json` 的 `files` 白名单里,不会进 npm 发布物。
+- 本地非交互环境跑 `pnpm install` 若报 `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`(要求重建
+  `node_modules` 却无人确认),按提示设 `CI=true` 再跑;GitHub Actions 上 `CI=true` 是默认的。
 
 ## 安装插件(一条命令;依赖全部由包管理器装好)
 

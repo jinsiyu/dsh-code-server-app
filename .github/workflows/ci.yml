@@ -1,0 +1,80 @@
+# ci.yml —— push/PR 的校验:双平台(runner)安装 → 构建 → 全量回归 → 上传构建产物。
+#
+# 与 release.yml 的分工:
+#   · 本工作流**不打包、不发布**。`pnpm pack` 的 prepack 会跑 vendor-vscode-server,而全新 clone 上
+#     它会去 npm 取 `code-server@latest` —— 与 dependencies 里钉死的 `@jinsiyu/dshcs-vscode-server`
+#     版本不同步,反而会把「树包精确钉版本」那条不变量搞挂。打包/发布统一放在 release.yml 里
+#     **显式 `--version <pinned>`** 做,这里只报告版本差(vendor:check,continue-on-error)。
+#   · 回归清单只有一份:`scripts/run-all-tests.mjs`(package.json 的 `pnpm test`),本工作流与
+#     release.yml 都调它 —— 新加测试只改那一处,两处不会漂移。
+name: ci
+
+on:
+  push:
+    branches: [main] # 指定 branches ⇒ tag push 不触发本工作流(发布由 release.yml 负责)
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux 抓「只在本机 Windows 能跑」,Windows 抓路径分隔符 / CRLF / win32 分支
+        #(本机是 win32-arm64、runner 是 win32-x64,平台分支一致)。
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - name: 检出
+        uses: actions/checkout@v7
+
+      # 版本取自 package.json 的 packageManager 字段(与开发机同一个 pnpm 大版本);
+      # 不传 run_install:安装由下面那条显式的 --frozen-lockfile 负责。
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: 安装 Node 24 并缓存 pnpm store
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: 安装依赖(锁文件入库 ⇒ frozen;对不上就失败而不是默默改依赖)
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建 client bundle(src/factory.js → lib/client.js)
+        run: pnpm run build:client
+
+      - name: 构建「问 DSH」面板 webview(官方渲染器 + 设计令牌)
+        run: pnpm run build:webview
+
+      # 必须在构建之后跑:test-webview-bundle 见到产物才真验(缺产物时它逐项 SKIP),
+      # test-launcher-routes 在 runner 上找不到「内部依赖已建链接」的 VS Code 树 ⇒ 自己 SKIP 并 exit 0。
+      - name: 全量回归(脚本清单见 scripts/run-all-tests.mjs)
+        run: pnpm run test
+
+      # 只报告:内置树落后于上游 code-server 时要重打子包,那是另一条人工流程(README「打包」)。
+      - name: 报告内置 VS Code 树 vs 上游 code-server 版本(不阻断)
+        continue-on-error: true
+        run: pnpm run vendor:check
+
+      - name: 上传构建产物(两个平台各一份)
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-${{ matrix.os }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            lib/client.js
+            assets/extensions/dshcs-editor-bridge/webview/thread.js
+            assets/extensions/dshcs-editor-bridge/webview/thread.css
+            assets/extensions/dshcs-editor-bridge/webview/THIRD-PARTY.md

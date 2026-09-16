@@ -9,6 +9,8 @@
 //   node scripts/publish-plugin.mjs --tag beta      # 指定 dist-tag
 //   node scripts/publish-plugin.mjs --dry-run       # 只打印将发布的 tarball
 //   node scripts/publish-plugin.mjs --latest        # 明确推到 latest(仅确认无误后使用)
+//   node scripts/publish-plugin.mjs --provenance    # 附 Sigstore provenance(CI 里的 OIDC trusted
+//                                                   # publishing 用;需要 id-token: write)
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +22,8 @@ const npmCache = join(pkgRoot, '.npm-cache');
 const workspaceNpmrc = join(pkgRoot, '.npmrc');
 const argv = process.argv.slice(2);
 const DRY_RUN = argv.includes('--dry-run');
+// provenance 只在 OIDC trusted publishing(id-token: write)下用;本地保持默认关闭。
+const PROVENANCE = argv.includes('--provenance');
 const TAG = (() => {
   if (argv.includes('--latest')) return 'latest';
   const i = argv.indexOf('--tag');
@@ -35,6 +39,7 @@ if (!existsSync(tgz)) {
 
 const args = ['publish', relative(pkgRoot, tgz), '--access', 'public', '--tag', TAG];
 if (existsSync(workspaceNpmrc)) args.push('--userconfig', workspaceNpmrc);
+if (PROVENANCE) args.push('--provenance');
 if (DRY_RUN) args.push('--dry-run');
 
 const cli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
