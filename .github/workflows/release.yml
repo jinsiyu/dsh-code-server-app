@@ -221,9 +221,12 @@ jobs:
       - name: 部署真 DSH(隔离的 DSH_HOME,不碰别的 profile)
         shell: pwsh
         run: |
-          $home = Join-Path $env:RUNNER_TEMP 'dshhome'
-          New-Item -ItemType Directory -Force $home | Out-Null
-          "DSH_HOME=$home" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # 变量别叫 $home:$HOME 在 PowerShell 里是**只读自动变量**,赋值会抛
+          # SessionStateUnauthorizedAccessException;GitHub 的 pwsh 包装把错误升级为终止错误 ⇒ 整步失败
+          # (0.3.47 第二次跑就是这么挂在"部署真 DSH"这一步的,而且它只是个建目录的步骤)。
+          $dshHome = Join-Path $env:RUNNER_TEMP 'dshhome'
+          New-Item -ItemType Directory -Force $dshHome | Out-Null
+          "DSH_HOME=$dshHome" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Get-ChildItem -Filter *.tgz | Select-Object Name, @{n = 'MB'; e = { [math]::Round($_.Length / 1MB, 2) } }
 
       # 门禁 6:官方安装路径(与用户完全一致),装的是**刚打出来的本地 tgz** ——
