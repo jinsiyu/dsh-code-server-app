@@ -651,6 +651,12 @@ await test('bridgeGuard:Origin 判定用裸 headers —— 不要用 Request 构
 });
 
 await test('status 快照带 bridge 状态,但绝不泄露令牌', async () => {
+  // live 的语义是「桥配置存在」(lib/index.js: live = bridgeMeta !== null),不是「IDE 正在跑」。
+  // 本测试框架不起 IDE,但前面的用例完全可能已经写过配置 —— windows runner 上就是
+  // file=…\extensions\.dshcs-bridge\bridge.json, exists=true 让这条断言挂掉。本用例只关心
+  // status 快照的**形状**(带 bridge 字段、有 file、没有 token),所以先把状态清干净再断言,
+  // 否则它测的其实是"前面用例的副作用"。
+  bridge.removeBridgeConfig(extensionsDir);
   const response = await routes.get('/api/code-server/status').fetch();
   assert.equal(response.status, 200);
   const body = await response.json();
@@ -667,7 +673,10 @@ await test('status 快照带 bridge 状态,但绝不泄露令牌', async () => {
 });
 
 await test('配置读写:原子写 / 读回 / 删掉 / 坏内容视为未配置(0.3.13 起是 pipe,不是 url)', () => {
-  const pipe = '\\\\.\\pipe\\dshcs-bridge-4242-abcdefabcdef';
+  // 端点按平台构造:isBridgeEndpoint() 在非 win32 上要求**绝对路径**(见 lib/bridge-ipc.mjs)。
+  // 以前这里写死 `\\.\pipe\…`,于是 Linux 上 writeBridgeConfig 写进去、readBridgeConfig 读不回来
+  // (端点被判非法 ⇒ null)⇒ 下一行读 `.pipe` 直接 TypeError(2026-09-16 ubuntu runner 实测)。
+  const pipe = bridgeIpc.bridgeEndpointPath(extensionsDir);
   const token = 'abctoken-0123456789abcdef';
   const file = bridge.writeBridgeConfig(extensionsDir, { pipe, token, pid: 42, startedAt: 7 });
   assert.ok(file.endsWith('bridge.json'), `实际 ${file}`);

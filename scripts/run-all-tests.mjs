@@ -100,9 +100,9 @@ function annotate(result) {
   let kind = 'FAIL 行';
   if (picked.length === 0) {
     // 没有 FAIL 行 ⇒ 多半是**未捕获的异常/直接崩**(例如 exit 13 的 unsettled top-level await)。
-    // 这时不要只报尾几行,先挑"像报错"的行 —— 注解数量有上限,别浪费在 PASS 上。
+    // 这时不要只报尾几行,先挑"像报错"的行 —— 注解数量有上限,别浪费在 PASS 上,也别报太多条。
     const noisy = lines.filter((line) => /(Error|error|ENOENT|EPERM|EACCES|EADDRINUSE|ERR_|\bat .*:\d+|^\s*\^)/u.test(line));
-    picked = (noisy.length > 0 ? noisy.slice(-8) : lines.filter((l) => l.trim() !== '').slice(-6));
+    picked = (noisy.length > 0 ? noisy.slice(-5) : lines.filter((l) => l.trim() !== '').slice(-4));
     kind = '异常/崩溃行';
   }
   console.log(`::error::${result.name} 失败(exit ${result.code}${result.error ? `,${result.error}` : ''};下面报 ${kind})`);
