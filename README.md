@@ -493,6 +493,14 @@ pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**�
 - 生成器同时:保留本次分析看不到的条目(用 `--target` 只构建本机目标时,别的平台的模块必须原样留下)、
   平台专属包在该目标上编不出 `.node` 时**跳过而不是发空壳**、Linux 目标补 ELF `e_machine` 校验
   (与 win32 的 PE machine 校验对称)。
+- **版本政策(宿主与时点都无关)**:`lib/vendored.json` 里每个模块的版本 = **registry 上我们已经发布的那个号**,
+  上游版本漂移**不会**自动改它。实测两例:同一个 `code-server@4.137.0`,`kerberos` 源树里是上游 `2.1.1`
+  而我们发布的是 `2.1.1-dshcs.1`(聚合包时代的后缀);`@vscode/proxy-agent` 维护者当时装到 `0.44.0`、
+  今天全新装到 `0.45.0`(依赖范围允许漂移,而 `0.45.0` 这个子包我们根本没发过)。照源树写,换个宿主平台
+  或换一天重跑,插件依赖就会指向不存在的版本号、装上去直接解析失败。
+  **要让插件升到新的上游版本**:在 `scripts/repack-platforms.json` 里给该模块钉 `"version"` → 重跑
+  `vendor-repacks.mjs` → 发布新子包 → 刷新依赖表与 `pnpm-lock.yaml`。生成器每次都会把漂移打出来
+  (`· <模块>:沿用表里已发布的版本 …(源树里是 …)`),照着那行做即可。
 - **Linux 上实测**(`linux-x64` / `linux-arm64` 两条腿各真编译一遍,结论行:
   `[repack] linux-x64: 平台专属产出 5 个(…)`):这 5 个模块编出了 `.node` ——
   `@vscode/deviceid` / `@vscode/native-watchdog` / `@vscode/spdlog` / `@vscode/sqlite3` / `kerberos`;

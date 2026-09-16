@@ -490,6 +490,17 @@ Supporting Linux is not mainly about "compiling a few more packages" — it is a
   `--target` must not drop the other platforms' modules), **skips** a per-platform package when no `.node`
   was produced for that target (rather than publishing an empty shell), and validates ELF `e_machine` for
   Linux targets (mirroring the PE machine check for win32).
+- **Version policy (independent of host *and* of when you run it)**: the version recorded for each module in
+  `lib/vendored.json` is **the one we have actually published to the registry**; upstream drift never changes
+  it silently. Two measured cases with the same `code-server@4.137.0`: `kerberos` resolves to upstream `2.1.1`
+  while we published `2.1.1-dshcs.1`, and `@vscode/proxy-agent` resolved to `0.44.0` for the maintainer but to
+  `0.45.0` on a fresh install today (the dependency range allows drift, and `0.45.0` was never published for
+  our sub-package). Writing the tree's version would point the plugin's dependency at a version that does not
+  exist — an install that simply fails, on a different host or another day.
+  **To adopt a newer upstream version**: pin `"version"` for that module in `scripts/repack-platforms.json`,
+  re-run `vendor-repacks.mjs`, publish the new sub-packages, then refresh the dependency table and
+  `pnpm-lock.yaml`. The generator always prints such drift (`· <module>: 沿用表里已发布的版本 …`), so follow
+  that line.
 - **Measured on Linux** (both legs really compile; the verdict line reads
   `[repack] linux-x64: 平台专属产出 5 个(…)`): five modules produce a `.node` —
   `@vscode/deviceid`, `@vscode/native-watchdog`, `@vscode/spdlog`, `@vscode/sqlite3`, `kerberos`;
