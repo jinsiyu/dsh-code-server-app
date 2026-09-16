@@ -476,7 +476,7 @@ pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**�
 | `ci.yml` | push `main` / PR / 手动 | `ubuntu-latest` + `windows-latest` 双平台:`pnpm install --frozen-lockfile` → `build:client` → `build:webview` → `pnpm test`(全套回归)→ `vendor:check` 只报告版本差 → 上传 `lib/client.js` 与面板产物 |
 | `release.yml` | 推 `v<version>` 标签 / 手动(演练,不发布) | 按 `dependencies` 钉的版本准备 `vendor/vscode` → 构建 → 全套回归 → `pnpm pack` → 校验 tarball 清单 → **真装一遍**(在 runner 上部署真 DSH,`dsh plugin --profile web add <tgz>`,再跑 `test:installed` + `dump-config` 断言)→ 发 npm **`next`** → 建 GitHub Release(附 tgz) |
 | `linux-repack-probe.yml` | push 本文件 / 手动 | **可行性探针(不发布)**:在 Linux 上按目标(`linux-x64` → `ubuntu-latest`、`linux-arm64` → `ubuntu-24.04-arm`)试编平台专属重打包包,输出「哪些模块真能编出 `.node`、哪些是 Windows-only」。跑的是现有 `vendor-repacks.mjs` 本尊,改动只发生在 `$RUNNER_TEMP` 的仓库副本里 |
-| `repacks.yml` | 手动(`publish` 默认 **false**)/ push 本文件 | **平台专属子包(`@jinsiyu/dshcs-*`)的构建与发布**:同架构宿主 runner 各打一条(`win32-x64` → `windows-latest`、`win32-arm64` → `windows-11-arm`),默认只构建 + 传 `repack/tgz/*.tgz`;勾上 `publish` 才发 npm(默认 `next`)。发布归属:win32-x64 那条腿发「平台无关 + win32-x64 专用」,arm64 那条只发 `--only win32-arm64` ⇒ 集合不相交、并发不撞车。**认证用 `NPM_TOKEN`**(npm 的信任关系是按包配的,26 个子包建 26 条不现实;要改走 OIDC 就给每个子包各加一条,workflow 填 `repacks.yml`) |
+| `repacks.yml` | 手动(`publish` / `probe_oidc` 默认都是 **false**)/ push 本文件 / push `.github/oidc-probe.enabled` | **平台专属子包(`@jinsiyu/dshcs-*`)的构建与发布**:同架构宿主 runner 各打一条(`win32-x64` → `windows-latest`、`win32-arm64` → `windows-11-arm`),默认只构建 + 传 `repack/tgz/*.tgz`;勾上 `publish` 才发 npm(默认 `next`)。发布归属:win32-x64 那条腿发「平台无关 + win32-x64 专用」,arm64 那条只发 `--only win32-arm64` ⇒ 集合不相交、并发不撞车。**认证**:没配 `NPM_TOKEN` 就走 OIDC(25 条 per-package Trusted Publisher,workflow 都填 `repacks.yml`,见下)。额外有一个 `probe-oidc` job:对几个真实子包名做**只暂存、不发正式版**的巡检,用来证明这条 OIDC 通道真的可用 |
 
 **dist-tag 政策不变**:`release.yml` 只发 `next`,绝不碰 `latest`;`latest` 仍由 `pnpm run promote -- <version>`
 在重启 dsh web 确认无误后手动推进(README 上方「打包」一节)。
@@ -540,6 +540,26 @@ pnpm run promote -- 0.3.47                 # 4) 确认无误后推 latest(手动
     核对:对任意子包执行 `npm trust list <包名>`,应显示 `file: repacks.yml` 与
     `repository: jinsiyu/dsh-code-server-app`(25 个子包一个都不能少 —— 漏掉的那个包发布时会报
     "没有匹配的信任配置",而那一行会以 annotation 出现在 run 里,不需要 token 就能读)。
+  - **验证这条通道(不必等真发布)**:`repacks.yml` 里有一个 `probe-oidc` job ——
+    对 4 个真实子包名(`vscode-fs-copyfile` / `node-pty` / `kerberos-win32-arm64` / `vscode-server`)
+    各做一次 **staged(暂存)发布**,版本形如 `2.0.1-oidc-probe.<run>`。
+    为什么必须放 CI 里:OIDC 令牌只在运行时签发,信任关系按「仓库 + **workflow 文件名** + 包名」匹配 ⇒
+    离线验证不了;也正因为后者,巡检只能由 `repacks.yml` 这个文件发起(换个文件名就会被 npm 拒)。
+    为什么用 `npm stage publish` 而不是 `npm publish`:`npm stage` 走的是**同一条**认证路径,但版本进的是
+    暂存队列,**不进** registry 的正式版本列表(脚本自己会用 `npm view <pkg> versions` 复核一遍),
+    所以不会占用任何版本号、也不影响依赖解析。
+    触发方式(两种,第二种不需要任何令牌):
+    ```powershell
+    # ① Actions → repacks → Run workflow,勾上 probe_oidc
+    # ② 提交哨兵文件后 push(工作流会跑一遍构建演练 + 巡检)
+    New-Item .github/oidc-probe.enabled -ItemType File -Force
+    git add .github/oidc-probe.enabled; git commit -m "chore: OIDC 通道巡检"; git push
+    ```
+    结果怎么读:每个包成功/失败都会发 `::notice::` / `::error::` annotation,公开仓库**不需要登录**
+    就能读(`GET /repos/jinsiyu/dsh-code-server-app/check-runs/<id>/annotations`);job 摘要里也有一张表。
+    收尾:把暂存的探针版本**reject** 掉(`npm stage list` 看 id、`npm stage reject <id>`,需要你本机的 2FA;
+    npm 网页上也有对应的 staged 列表)——**不要 approve**,approve 才会让它变成正式版本。
+    验证完删掉哨兵文件,工作流就恢复"不自动巡检"。
 - **可选**仓库 Variables `DSH_UI_VERSION` = 当前部署里 `@deepseek-ai/dsh-web-frontend` 的版本:设了之后
   `release.yml` 会强制面板渲染器版本与部署一致(本机 `build:webview` 本来就会比,runner 上没有 DSH 部署)。
 

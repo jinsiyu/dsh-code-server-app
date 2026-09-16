@@ -33,6 +33,18 @@
 # 用法(手动触发,见 Actions → repacks → Run workflow):
 #   publish=false(默认) → 只构建 + 上传 repack/tgz/*.tgz
 #   publish=true         → 构建完再发布到 npm(dist_tag 默认 next;latest 仍由 promote 手动推进)
+#   probe_oidc=true      → 只跑「OIDC 通道巡检」job:对几个真实子包名做 staged(暂存)发布,
+#                          验证 OIDC ↔ Trusted Publisher 是否真的通(不产生任何正式版本)。
+#
+# OIDC 通道巡检(probe_oidc / 哨兵文件):
+#   为什么必须有它:OIDC 通道**无法离线验证** —— 令牌只在 CI 运行时签发,而且信任关系按
+#   「仓库 + workflow 文件名 + 包名」匹配;唯一诚实的验证是对真实包名发起一次发布请求。
+#   为什么不直接 publish:那会占用真实版本号。这里用 npm 的 **staged publishing**
+#   (`npm stage publish`,npm ≥ 11.6):版本进暂存队列、**不进** registry 的正式版本列表,
+#   走的是与 `npm publish` 完全相同的认证路径;验证完维护者 `npm stage reject <id>` 作废即可。
+#   脚本还会自己核对:探针版本没有出现在正式版本列表里(scripts/oidc-probe.mjs)。
+#   触发方式:① dispatch 勾 probe_oidc;② 提交 `.github/oidc-probe.enabled`(哨兵)后 push
+#   —— 后者不需要任何令牌,便于用匿名 API 核对运行结果。
 name: repacks
 
 on:
@@ -54,11 +66,17 @@ on:
         description: 发布用的 dist-tag(政策:默认 next,不碰 latest)
         type: string
         default: next
+      probe_oidc:
+        description: 【巡检】只对几个真实子包名做 staged(暂存)发布,验证 OIDC 通道是否可用(不产生正式版本)
+        type: boolean
+        default: false
   # 本文件被改动时自动跑一次**只构建**的演练(方便验证这个工作流本身);
   # publish 的输入在 push 事件下为空 ⇒ 永远为 false。
   push:
     paths:
       - '.github/workflows/repacks.yml'
+      # 哨兵文件:提交它即触发一次 OIDC 巡检(见文件尾「OIDC 通道巡检」)。平时仓库里没有这个文件。
+      - '.github/oidc-probe.enabled'
 
 concurrency:
   group: repacks-${{ github.ref }}
@@ -283,4 +301,68 @@ jobs:
             echo "| 目标 | \`${{ env.TARGET }}\` |"
             echo "| 发布 | \`${{ inputs.publish }}\`(--only win32-arm64) |"
             echo "| 触发 | \`${{ github.event_name }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── OIDC 通道巡检(只暂存,不发正式版)─────────────────────────────────────────────
+  # 证明「per-package trusted publishing(OIDC)」对 @jinsiyu/dshcs-* 真的可用 —— 这条通道
+  # 只能在 CI 里验证(OIDC 令牌运行时才签发,信任关系按「仓库 + workflow 文件名 + 包名」匹配),
+  # 所以巡检必须由**这个文件**发起(25 条 Trusted Publisher 的 workflow 都填的 repacks.yml)。
+  # 细节与安全边界见文件头「OIDC 通道巡检」;探针逻辑在 scripts/oidc-probe.mjs。
+  probe-oidc:
+    name: OIDC 通道巡检(staged,不发正式版)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出
+        uses: actions/checkout@v7
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # 两种启用方式:手动 dispatch 勾 probe_oidc;或仓库里存在哨兵文件 .github/oidc-probe.enabled
+      # (push 事件下 inputs 为空 ⇒ 只能靠哨兵,好处是无需任何令牌即可触发)。
+      - name: 判定是否启用
+        id: gate
+        shell: bash
+        run: |
+          if [ "${{ inputs.probe_oidc }}" = "true" ] || [ -f .github/oidc-probe.enabled ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "OIDC 巡检:启用(staged publishing,不会产生正式版本)"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "OIDC 巡检:未启用(dispatch 未勾 probe_oidc,且仓库里没有 .github/oidc-probe.enabled)⇒ 跳过"
+          fi
+
+      - name: 确认 npm 支持 staged publishing
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          node --version
+          npm --version
+          if npm stage --help >/dev/null 2>&1; then
+            echo "npm stage 可用"
+          else
+            echo "::error::这个 npm 不支持 staged publishing(需要 npm ≥ 11.6)⇒ 巡检无法进行"
+            exit 1
+          fi
+
+      - name: staged 探针发布(只暂存)
+        if: steps.gate.outputs.enabled == 'true'
+        run: node scripts/oidc-probe.mjs
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "### OIDC 通道巡检(staged publishing)"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 启用 | \`${{ steps.gate.outputs.enabled }}\` |"
+            echo "| 触发 | \`${{ github.event_name }}\` |"
+            echo "| 结论 | 见 annotation 与日志(脚本退出码即结论) |"
+            echo ""
+            echo "> 暂存版本不会进入正式版本列表;验证完请在 npm 的 staged publishes 里 **reject**(不要 approve)。"
           } >> "$GITHUB_STEP_SUMMARY"

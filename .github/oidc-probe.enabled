@@ -1,0 +1,11 @@
+这个文件是 OIDC 发布通道巡检的**哨兵开关**。
+
+只要它存在于仓库里,`repacks.yml` 的 `probe-oidc` job 就会在任何一次触发(包括 push 本文件)
+运行时真的去跑一次 staged(暂存)巡检:对几个真实子包名各暂存一个 `-oidc-probe.<run>` 版本,
+用来证明 per-package trusted publishing(OIDC)这条通道可用。
+
+· 它**不会**产生任何正式版本(暂存版本不进 registry 的正式版本列表,由维护者 reject 作废);
+· 巡检结论以 `::notice::` / `::error::` annotation 的形式出现在 run 里;
+· 巡检完删掉本文件,工作流即恢复"不自动巡检"(也可以改成只用 Actions 手动 dispatch 勾 `probe_oidc`)。
+
+细节见 `.github/workflows/repacks.yml` 文件头的「OIDC 通道巡检」与 `scripts/oidc-probe.mjs`。

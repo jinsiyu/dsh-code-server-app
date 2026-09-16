@@ -467,7 +467,7 @@ Both workflows live in `.github/workflows/`, and the regression list exists exac
 | `ci.yml` | push to `main` / PR / manual | `ubuntu-latest` + `windows-latest` matrix: `pnpm install --frozen-lockfile` → `build:client` → `build:webview` → `pnpm test` (the whole suite) → `vendor:check` (report only) → upload `lib/client.js` and the panel assets |
 | `release.yml` | push a `v<version>` tag / manual (rehearsal, never publishes) | prepares `vendor/vscode` **at the version pinned in `dependencies`** → builds → full suite → `pnpm pack` → verifies the tarball manifest → **really installs it** (deploys a real DSH on the runner, `dsh plugin --profile web add <tgz>`, then `test:installed` + `dump-config` assertions) → publishes to npm **`next`** → creates a GitHub Release with the tgz attached |
 | `linux-repack-probe.yml` | push to this file / manual | **feasibility probe (never publishes)**: on Linux, builds the platform-specific repack packages per target (`linux-x64` → `ubuntu-latest`, `linux-arm64` → `ubuntu-24.04-arm`) and reports which modules really produce a `.node` and which are Windows-only. It runs the existing `vendor-repacks.mjs` itself; all writes happen in a copy of the repo under `$RUNNER_TEMP` |
-| `repacks.yml` | manual (`publish` defaults to **false**) / push to this file | **builds and publishes the platform-specific sub-packages** (`@jinsiyu/dshcs-*`): one host-architecture runner per target (`win32-x64` → `windows-latest`, `win32-arm64` → `windows-11-arm`); by default it only builds and uploads `repack/tgz/*.tgz`, and only publishes to npm (default `next`) when `publish` is checked. Ownership: the x64 leg publishes "platform-independent + win32-x64", the arm64 leg only `--only win32-arm64`, so the sets are disjoint and concurrent publishing cannot collide. **Auth uses `NPM_TOKEN`** (npm trust entries are per package; 26 sub-packages would need 26 entries — to move to OIDC, add one entry per sub-package with workflow `repacks.yml`) |
+| `repacks.yml` | manual (`publish` and `probe_oidc` both default to **false**) / push to this file / push `.github/oidc-probe.enabled` | **builds and publishes the platform-specific sub-packages** (`@jinsiyu/dshcs-*`): one host-architecture runner per target (`win32-x64` → `windows-latest`, `win32-arm64` → `windows-11-arm`); by default it only builds and uploads `repack/tgz/*.tgz`, and only publishes to npm (default `next`) when `publish` is checked. Ownership: the x64 leg publishes "platform-independent + win32-x64", the arm64 leg only `--only win32-arm64`, so the sets are disjoint and concurrent publishing cannot collide. **Auth**: with no `NPM_TOKEN` it uses OIDC (25 per-package trust entries, all with workflow `repacks.yml` — see below). A `probe-oidc` job additionally does a **staged-only** probe of that OIDC route, so the channel can be proven without publishing anything real |
 
 The regression suite (also the single list CI uses) is:
 
@@ -558,6 +558,21 @@ one itself (with no `NPM_TOKEN` it uses OIDC):
   `repository: jinsiyu/dsh-code-server-app` (all 25 packages are required — a missing one fails at publish
   time with "no matching trust configuration", and that line shows up as an annotation in the run without
   needing a token).
+- **Verifying that route (without waiting for a real publish)**: `repacks.yml` has a `probe-oidc` job that does a
+  **staged** publish for four real sub-package names (`vscode-fs-copyfile`, `node-pty`,
+  `kerberos-win32-arm64`, `vscode-server`), with versions like `2.0.1-oidc-probe.<run>`.
+  This only works from CI: OIDC tokens are minted at run time, and a trust entry matches on
+  repository + **workflow filename** + package name — which is also why the probe has to live in
+  `repacks.yml` itself. `npm stage publish` follows exactly the same auth path as `npm publish`, but the
+  version lands in the staging queue and **never in the registry's published version list** (the script
+  re-checks that with `npm view <pkg> versions`), so no version number is consumed and no dependency
+  resolution changes. Trigger it either from Actions → repacks → Run workflow with `probe_oidc` checked, or
+  token-free by committing the sentinel `.github/oidc-probe.enabled` and pushing. Results are emitted as
+  `::notice::` / `::error::` annotations, readable on a public repo without logging in
+  (`GET /repos/jinsiyu/dsh-code-server-app/check-runs/<id>/annotations`). Afterwards **reject** the staged
+  probe versions (`npm stage list`, then `npm stage reject <id>`; needs 2FA on your machine) — do **not**
+  approve, since approving is what would turn a probe into a real version. Delete the sentinel file to
+  return to "no automatic probe".
 - **Optional** repository variable `DSH_UI_VERSION` = the version of `@deepseek-ai/dsh-web-frontend` in the current
   deployment: when set, `release.yml` enforces that the panel renderer matches the deployed UI (the local
   `build:webview` always checks this; a runner has no DSH deployment).

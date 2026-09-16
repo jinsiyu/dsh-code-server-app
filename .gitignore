@@ -23,6 +23,9 @@ repack/
 spike-*.mjs
 # 验证过程的中间产物:日志、证据、测试用 user-data(scripts/*.mjs 产出)
 .spike/
+# OIDC 发布通道巡检(scripts/oidc-probe.mjs)生成的探针包与报告:CI 里就地生成,不入库。
+# 让它保持"被忽略"很重要:`npm publish --provenance` 会看 git 工作区是否干净。
+.oidc-probe/
 
 # client bundle 构建产物:由 src/factory.js 经 `pnpm run build:client` 生成,
 # 仓库只跟踪源码与构建脚本(scripts/build-client.mjs)。
