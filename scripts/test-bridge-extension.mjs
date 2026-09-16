@@ -71,6 +71,11 @@ const diffModel = require2(`${EXT}/lib/diff-model.js`);
 const bridgeClient = require2(`${EXT}/lib/bridge-client.js`);
 
 const WORKSPACE = process.platform === 'win32' ? 'C:\\repo' : '/repo';
+/** 路径分隔符:**必须按平台取**。这些用例以前一律写 `${WORKSPACE}${SEP}a.ts`,在 Linux 上就变成
+ *  `/repo\a.ts`(POSIX 路径里混了反斜杠)⇒ 工作区收敛判定(inRepo/relative)把它当成**工作区外**丢掉
+ *  ⇒ "诊断收敛/排序/过滤"三条全变 0 条(0 !== n),第四条还因为 `diagnostics[0]` 是 undefined 直接崩。
+ *  2026-09-16 ubuntu runner 上就是这么暴露的(本机沙箱跑不到真实的 POSIX 分支)。 */
+const SEP = process.platform === 'win32' ? '\\' : '/';
 /** 测试用的本机 IPC 端点(形状必须过 isBridgeEndpoint)。 */
 const PIPE = process.platform === 'win32'
   ? '\\\\.\\pipe\\dshcs-bridge-test-0123456789abcdef'
@@ -83,10 +88,10 @@ const projector = contextModel.createProjector(inRepo);
 
 await test('未保存缓冲区被上报(含无标题文档占位)', () => {
   const result = projector.context({
-    active: { path: `${WORKSPACE}\\a.ts`, name: 'a.ts', language: 'typescript', dirty: true, selection: null },
+    active: { path: `${WORKSPACE}${SEP}a.ts`, name: 'a.ts', language: 'typescript', dirty: true, selection: null },
     documents: [
-      { path: `${WORKSPACE}\\a.ts`, name: 'a.ts', dirty: true, unsavedLines: 12, untitled: false },
-      { path: `${WORKSPACE}\\b.ts`, name: 'b.ts', dirty: false, unsavedLines: 0, untitled: false },
+      { path: `${WORKSPACE}${SEP}a.ts`, name: 'a.ts', dirty: true, unsavedLines: 12, untitled: false },
+      { path: `${WORKSPACE}${SEP}b.ts`, name: 'b.ts', dirty: false, unsavedLines: 0, untitled: false },
       { path: 'untitled:Untitled-1', name: 'untitled:Untitled-1', dirty: true, unsavedLines: 4, untitled: true },
     ],
     diagnostics: [],
@@ -94,25 +99,25 @@ await test('未保存缓冲区被上报(含无标题文档占位)', () => {
   assert.equal(result.available, true);
   assert.equal(result.dirtyBuffers.length, 2, '两个脏文档(含无标题)都要出现');
   const paths = result.dirtyBuffers.map((item) => item.path);
-  assert.ok(paths.includes(`${WORKSPACE}\\a.ts`));
+  assert.ok(paths.includes(`${WORKSPACE}${SEP}a.ts`));
   assert.ok(paths.includes('untitled:Untitled-1'), '无标题文档用 untitled:<n> 占位');
-  assert.ok(!paths.includes(`${WORKSPACE}\\b.ts`), '干净的文档不该出现在脏列表里');
+  assert.ok(!paths.includes(`${WORKSPACE}${SEP}b.ts`), '干净的文档不该出现在脏列表里');
   assert.equal(result.active.dirty, true);
 });
 
 await test('诊断收敛在工作区内(工作区外的直接丢弃)', () => {
   const filtered = projector.filterDiagnostics([
-    { path: `${WORKSPACE}\\a.ts`, items: [{ line: 3, column: 1, severity: 0, message: 'x' }] },
+    { path: `${WORKSPACE}${SEP}a.ts`, items: [{ line: 3, column: 1, severity: 0, message: 'x' }] },
     { path: OUTSIDE, items: [{ line: 1, column: 1, severity: 0, message: 'should be dropped' }] },
   ]);
   assert.equal(filtered.length, 1);
-  assert.equal(filtered[0].path, `${WORKSPACE}\\a.ts`);
+  assert.equal(filtered[0].path, `${WORKSPACE}${SEP}a.ts`);
 });
 
 await test('诊断排序:error → warning → info → hint,同级按文件与行', () => {
   const { diagnostics, total } = projector.diagnostics({
     diagnostics: [{
-      path: `${WORKSPACE}\\a.ts`,
+      path: `${WORKSPACE}${SEP}a.ts`,
       items: [
         { line: 9, column: 1, severity: 3, message: 'hint' },
         { line: 5, column: 1, severity: 0, message: 'error-late' },
@@ -128,10 +133,10 @@ await test('诊断排序:error → warning → info → hint,同级按文件与�
 
 await test('诊断按文件过滤 + 严重度下限 + 截断都生效', () => {
   const diagnostics = [
-    { path: `${WORKSPACE}\\a.ts`, items: [{ line: 1, column: 1, severity: 0, message: 'e' }, { line: 2, column: 1, severity: 2, message: 'i' }] },
-    { path: `${WORKSPACE}\\b.ts`, items: [{ line: 1, column: 1, severity: 1, message: 'w' }] },
+    { path: `${WORKSPACE}${SEP}a.ts`, items: [{ line: 1, column: 1, severity: 0, message: 'e' }, { line: 2, column: 1, severity: 2, message: 'i' }] },
+    { path: `${WORKSPACE}${SEP}b.ts`, items: [{ line: 1, column: 1, severity: 1, message: 'w' }] },
   ];
-  assert.equal(projector.diagnostics({ diagnostics, file: `${WORKSPACE}\\a.ts` }).total, 1 + 1);
+  assert.equal(projector.diagnostics({ diagnostics, file: `${WORKSPACE}${SEP}a.ts` }).total, 1 + 1);
   assert.equal(projector.diagnostics({ diagnostics, severity: 'error' }).total, 1, '只要 error 及以上');
   assert.equal(projector.diagnostics({ diagnostics, severity: 'warning' }).total, 2);
   const limited = projector.diagnostics({ diagnostics, limit: 1 });
@@ -142,7 +147,7 @@ await test('诊断按文件过滤 + 严重度下限 + 截断都生效', () => {
 
 await test('无标题文档不接受按文件查诊断(那条路径在磁盘上不存在)', () => {
   const result = projector.diagnostics({
-    diagnostics: [{ path: `${WORKSPACE}\\a.ts`, items: [{ line: 1, column: 1, severity: 0, message: 'e' }] }],
+    diagnostics: [{ path: `${WORKSPACE}${SEP}a.ts`, items: [{ line: 1, column: 1, severity: 0, message: 'e' }] }],
     file: 'untitled:Untitled-1',
   });
   assert.equal(result.diagnostics.length, 0);
@@ -151,10 +156,10 @@ await test('无标题文档不接受按文件查诊断(那条路径在磁盘上�
 
 await test('超长诊断 message 与选中文本都被截断(有界)', () => {
   const long = 'x'.repeat(contextModel.MAX_MESSAGE_CHARS + 500);
-  const result = projector.diagnostics({ diagnostics: [{ path: `${WORKSPACE}\\a.ts`, items: [{ line: 1, column: 1, severity: 0, message: long }] }] });
+  const result = projector.diagnostics({ diagnostics: [{ path: `${WORKSPACE}${SEP}a.ts`, items: [{ line: 1, column: 1, severity: 0, message: long }] }] });
   assert.ok(result.diagnostics[0].message.length <= contextModel.MAX_MESSAGE_CHARS + 8, 'message 必须截断');
   const ctx = projector.context({
-    active: { path: `${WORKSPACE}\\a.ts`, dirty: false, selection: null, selectedText: 'y'.repeat(contextModel.MAX_SELECTION_CHARS + 100) },
+    active: { path: `${WORKSPACE}${SEP}a.ts`, dirty: false, selection: null, selectedText: 'y'.repeat(contextModel.MAX_SELECTION_CHARS + 100) },
     documents: [],
     diagnostics: [],
   });
@@ -282,7 +287,7 @@ await test('客户端:sync 走 socketPath(不是 HTTP),带令牌头、一趟取�
     extensionsDir: dir,
     requestImpl: async (request) => {
       seen.push(request);
-      return { status: 200, json: { ok: true, events: [{ seq: 3, kind: 'agent-edit', path: `${WORKSPACE}\\a.ts` }] } };
+      return { status: 200, json: { ok: true, events: [{ seq: 3, kind: 'agent-edit', path: `${WORKSPACE}${SEP}a.ts` }] } };
     },
   });
   const payload = { context: { dirtyBuffers: [] }, diagnostics: [] };
@@ -314,7 +319,7 @@ await test('端到端:真实命名管道上跑一次 sync(host 监听口 ⇄ 扩
     handler: (req, res) => {
       seen.push({ url: req.url, method: req.method, token: req.headers[bridgeClient.TOKEN_HEADER] });
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, events: [{ seq: 1, kind: 'agent-edit', path: `${WORKSPACE}\\a.ts` }] }));
+      res.end(JSON.stringify({ ok: true, events: [{ seq: 1, kind: 'agent-edit', path: `${WORKSPACE}${SEP}a.ts` }] }));
     },
   });
   try {
@@ -655,8 +660,8 @@ await test('提问意图:文件级不带行号,选中级只在真有选区时带
 
 await test('写操作抽取:meta.diffs 优先,参数路径兜底,view 不算改动', async () => {
   const { extractEditedPaths } = await import('../lib/bridge-observe.mjs');
-  const p1 = `${WORKSPACE}\\a.ts`;
-  const p2 = `${WORKSPACE}\\b.ts`;
+  const p1 = `${WORKSPACE}${SEP}a.ts`;
+  const p2 = `${WORKSPACE}${SEP}b.ts`;
   assert.deepEqual(
     extractEditedPaths('write', { file_path: p1 }, { meta: { diffs: [{ path: p1 }] } }),
     [p1],
@@ -687,7 +692,7 @@ await test('投递:提示文本带上 文件:行 与选区代码块', async () =
   const { composeEditorPrompt } = await import('../lib/bridge-session.mjs');
   const text = composeEditorPrompt({
     text: '这里为什么报错?',
-    file: `${WORKSPACE}\\a.ts`,
+    file: `${WORKSPACE}${SEP}a.ts`,
     lineStart: 3,
     lineEnd: 5,
     languageId: 'typescript',
@@ -699,7 +704,7 @@ await test('投递:提示文本带上 文件:行 与选区代码块', async () =
   assert.ok(text.endsWith('这里为什么报错?'), '用户原话应当在最后');
   // 文件级提问(lineStart=null)⇒ 只有文件路径,没有 `:行`(0.3.21)
   const wholeFile = composeEditorPrompt({
-    text: '整个文件看一下', file: `${WORKSPACE}\\a.ts`, lineStart: null, lineEnd: null, languageId: null, selection: null,
+    text: '整个文件看一下', file: `${WORKSPACE}${SEP}a.ts`, lineStart: null, lineEnd: null, languageId: null, selection: null,
   });
   assert.match(wholeFile, /^From the editor: .*a\.ts\n/);
   assert.doesNotMatch(wholeFile, /a\.ts:\d/, '文件级提问不该出现行号');
@@ -729,7 +734,7 @@ await test('投递:选中的 agent 收到 followup 消息', async () => {
   };
   const result = await deliverEditorPrompt(stubCtx, {
     text: '看看这段',
-    file: `${WORKSPACE}\\a.ts`,
+    file: `${WORKSPACE}${SEP}a.ts`,
     lineStart: 1,
     lineEnd: 2,
     selection: 'let a = 1;',
