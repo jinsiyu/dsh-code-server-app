@@ -537,6 +537,9 @@ pnpm run promote -- 0.3.47                 # 4) 确认无误后推 latest(手动
     ```
     配完把 `NPM_TOKEN` 删掉即可(workflow 会自动走 OIDC)。npm 也允许把每条配置设成**只允许暂存发布**
     (版本要你 2FA 批准才生效)—— 更安全,但每批子包都要你手动批准多个版本,按需取舍。
+    核对:对任意子包执行 `npm trust list <包名>`,应显示 `file: repacks.yml` 与
+    `repository: jinsiyu/dsh-code-server-app`(25 个子包一个都不能少 —— 漏掉的那个包发布时会报
+    "没有匹配的信任配置",而那一行会以 annotation 出现在 run 里,不需要 token 就能读)。
 - **可选**仓库 Variables `DSH_UI_VERSION` = 当前部署里 `@deepseek-ai/dsh-web-frontend` 的版本:设了之后
   `release.yml` 会强制面板渲染器版本与部署一致(本机 `build:webview` 本来就会比,runner 上没有 DSH 部署)。
 

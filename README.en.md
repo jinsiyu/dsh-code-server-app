@@ -554,6 +554,10 @@ one itself (with no `NPM_TOKEN` it uses OIDC):
   Afterwards delete `NPM_TOKEN` (the workflow then uses OIDC). npm also lets each entry be **staging-only**
   (a version only goes live after you approve it with 2FA) — safer, but each batch then needs manual
   approvals for several versions.
+  Verify with `npm trust list <package>`, which should show `file: repacks.yml` and
+  `repository: jinsiyu/dsh-code-server-app` (all 25 packages are required — a missing one fails at publish
+  time with "no matching trust configuration", and that line shows up as an annotation in the run without
+  needing a token).
 - **Optional** repository variable `DSH_UI_VERSION` = the version of `@deepseek-ai/dsh-web-frontend` in the current
   deployment: when set, `release.yml` enforces that the panel renderer matches the deployed UI (the local
   `build:webview` always checks this; a runner has no DSH deployment).
