@@ -103,6 +103,15 @@ jobs:
           echo "repack 退出码 $code"
           exit 0
 
+      # 探针失败时最需要的是**脚本自己的报错**:日志在 artifact 里要鉴权才能下载,
+      # 而 notice/annotation 公开可读(check-runs API)⇒ 尾部 40 行直接转成 notice。
+      - name: repack.log 尾部(公开可读,不用登录 UI)
+        if: always()
+        run: |
+          set +e
+          echo "::notice::repack.log 尾部 40 行(退出码 ${{ steps.repack.outputs.exit }}):"
+          tail -n 40 "$RUNNER_TEMP/repack.log" 2>/dev/null | sed 's/^/::notice:: /'
+
       # 哨兵:分析结果为空 = 探针没测到东西(参数/环境不对),必须报失败,不能"绿着什么都没测"。
       - name: 哨兵(分析结果不能为空)
         run: |
