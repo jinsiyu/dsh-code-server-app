@@ -908,6 +908,20 @@ await test('隔离自检:测试不写真实 profile 的 bridge.json', () => {
   assert.equal(after, realBridgeBefore, `真实桥配置被本测试改动了:${realBridge}`);
 });
 
-rmSync(HOME, { recursive: true, force: true });
+// 收尾清理不判失败:Windows 上刚写完的目录可能还被 Defender/索引扫着(EPERM/EBUSY)。
+// 重试几次后降级成警告 —— 临时目录由 mkdtemp 每次新建,清理失败不影响任何结论
+// (2026-09-16 windows runner 上就是这行 rmSync 报 EPERM 把整条回归判红的)。
+for (let attempt = 0; attempt < 5; attempt += 1) {
+  try {
+    rmSync(HOME, { recursive: true, force: true });
+    break;
+  } catch (error) {
+    if (attempt === 4) {
+      console.warn(`     (临时目录清理失败:${error && error.code ? error.code : error} —— 不影响结论,忽略)`);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+}
 console.log(`SUMMARY pass=${pass} fail=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

@@ -112,7 +112,8 @@ function annotate(result) {
     }
     if (picked.length >= 6) break;
   }
-  console.log(`::error::${result.name} 失败(exit ${result.code}${result.error ? `,${result.error}` : ''})`);
+  console.log(`::error::${result.name} 失败(exit ${result.code}${result.error ? `,${result.error}` : ''};`
+    + `输出 ${result.output.length} 字节,FAIL 行 ${fails.length} 条)`);
   for (const line of picked) console.log(`::error::${line.slice(0, 900)}`);
 }
 
@@ -124,7 +125,13 @@ for (const name of picked) {
   console.log(`[suite] ── ${name} ${'─'.repeat(Math.max(4, 60 - name.length))}`);
   const result = await runOne(name);
   results.push(result);
-  if (result.code !== 0) annotate(result);
+  if (result.code !== 0) {
+    annotate(result);
+  } else if (LOG !== null) {
+    // 每个脚本一行 notice:既能在 CI 里一眼看到"跑到了哪、输出多少",也用来判定
+    // 「失败脚本的输出切片是否完整」(切片掉了开头 ⇒ FAIL 行挑不到,注解等于没报)。
+    console.log(`::notice::${name}: exit 0(输出 ${result.output.length} 字节)`);
+  }
   console.log('');
 }
 
