@@ -466,8 +466,49 @@ Both workflows live in `.github/workflows/`, and the regression list exists exac
 |---|---|---|
 | `ci.yml` | push to `main` / PR / manual | `ubuntu-latest` + `windows-latest` matrix: `pnpm install --frozen-lockfile` → `build:client` → `build:webview` → `pnpm test` (the whole suite) → `vendor:check` (report only) → upload `lib/client.js` and the panel assets |
 | `release.yml` | push a `v<version>` tag / manual (rehearsal, never publishes) | prepares `vendor/vscode` **at the version pinned in `dependencies`** → builds → full suite → `pnpm pack` → verifies the tarball manifest → **really installs it** (deploys a real DSH on the runner, `dsh plugin --profile web add <tgz>`, then `test:installed` + `dump-config` assertions) → publishes to npm **`next`** → creates a GitHub Release with the tgz attached |
-| `linux-repack-probe.yml` | push to this file / manual | **feasibility probe (never publishes)**: on Linux, builds the platform-specific repack packages per target (`linux-x64` → `ubuntu-latest`, `linux-arm64` → `ubuntu-24.04-arm`) and reports which modules really produce a `.node` and which are Windows-only. It runs the existing `vendor-repacks.mjs` itself; all writes happen in a copy of the repo under `$RUNNER_TEMP` |
-| `repacks.yml` | manual (`publish` and `probe_oidc` both default to **false**) / push to this file / push `.github/oidc-probe.enabled` | **builds and publishes the platform-specific sub-packages** (`@jinsiyu/dshcs-*`): one host-architecture runner per target (`win32-x64` → `windows-latest`, `win32-arm64` → `windows-11-arm`); by default it only builds and uploads `repack/tgz/*.tgz`, and only publishes to npm (default `next`) when `publish` is checked. Ownership: the x64 leg publishes "platform-independent + win32-x64", the arm64 leg only `--only win32-arm64`, so the sets are disjoint and concurrent publishing cannot collide. **Auth**: with no `NPM_TOKEN` it uses OIDC (25 per-package trust entries, all with workflow `repacks.yml` — see below). A `probe-oidc` job additionally does a **staged-only** probe of that OIDC route, so the channel can be proven without publishing anything real |
+| `linux-repack-probe.yml` | push to this file / manual | **feasibility probe (never publishes; superseded by the Linux legs of `repacks.yml`)**: on Linux, builds the platform-specific repack packages per target (`linux-x64` → `ubuntu-latest`, `linux-arm64` → `ubuntu-24.04-arm`) and reports which modules really produce a `.node` and which are Windows-only. It runs the existing `vendor-repacks.mjs` itself; all writes happen in a copy of the repo under `$RUNNER_TEMP`. **Note**: it emits one notice per module, which hits GitHub's ~20-annotations-per-check-run cap and leaves only the tail; for the full verdict use the Linux legs of `repacks.yml` (one summary line per target) |
+| `repacks.yml` | manual (`publish` and `probe_oidc` both default to **false**, the four `build_*` legs default to **true**) / push to this file / push `.github/oidc-probe.enabled` | **builds and publishes the platform-specific sub-packages** (`@jinsiyu/dshcs-*`): one host-architecture runner per target (`win32-x64` → `windows-latest`, `win32-arm64` → `windows-11-arm`, `linux-x64` → `ubuntu-latest`, `linux-arm64` → `ubuntu-24.04-arm`); by default it only builds and uploads `repack/tgz/*.tgz`, and only publishes to npm (default `next`) when `publish` is checked. Ownership: the x64 leg publishes "platform-independent + win32-x64", the other three legs only publish `--only <their own target>`, so the sets are disjoint and concurrent publishing cannot collide. **Auth**: with no `NPM_TOKEN` it uses OIDC (per-package trust entries, all with workflow `repacks.yml` — see below). The Linux legs additionally verify that the `lib/vendored.json` / `package.json` they generate match the committed ones (the platform policy is meant to be host-independent). A `probe-oidc` job additionally does a **staged-only** probe of that OIDC route, so the channel can be proven without publishing anything real |
+
+### Linux support (x64 / arm64): what changed, what is still missing
+
+Supporting Linux is not mainly about "compiling a few more packages" — it is about replacing
+**host scanning** with an **explicit platform policy**:
+
+- Upstream packages barely declare `os`/`cpu` (of the 16 modules, only `@vscode/windows-ca-certs` does),
+  and the tree manifest lists all 8 native modules as ordinary `dependencies` — so on Linux npm installs
+  the Windows-only ones anyway. `analyze()` classifies by "does this host have a `.node`", so **the
+  classification drifts with the host**: on Linux `windows-registry` looks platform-independent and would be
+  written into `dependencies`, which then makes the Windows runtime look for a `-win32-*` sub-package that
+  is not there.
+- Therefore `scripts/repack-platforms.json` is the single, human-reviewed declaration: each module's
+  `platform` (does it need per-platform packaging) and `targets` (which targets have a sub-package). The
+  generator only reads it, and derives from it: the per-module `targets` in `lib/vendored.json` (at runtime
+  `lib/native.js` uses them to **skip modules that do not apply to this platform**, instead of reporting
+  `dshcs-vscode-windows-registry-linux-x64` — a name that can never exist — as missing) and the plugin's
+  `optionalDependencies` (no longer blindly module × every target).
+- The generator also now: keeps table entries it cannot see on this host (building only the host target with
+  `--target` must not drop the other platforms' modules), **skips** a per-platform package when no `.node`
+  was produced for that target (rather than publishing an empty shell), and validates ELF `e_machine` for
+  Linux targets (mirroring the PE machine check for win32).
+
+**To actually install native modules on Linux, three steps remain (one 2FA-authenticated sitting)**:
+
+1. **First publish of the Linux sub-packages** — new package names cannot have a Trusted Publisher in
+   advance (a trust entry requires the package to exist), so the first publish must be done by the
+   maintainer: Actions → repacks → Run workflow with `publish` checked (all four legs, or only
+   `build_linux_x64` / `build_linux_arm64` + `publish`). Already-published sub-packages publish via OIDC;
+   the new names need an `NPM_TOKEN` with publish rights (or a local `npm publish`).
+2. Add one trust entry per new package
+   (`npm trust github <package> --file repacks.yml --repo jinsiyu/dsh-code-server-app --allow-publish -y`),
+   after which `NPM_TOKEN` can be deleted again.
+3. Add `linux-x64` / `linux-arm64` to `publishedTargets` in `scripts/repack-platforms.json` → re-run
+   `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64` (this is what writes the 10
+   Linux sub-packages into `optionalDependencies`) → `pnpm install` to refresh `pnpm-lock.yaml` → normal
+   release flow.
+   > Until step 3 is done, the plugin dependency table deliberately contains **no** Linux sub-packages
+   > (writing them in earlier would make pnpm resolve a package that does not exist yet, i.e. the install
+   > would simply fail). `lib/vendored.json` already carries the Linux targets: that changes nothing on
+   > Windows, and on Linux it only reports the native modules as missing, which is the truth today.
 
 The regression suite (also the single list CI uses) is:
 

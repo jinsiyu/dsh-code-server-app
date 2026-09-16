@@ -428,7 +428,7 @@ pnpm run promote -- <version>
 | **指定版本** | `pnpm run vendor:vscode -- --version 4.137.0` |
 | **从已装好的树快照** | `pnpm run vendor:vscode -- --from <code-server 目录>`(秒级) |
 | **开发期让树可直接跑** | `pnpm run vendor:vscode -- --dev-links`(额外把 `lib/vscode/node_modules` 用 junction 补上) |
-| **完整重打子包** | `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack`(不给 `--from` 会自动 npm install 解包 + 编译,耗时) |
+| **完整重打子包** | `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack`(不给 `--from` 会自动 npm install 解包 + 编译,耗时)。`--target` 只决定**本次在这台机器上构建哪些目标**(原生包要现编,所以 Linux 目标在 Linux 机器或 `repacks.yml` 的 Linux 腿上构建);产品覆盖哪些目标、每模块在哪些目标上有子包,由 `scripts/repack-platforms.json` 决定 |
 | **只重打树包 + 依赖表** | `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64 --pack`(复用 `repack/build` 里已有的原生包,不重新分析源树;顺带重写 `lib/vendored.json` 与插件依赖表) |
 | **发布子包** | 推荐用 CI:`.github/workflows/repacks.yml`(Actions → repacks → Run workflow,勾 `publish`);本地等价命令 `pnpm run publish:repacks`(`--dry-run` 预览;`--only <子串>` 过滤;`--otp <code>` / `--limit N` 应对 2FA;默认跳过已存在的版本,可反复重跑) |
 | **发布插件本体** | `pnpm run publish:plugin`(发布**已验证过的那份 tarball**,不会重新打包;默认 dist-tag = `next`) |
@@ -475,8 +475,41 @@ pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**�
 |---|---|---|
 | `ci.yml` | push `main` / PR / 手动 | `ubuntu-latest` + `windows-latest` 双平台:`pnpm install --frozen-lockfile` → `build:client` → `build:webview` → `pnpm test`(全套回归)→ `vendor:check` 只报告版本差 → 上传 `lib/client.js` 与面板产物 |
 | `release.yml` | 推 `v<version>` 标签 / 手动(演练,不发布) | 按 `dependencies` 钉的版本准备 `vendor/vscode` → 构建 → 全套回归 → `pnpm pack` → 校验 tarball 清单 → **真装一遍**(在 runner 上部署真 DSH,`dsh plugin --profile web add <tgz>`,再跑 `test:installed` + `dump-config` 断言)→ 发 npm **`next`** → 建 GitHub Release(附 tgz) |
-| `linux-repack-probe.yml` | push 本文件 / 手动 | **可行性探针(不发布)**:在 Linux 上按目标(`linux-x64` → `ubuntu-latest`、`linux-arm64` → `ubuntu-24.04-arm`)试编平台专属重打包包,输出「哪些模块真能编出 `.node`、哪些是 Windows-only」。跑的是现有 `vendor-repacks.mjs` 本尊,改动只发生在 `$RUNNER_TEMP` 的仓库副本里 |
-| `repacks.yml` | 手动(`publish` / `probe_oidc` 默认都是 **false**)/ push 本文件 / push `.github/oidc-probe.enabled` | **平台专属子包(`@jinsiyu/dshcs-*`)的构建与发布**:同架构宿主 runner 各打一条(`win32-x64` → `windows-latest`、`win32-arm64` → `windows-11-arm`),默认只构建 + 传 `repack/tgz/*.tgz`;勾上 `publish` 才发 npm(默认 `next`)。发布归属:win32-x64 那条腿发「平台无关 + win32-x64 专用」,arm64 那条只发 `--only win32-arm64` ⇒ 集合不相交、并发不撞车。**认证**:没配 `NPM_TOKEN` 就走 OIDC(25 条 per-package Trusted Publisher,workflow 都填 `repacks.yml`,见下)。额外有一个 `probe-oidc` job:对几个真实子包名做**只暂存、不发正式版**的巡检,用来证明这条 OIDC 通道真的可用 |
+| `linux-repack-probe.yml` | push 本文件 / 手动 | **可行性探针(不发布,已被 `repacks.yml` 的 Linux 腿取代)**:在 Linux 上按目标(`linux-x64` → `ubuntu-latest`、`linux-arm64` → `ubuntu-24.04-arm`)试编平台专属重打包包,输出「哪些模块真能编出 `.node`、哪些是 Windows-only」。跑的是现有 `vendor-repacks.mjs` 本尊,改动只发生在 `$RUNNER_TEMP` 的仓库副本里。**注意**:它的 notice 是按模块发的,会撞上 GitHub「每个 check run 约 20 条 annotation」的上限而只留下尾部;要完整结论请看 `repacks.yml` 的 Linux 腿(每个目标只发一行汇总) |
+| `repacks.yml` | 手动(`publish` / `probe_oidc` 默认 **false**,四条腿的 `build_*` 默认 **true**)/ push 本文件 / push `.github/oidc-probe.enabled` | **平台专属子包(`@jinsiyu/dshcs-*`)的构建与发布**:同架构宿主 runner 各打一条(`win32-x64` → `windows-latest`、`win32-arm64` → `windows-11-arm`、`linux-x64` → `ubuntu-latest`、`linux-arm64` → `ubuntu-24.04-arm`),默认只构建 + 传 `repack/tgz/*.tgz`;勾上 `publish` 才发 npm(默认 `next`)。发布归属:win32-x64 那条腿发「平台无关 + win32-x64 专用」,其余三条腿只发 `--only <自己的目标>` ⇒ 集合不相交、并发不撞车。**认证**:没配 `NPM_TOKEN` 就走 OIDC(per-package Trusted Publisher,workflow 都填 `repacks.yml`,见下)。Linux 腿还会顺带校验「Linux 上生成的 `lib/vendored.json` / `package.json` 与仓库里的一致」(平台政策应当宿主无关)。额外有一个 `probe-oidc` job:对几个真实子包名做**只暂存、不发正式版**的巡检,用来证明这条 OIDC 通道真的可用 |
+
+### Linux 适配(x64 / arm64):改了什么、还差什么
+
+支持 Linux 的关键不是「多编几个包」,而是**把平台政策从"宿主扫描"改成"显式声明"**:
+
+- 上游包基本不写 `os`/`cpu`(实测 16 个模块里只有 `@vscode/windows-ca-certs` 写了),而树清单把这 8 个
+  原生模块全放在普通 `dependencies` ⇒ Linux 上照样会装出 Windows-only 的包;`analyze()` 又是按
+  「宿主有没有 `.node`」分类的 ⇒ **换宿主平台,分类会漂移**(Linux 上 `windows-registry` 会被判成
+  平台无关、写进 `dependencies`,于是 Windows 运行时反而找不到 `-win32-*` 子包)。
+- 所以新增 `scripts/repack-platforms.json` 作为**人工评审的唯一声明**:每个模块的 `platform`(要不要按平台
+  分包)与 `targets`(在哪些目标上有子包)。生成器只读不写,并据此产出:
+  `lib/vendored.json` 的每模块 `targets`(运行时 `lib/native.js` 据此**跳过本平台不适用的模块**,
+  不再把 `dshcs-vscode-windows-registry-linux-x64` 这种永远不会存在的包报成缺包)、以及插件
+  `optionalDependencies`(不再盲目 × 全部目标)。
+- 生成器同时:保留本次分析看不到的条目(用 `--target` 只构建本机目标时,别的平台的模块必须原样留下)、
+  平台专属包在该目标上编不出 `.node` 时**跳过而不是发空壳**、Linux 目标补 ELF `e_machine` 校验
+  (与 win32 的 PE machine 校验对称)。
+
+**要真正让 Linux 装上原生模块,还差三步(需要维护者带 2FA 做一次)**:
+
+1. **首次发布 Linux 子包** —— 新包名**没法预先建 Trusted Publisher**(信任关系要求包已存在),
+   所以第一次必须由维护者本人发:Actions → repacks → Run workflow,勾上 `publish`
+   (四条腿一起跑;或只勾 `build_linux_x64` / `build_linux_arm64` + `publish`)。
+   已在用的子包走 OIDC 自动发;新包名需要一个有 publish 权限的 `NPM_TOKEN`(或本机 `npm publish`)。
+2. 给这些新包各加一条信任关系(`npm trust github <包名> --file repacks.yml --repo jinsiyu/dsh-code-server-app --allow-publish -y`),
+   之后 `NPM_TOKEN` 就可以删掉。
+3. 把 `scripts/repack-platforms.json` 的 `publishedTargets` 补上 `linux-x64` / `linux-arm64`
+   → 重跑 `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64`
+   (它会把这 10 个 Linux 子包写进插件 `optionalDependencies`)
+   → `pnpm install` 刷新 `pnpm-lock.yaml` → 走正常发版流程。
+   > 在完成第 3 步之前,插件依赖表里**不会**出现 linux 子包(写进去 pnpm 会去解析一个不存在的包,
+   > 直接装不上);但 `lib/vendored.json` 已经带上 Linux 目标 —— 这在 Windows 上完全无影响,
+   > 在 Linux 上只是把原生模块如实报成「缺」。
 
 **dist-tag 政策不变**:`release.yml` 只发 `next`,绝不碰 `latest`;`latest` 仍由 `pnpm run promote -- <version>`
 在重启 dsh web 确认无误后手动推进(README 上方「打包」一节)。
@@ -601,8 +634,10 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
   平台无关的 8 个(`node-pty` / `koffi` / `ssh2` / `cpu-features` / `@parcel/watcher` /
   `@vscode/fs-copyfile` / `@vscode/proxy-agent` / `@microsoft/mxc-sdk`)写进插件 `dependencies`(真名);
   平台专属的 8 个(`@vscode/sqlite3` / `spdlog` / `kerberos` / `deviceid` / `native-watchdog` /
-  `windows-registry` / `windows-process-tree` / `windows-ca-certs`)按 win32-arm64 与 win32-x64
-  各一份写进 `optionalDependencies`(真名 + 包自带 os/cpu)→ 一条命令自动选对架构;
+  `windows-registry` / `windows-process-tree` / `windows-ca-certs`)**按 `scripts/repack-platforms.json`
+  里每模块的 `targets`** 写进 `optionalDependencies`(真名 + 包自带 os/cpu)→ 一条命令自动选对架构。
+  其中 `windows-*` 三个是 Windows-only(只发 `win32-*`),其余五个目标里包含 `linux-x64` / `linux-arm64`
+  —— **哪个模块在哪些目标上有子包,只认这份声明**(上游不写 os/cpu,宿主扫描会漂移,详见「Linux 适配」一节);
   **原始名字**由 `lib/native.js` 运行时补 junction 还原(见下「运行时布局自愈」);
 - 因此依赖图里**没有任何带 pre/install/postinstall 或 binding.gyp 的包** →
   不需要 profile 的 `allowBuilds`、不执行任何构建、**使用者机器不需要 C++ 工具链**;
@@ -623,7 +658,9 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
   复制已编译的包目录 → **删除 `scripts` / `files` / `binding.gyp` / `.hooks` / `.npmignore`**
   (保留编译好的 `.node` 与全部运行时文件)→ 依赖里的同集包改成 `npm:` 别名 → 平台专属的加
   `os`/`cpu` 与 `-<platform>-<arch>` 后缀;win32 目标还会校验 `.node` 的 PE machine
-  (0x8664=x64 / 0xaa64=arm64),防交叉编译产物装错架构;
+  (0x8664=x64 / 0xaa64=arm64)、Linux 目标校验 ELF `e_machine`(0x3e=x86-64 / 0xb7=AArch64),
+  防交叉编译/串架构的产物被发出去;平台专属包在该目标上**没有编出 `.node` 就不产出**
+  (宁可在结论行里报出来,也不发一个装不起来的空壳);
 - **原始名字怎么还原**(0.3.45 起):重打包包的真名是 `@<scope>/dshcs-<名字>`,而 VS Code `import` 的是
   `node-pty` / `@vscode/sqlite3` 这类**原名**;打包期把「原名 → 真名」写进 `lib/vendored.json`(随插件发布),
   运行时由 `lib/native.js` 在 `<树>/node_modules/<原名>` 补 junction 指向真名包(幂等、可自愈)。
