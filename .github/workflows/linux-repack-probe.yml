@@ -15,6 +15,9 @@
 #      npm install code-server@<版本> --ignore-scripts,再在 lib/vscode(+extensions)里解包内部依赖
 #      (~1GB)并 rebuild。**不能拿发布用的树包当 --from**:那是精简树(copySlim 排除所有
 #      node_modules),分析阶段会一个原生模块都找不到(探针第一次跑就是这么"绿着但什么都没测")。
+#      这条路径本身有过一个 bug:prepareSourceTree() 的 npm install 少了 --prefix,于是 npm 按
+#      "最近的 package.json"把源树装进了**仓库根**(不是 tmp)⇒ analyze() 读 vsManifest 拿到 null
+#      直接崩。2026-09-16 探针在 ubuntu 上实测到并已修(fa4e1a7)。
 #
 # 产物:每个目标的 repack/tgz/*.tgz 作为 artifact(供下一阶段复用)+ 一份逐模块结论。
 # 结论同时以 ::notice:: 打印 —— notice/annotation 在公开仓库上**不需要 token** 就能读
@@ -22,11 +25,14 @@
 name: linux-repack-probe
 
 on:
-  # 首次跑靠 push 触发(只盯本文件):workflow_dispatch 需要 UI 或带 token 的 API,
-  # 而这条探针的价值就在于"推上去就有结论"。之后改本文件会重跑,也可以从 Actions 页面手动 dispatch。
+  # 首次跑靠 push 触发(只盯这两个文件):workflow_dispatch 需要 UI 或带 token 的 API,
+  # 而这条探针的价值就在于"推上去就有结论"。之后改它们会重跑,也可以从 Actions 页面手动 dispatch。
+  # 把 vendor-repacks.mjs 也列进来:探针跑的就是它 —— 它变了就该重新回答一次"Linux 上编不编得出来"。
+  # (第一次只写了本文件,结果修完 prepareSourceTree 的 --prefix 反倒没触发,白等一轮。)
   push:
     paths:
       - '.github/workflows/linux-repack-probe.yml'
+      - 'scripts/vendor-repacks.mjs'
   workflow_dispatch:
     inputs:
       upload_tgz:
