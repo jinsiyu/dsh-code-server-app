@@ -335,29 +335,50 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      # 失败时把 npm 的报错转成 annotation:原始日志要鉴权才能拉(公开仓库的 jobs/logs 也 403),
+      # 而 annotation 走 check-runs API 不需要 token —— 本仓库这条通道已经反复救场。
       - name: 发布到 npm(dist-tag = next;latest 不动)
+        shell: bash
         run: |
-          set -euo pipefail
-          ls -l dsh-code-server-app-*.tgz
-          if [ "${NPM_AUTH_MODE:-}" = "token" ]; then
-            npm whoami --registry https://registry.npmjs.org/
-            node scripts/publish-plugin.mjs
-          else
-            echo "认证:OIDC trusted publishing(附 provenance)"
-            node scripts/publish-plugin.mjs --provenance
+          set +e
+          {
+            echo "node $(node --version) / npm $(npm --version)"
+            ls -l dsh-code-server-app-*.tgz
+            if [ "${NPM_AUTH_MODE:-}" = "token" ]; then
+              npm whoami --registry https://registry.npmjs.org/
+              node scripts/publish-plugin.mjs
+            else
+              echo "认证:OIDC trusted publishing(附 provenance)"
+              node scripts/publish-plugin.mjs --provenance
+            fi
+          } 2>&1 | tee "$RUNNER_TEMP/publish.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" != 0 ]; then
+            echo "::error::npm 发布失败(exit $status)—— 下面把 npm 的报错行转成 annotation"
+            grep -aE 'npm error|npm ERR|npm warn|403|404|409|422|EOTP|ENEEDAUTH|E404|trusted|provenance|not found|Forbidden' "$RUNNER_TEMP/publish.log" | tail -n 12 | sed 's/^/::error:: /'
+            echo "::error::---- 日志尾部 ----"
+            tail -n 8 "$RUNNER_TEMP/publish.log" | sed 's/^/::error:: /'
+            exit "$status"
           fi
           echo "=== 当前标签 ==="
           npm dist-tag ls dsh-code-server-app
 
       # ---- Release:附 tarball,便于事后核对/回滚参考 -----------------------------------------
       - name: 创建 GitHub Release(附 tarball)
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
+          set +e
           V="$(node -p 'require("./package.json").version')"
           gh release create "$GITHUB_REF_NAME" "dsh-code-server-app-$V.tgz" \
-            --title "$GITHUB_REF_NAME" --generate-notes
+            --title "$GITHUB_REF_NAME" --generate-notes 2>&1 | tee "$RUNNER_TEMP/release.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" != 0 ]; then
+            echo "::error::gh release create 失败(exit $status)"
+            tail -n 10 "$RUNNER_TEMP/release.log" | sed 's/^/::error:: /'
+            exit "$status"
+          fi
 
       - name: 汇总(publish)
         if: always()
