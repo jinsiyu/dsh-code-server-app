@@ -306,10 +306,35 @@ function prepareSourceTree() {
   for (const dir of innerDirs) {
     if (!existsSync(join(dir, 'node_modules'))) continue;
     console.log(`[repack] 编译内部依赖原生包: ${relative(pkgRoot, dir)}`);
+    // ① 整树 rebuild 一次:覆盖声明里没登记的新包。失败不算错 —— 因为 npm 会在**第一个失败**处中断,
+    //    一个包编不出来(例如 Windows 上缺 v145 工具集,或 Linux 上缺某个头文件)就会让它后面的包
+    //    再也没轮到自己,于是"一个包失败"级联成"一批包没编出来"。
     try {
       npm(['rebuild'], dir);
     } catch (e) {
-      console.warn(`[repack] ${relative(pkgRoot, dir)} rebuild 失败(${e.message});后续按缺失处理`);
+      console.warn(`[repack] 整树 rebuild 未全部成功(${e.message})⇒ 改为逐个包重试`);
+    }
+    // ② 逐个「声明为平台专属、且本平台需要」的模块 rebuild:幂等,失败只影响它自己,并逐条报出来。
+    //    这样后面 analyze() 的「有没有 .node」判断才是可靠的,而不是随整树中断位置漂移。
+    const policy = readRepackPlatforms();
+    const hostKey = `${process.platform}-${process.arch}`;
+    const failedRebuild = [];
+    for (const [alias, decl] of policy.perModule) {
+      if (decl.platform !== true) continue; // 平台无关的包靠 prebuilds,不需要现编
+      const wanted = decl.targets ?? policy.allTargets ?? null;
+      if (Array.isArray(wanted) && !wanted.includes(hostKey)) continue; // 本平台不需要它
+      const pkgDir = join(dir, 'node_modules', ...alias.split('/'));
+      if (!existsSync(join(pkgDir, 'package.json'))) continue;
+      try {
+        npm(['rebuild', alias], dir);
+      } catch (e) {
+        failedRebuild.push(alias);
+        console.warn(`  ⚠ ${hostKey}: ${alias} rebuild 失败(${e.message})`);
+      }
+    }
+    if (failedRebuild.length > 0) {
+      console.warn(`  ⚠ ${relative(pkgRoot, dir)}:${failedRebuild.length} 个原生包 rebuild 失败`
+        + `(${failedRebuild.join(', ')})—— 若它们在白名单里却没有 .node,最后的硬闸门会直接判失败`);
     }
   }
   return tree;
@@ -801,56 +826,75 @@ function main() {
   const vscodePkg = buildVscodeServerPackage();
   plan.push({ dir: vscodePkg.dir, file: vscodePkg.file });
   // 2) 全平台重打包包(从 host 树;--reuse 时用已打包目录)
+  //    「要不要按平台分包」一律以**声明**为准(applyPlatformPolicy 已把结论钉到 modules 上),
+  //    源树分析只提供源目录与上游版本。照分析结论走的话,本机工具链编不出 .node 时这些模块会被
+  //    静默当成平台无关、打成不带目标后缀的包,而依赖表里照旧写着「每目标一份」。
   if (!REUSE) {
-    for (const [name, r] of repack) {
-      if (r.platformSpecific) continue; // 平台专属的按目标处理
-      const dir = writeRepack(r.dir, hostMap.get(name), flat(name));
-      plan.push({ dir, file: tgzName(hostMap.get(name).pkgName, r.pkg.version) });
+    for (const m of modules) {
+      if (m.platform) continue; // 平台专属的按目标处理
+      const r = repack.get(m.alias);
+      if (r === undefined) continue; // 「保留」条目(本宿主看不到它的包)⇒ 没有源目录可打包
+      const dir = writeRepack(r.dir, hostMap.get(m.alias), flat(m.alias));
+      plan.push({ dir, file: tgzName(hostMap.get(m.alias).pkgName, m.version) });
     }
   }
   // 3) 平台专属包:host 用现成树,其它目标用交叉安装树(--reuse 时用已打包目录)。
-  //    「哪个模块在哪些目标上有包」由 scripts/repack-platforms.json 的白名单决定:
-  //      · 白名单不含该目标 ⇒ 跳过(Windows-only 模块不产 -linux-*,反之亦然);
-  //      · 该目标上没能产出 .node 二进制 ⇒ 也跳过:平台专属包的全部意义就是那份二进制,
-  //        发一个只有 JS 的空壳既装不起来也解释不通,宁可在日志/annotation 里明确报出来。
-  const moduleTargetsOf = new Map(modules.map((m) => [m.alias, Array.isArray(m.targets) ? m.targets : [...allTargets]]));
+  //    · 白名单不含该目标 ⇒ 不构建(Windows-only 模块不产 -linux-*,反之亦然);
+  //    · 该目标上没编出 .node / 源树里没这个模块 ⇒ 也跳过,但**是否致命交给下面的硬闸门**。
   const platformDirs = [];
   const builtByTarget = new Map(buildTargets.map((t) => [t, []]));
   const gradedSpecific = new Map(buildTargets.map((t) => [t, []]));
   const skipped = { policy: [], noBinary: [], missing: [] };
   if (!REUSE) for (const target of buildTargets) {
     const map = byTarget.get(target);
-    gradedSpecific.set(target, [...repack].filter(([, r]) => r.platformSpecific).map(([name]) => name));
-    const specs = [...repack]
-      .filter(([name, r]) => r.platformSpecific && moduleTargetsOf.get(name).includes(target))
-      .map(([name, r]) => ({ name, version: r.pkg.version }));
+    const eligible = modules.filter((m) => m.platform === true
+      && (m.targets ?? allTargets).includes(target) && repack.has(m.alias));
+    for (const m of modules) {
+      if (m.platform === true && repack.has(m.alias) && !(m.targets ?? allTargets).includes(target)) {
+        skipped.policy.push(`${m.alias}@${target}`);
+      }
+    }
+    gradedSpecific.set(target, eligible.map((m) => m.alias));
+    const specs = eligible.map((m) => ({ name: m.alias, version: repack.get(m.alias).pkg.version }));
     let crossTree = null;
     if (target !== hostKey && specs.length > 0) crossTree = prepareCrossTree(specs, target);
-    for (const [name, r] of repack) {
-      if (!r.platformSpecific) continue;
-      if (!moduleTargetsOf.get(name).includes(target)) { skipped.policy.push(`${name}@${target}`); continue; }
-      const info = map.get(name);
-      const srcDir = target === hostKey ? r.dir : join(crossTree, 'node_modules', name);
+    for (const m of eligible) {
+      const r = repack.get(m.alias);
+      const info = map.get(m.alias);
+      const srcDir = target === hostKey ? r.dir : join(crossTree, 'node_modules', m.alias);
       if (!existsSync(join(srcDir, 'package.json'))) {
-        console.warn(`  ⚠ ${target}: 缺少 ${name},跳过`);
-        skipped.missing.push(`${name}@${target}`);
+        console.warn(`  ⚠ ${target}: 缺少 ${m.alias},跳过(硬闸门会判定是否致命)`);
+        skipped.missing.push(`${m.alias}@${target}`);
         continue;
       }
       if (nodeFilesOf(srcDir).length === 0) {
-        console.warn(`  ⚠ ${target}: ${name} 没有产出 .node 二进制 ⇒ 跳过(该目标很可能不需要它,或编译失败)`);
-        skipped.noBinary.push(`${name}@${target}`);
+        console.warn(`  ⚠ ${target}: ${m.alias} 没有产出 .node 二进制 ⇒ 跳过(硬闸门会判定是否致命)`);
+        skipped.noBinary.push(`${m.alias}@${target}`);
         continue;
       }
-      const dir = writeRepack(srcDir, info, `${flat(name)}-${target}`);
+      const dir = writeRepack(srcDir, info, `${flat(m.alias)}-${target}`);
       platformDirs.push(dir);
-      builtByTarget.get(target).push(name);
-      plan.push({ dir, file: tgzName(info.pkgName, r.pkg.version) });
+      builtByTarget.get(target).push(m.alias);
+      plan.push({ dir, file: tgzName(info.pkgName, m.version) });
     }
     if (crossTree !== null) rmSync(crossTree, { recursive: true, force: true });
   }
   // 3b) --reuse 时平台专属目录已存在(不重新构建),就地复查闸门
   if (REUSE) for (const item of reusedItems) {
     if (PLATFORM_SUFFIX.test(String(readJson(join(item.dir, 'package.json'))?.name ?? ''))) platformDirs.push(item.dir);
+  }
+  // 产物 → (目标, 模块) 反查:目录名就是「flat(别名)-目标」。记账(`builtByTarget`)与实际产出的
+  // 集合必须**逐个模块**一致 —— 只比个数会漏掉「各 2 个但不是同一批」这种错位
+  // (2026-09-16 实测:原生包没编出来时,kerberos 被判成平台无关、目录不带后缀,而 tgz 名却按声明带了
+  //  -linux-x64 后缀,个数还刚好相等)。
+  const packedByTarget = new Map(buildTargets.map((t) => [t, new Set()]));
+  for (const dir of platformDirs) {
+    const base = basename(dir);
+    for (const target of buildTargets) {
+      for (const m of modules) {
+        if (m.platform === true && base === `${flat(m.alias)}-${target}`) packedByTarget.get(target).add(m.alias);
+      }
+    }
   }
   // 每个构建目标一行结论(CI 里同时发 annotation:Actions 原始日志要鉴权读不回,
   // annotation 匿名可读,且 ≤20 条上限 —— 所以这里**只发汇总行**,不逐个模块发)。
@@ -861,27 +905,52 @@ function main() {
   } else for (const target of buildTargets) {
     const built = builtByTarget.get(target) ?? [];
     const graded = gradedSpecific.get(target) ?? [];
-    // 记账 vs 产物自校验:计划的目录名就是「flat(别名)-目标」,所以这一眼能看出有没有漏记
-    const packedDirs = plan.map((item) => basename(String(item.dir ?? ''))).filter((d) => d.endsWith(`-${target}`));
+    const packed = packedByTarget.get(target) ?? new Set();
     const n = (list) => list.filter((s) => s.endsWith(`@${target}`)).length;
     const line = `[repack] ${target}: 源树判定平台专属 ${graded.length} 个(${graded.join(', ') || '无'})`
-      + ` ⇒ 打包 ${built.length} 个;白名单排除 ${n(skipped.policy)};无二进制跳过 ${n(skipped.noBinary)}`
+      + ` ⇒ 打包 ${packed.size} 个(${[...packed].join(', ') || '无'});白名单排除 ${n(skipped.policy)}`
+      + `;无二进制跳过 ${n(skipped.noBinary)}`
       + `${n(skipped.missing) > 0 ? `;目录缺失跳过 ${n(skipped.missing)}` : ''}`
-      + `;平台无关 ${[...repack].filter(([, r]) => !r.platformSpecific).length} 个`
-      + `;计划里属于本目标的目录 ${packedDirs.length} 个`;
+      + `;平台无关 ${modules.filter((m) => !m.platform).length} 个`;
     console.log(line);
     if (process.env.GITHUB_ACTIONS === 'true') console.log(`::notice::${line}`);
-    if (built.length !== packedDirs.length) {
-      const diff = `${built.length} vs ${packedDirs.length}`;
-      console.warn(`  ⚠ ${target}: 记账与产物不一致(${diff})—— 计划里 ${packedDirs.join(', ')}`);
-      if (process.env.GITHUB_ACTIONS === 'true') {
-        console.log(`::warning::${target}: 记账的平台专属包数与计划不一致(${diff});计划里:${packedDirs.join(', ')}`);
-      }
+    const onlyBuilt = built.filter((a) => !packed.has(a));
+    const onlyPacked = [...packed].filter((a) => !built.includes(a));
+    if (onlyBuilt.length > 0 || onlyPacked.length > 0) {
+      const detail = `记账与产物不一致:只记账 ${onlyBuilt.join(', ') || '(无)'};只有产物 ${onlyPacked.join(', ') || '(无)'}`;
+      console.warn(`  ⚠ ${target}: ${detail}`);
+      if (process.env.GITHUB_ACTIONS === 'true') console.log(`::warning::${target}: ${detail}`);
     }
   }
   if (skipped.noBinary.length > 0) {
     console.warn(`  ⚠ 以下「模块×目标」在白名单里但没编出二进制:${skipped.noBinary.join(', ')};`
       + '若该平台确实需要它,查编译日志;若不需要,请从 scripts/repack-platforms.json 里删掉该目标');
+  }
+  // ── 硬闸门:声明里承诺「某模块在某目标上有子包」,就必须真的产出 ──────────────────────────
+  // 为什么必须有它:`npm rebuild` 的失败是被 try/catch 吞掉的(单个原生包编不出来不该卡住整条链),
+  // 于是「本机工具链编不出 .node」会静默退化成「这个模块被当成平台无关、打成不带目标后缀的包」,
+  // 而依赖表里照旧写着「每目标一份」—— 发出去的就是一套装不起来的东西,而 CI 仍然是绿的。
+  // 2026-09-16 维护者问「为什么 CI 输出里有 npm error 仍然通过了」时暴露:Linux 腿上
+  // @vscode/spdlog / sqlite3 / kerberos 都 npm error,5 个承诺的包只产出 2 个,run 却是绿的。
+  {
+    const missing = [];
+    for (const target of buildTargets) {
+      const produced = packedByTarget.get(target) ?? new Set();
+      for (const m of modules) {
+        if (m.platform !== true || !(m.targets ?? allTargets).includes(target)) continue;
+        if (!produced.has(m.alias)) missing.push(`${m.alias}@${target}`);
+      }
+    }
+    if (missing.length > 0) {
+      const detail = `声明(scripts/repack-platforms.json)里承诺却没产出子包的「模块×目标」:${missing.join(', ')}`;
+      const hint = '常见原因:① 本机工具链编不出该原生包 —— 日志里的 npm error / MSB8020 就是它'
+        + '(Windows 上注意 MSVC 工具集版本;装对应工具集,或改在 CI 腿上构建);'
+        + '② 源树里没有这个模块(npm install 失败,或上游把它去掉了);'
+        + '③ 该目标本来就不该有这个模块 ⇒ 从该模块的 targets 里删掉这个目标。';
+      console.error(`[repack] ✗ ${detail}`);
+      if (process.env.GITHUB_ACTIONS === 'true') console.log(`::error::${detail} —— ${hint}`);
+      throw new Error(`${detail} —— ${hint}`);
+    }
   }
   verifyOptionalSubtreeDeps(platformDirs, new Set([
     ...declare.map((d) => d.name),
