@@ -5,18 +5,26 @@
 // 新加的测试只在一处生效,而"发布前少跑一条"是那种事后才知道的类型。这里是唯一清单。
 //
 // 语义:
-//   · **顺序执行**:后面几个会起真进程 / 真 HTTP 服务 / 真 unix socket,串行避免它们互相干扰
-//     (端口、DSH_HOME、tmp 目录都在各自脚本里隔离,但没必要赌);
+//   · **顺序执行**:后面几个会起真进程 / 真 HTTP 服务 / 真 IPC 端点,串行避免它们互相干扰;
 //   · **失败也继续跑完**:一次运行就能看到所有坏掉的地方,而不是修一个跑一次;
 //   · 每个脚本自己打印 PASS / FAIL / SKIP —— 本脚本不改写它们的输出。有的脚本在环境不满足时
 //     主动 SKIP 并 exit 0(如 test-launcher-routes 找不到"内部依赖已建链接"的 VS Code 树),
-//     这是**通过**,但汇总里会把耗时一并列出来,便于发现"整段被跳过"的情况;
+//     这是**通过**,汇总里会连耗时一起列出来;
 //   · 任一脚本非零退出 ⇒ 本脚本 exit 1(CI 直接挂在这一行上)。
+//
+// CI 下的日志与注解(设 DSHCS_SUITE_LOG=<文件> 时生效):
+//   每个脚本的输出会**同时**写进那个文件并原样打印;脚本失败时本脚本把判据行转成 GitHub
+//   annotation(`::error::…`)。为什么值得这么做:Actions 的原始日志要鉴权才能拉(公开仓库上
+//   jobs/logs 也返回 403),而 annotation 走 check-runs API **不需要 token** —— runner-only 的
+//   失败(本机永远绿的那种)才能被直接读出来。子进程用**文件描述符重定向**而不是管道:
+//   本机工作区沙箱禁止建管道(spawn EPERM),fd 重定向两边都能用。
 //
 // 用法:
 //   node scripts/run-all-tests.mjs                 # 全跑(pnpm test / pnpm run test:all)
 //   node scripts/run-all-tests.mjs bridge          # 只跑名字含 bridge 的(子串过滤,可给多个)
+//   DSHCS_SUITE_LOG=/tmp/suite.log node scripts/run-all-tests.mjs   # CI:留日志 + 失败转 annotation
 import { spawn } from 'node:child_process';
+import { closeSync, existsSync, openSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,6 +45,11 @@ const SUITE = [
   'test-launcher-routes.mjs',
 ];
 
+/** CI 传进来的日志文件(不传 = 本机模式:输出直接继承终端,不写文件、不打 annotation)。 */
+const LOG = typeof process.env.DSHCS_SUITE_LOG === 'string' && process.env.DSHCS_SUITE_LOG !== ''
+  ? process.env.DSHCS_SUITE_LOG
+  : null;
+
 const filters = process.argv.slice(2).filter((a) => !a.startsWith('-'));
 const picked = filters.length === 0
   ? SUITE
@@ -46,25 +59,58 @@ if (picked.length === 0) {
   process.exit(1);
 }
 
-/** 跑一个脚本:stdio 继承(stdout 直接进 CI 日志;**不建管道** —— 沙箱里管道会 EPERM)。 */
+/** 跑一个脚本:本机模式 stdio 继承(stdout 直接进终端,**不建管道** —— 沙箱里管道会 EPERM);
+ *  CI 模式把子进程的 stdout/stderr 重定向到日志文件,跑完把这一段补打到本步输出里。 */
 function runOne(name) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const child = spawn(process.execPath, [join(here, name)], { cwd: pkgRoot, stdio: 'inherit' });
-    child.on('error', (error) => {
-      resolve({ name, code: 1, ms: Date.now() - started, error: error.message });
-    });
+    if (LOG === null) {
+      const child = spawn(process.execPath, [join(here, name)], { cwd: pkgRoot, stdio: 'inherit' });
+      child.on('error', (error) => resolve({ name, code: 1, ms: Date.now() - started, error: error.message, output: '' }));
+      child.on('close', (code, signal) => {
+        resolve({ name, code: code ?? 1, ms: Date.now() - started, ...(signal ? { signal } : {}), output: '' });
+      });
+      return;
+    }
+    const before = existsSync(LOG) ? statSync(LOG).size : 0;
+    const fd = openSync(LOG, 'a');
+    let child;
+    try {
+      child = spawn(process.execPath, [join(here, name)], { cwd: pkgRoot, stdio: ['ignore', fd, fd] });
+    } finally {
+      // 子进程有自己的副本,父进程这份立刻关掉。
+      closeSync(fd);
+    }
+    child.on('error', (error) => resolve({ name, code: 1, ms: Date.now() - started, error: error.message, output: '' }));
     child.on('close', (code, signal) => {
-      resolve({ name, code: code ?? 1, ms: Date.now() - started, ...(signal ? { signal } : {}) });
+      const size = existsSync(LOG) ? statSync(LOG).size : before;
+      const output = readFileSync(LOG, 'utf8').slice(before, size);
+      process.stdout.write(output); // 让 Actions UI 里仍然按顺序看到每个脚本的输出
+      resolve({ name, code: code ?? 1, ms: Date.now() - started, ...(signal ? { signal } : {}), output });
     });
   });
 }
 
-console.log(`[suite] 共 ${picked.length} 个回归脚本(node ${process.version}, ${process.platform}/${process.arch})\n`);
+/** 失败时把判据行转成 annotation(只在 CI 模式打,免得本机终端里出现一堆 ::error::)。 */
+function annotate(result) {
+  if (LOG === null) return;
+  const lines = result.output.split(/\r?\n/);
+  const fails = lines.filter((line) => /^FAIL/u.test(line));
+  // 有 FAIL 行就报它们(通常是断言);没有(未捕获异常栈 / 直接崩)就报尾部几行。
+  const picked = fails.length > 0 ? fails.slice(0, 12) : lines.filter((l) => l.trim() !== '').slice(-8);
+  console.log(`::error::${result.name} 失败(exit ${result.code}${result.error ? `,${result.error}` : ''})`);
+  for (const line of picked) console.log(`::error::${line.slice(0, 900)}`);
+}
+
+console.log(`[suite] 共 ${picked.length} 个回归脚本(node ${process.version}, ${process.platform}/${process.arch})`);
+if (LOG !== null) console.log(`[suite] CI 模式:日志 ${LOG},失败行会转成 annotation`);
+console.log('');
 const results = [];
 for (const name of picked) {
   console.log(`[suite] ── ${name} ${'─'.repeat(Math.max(4, 60 - name.length))}`);
-  results.push(await runOne(name));
+  const result = await runOne(name);
+  results.push(result);
+  if (result.code !== 0) annotate(result);
   console.log('');
 }
 
