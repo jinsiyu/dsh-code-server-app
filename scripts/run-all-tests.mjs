@@ -84,28 +84,35 @@ function runOne(name) {
     child.on('error', (error) => resolve({ name, code: 1, ms: Date.now() - started, error: error.message, output: '' }));
     child.on('close', (code, signal) => {
       const size = existsSync(LOG) ? statSync(LOG).size : before;
-      const output = readFileSync(LOG, 'utf8').slice(before, size);
+      // 往前多读 2000 字节做重叠容错:万一上一段输出还没落盘完,也不至于把本段开头切掉
+      // (切掉开头会让 FAIL 行消失,只剩 SUMMARY fail=1 —— 那种注解等于没报)。
+      const output = readFileSync(LOG, 'utf8').slice(Math.max(0, before - 2000), size);
       process.stdout.write(output); // 让 Actions UI 里仍然按顺序看到每个脚本的输出
       resolve({ name, code: code ?? 1, ms: Date.now() - started, ...(signal ? { signal } : {}), output });
     });
   });
 }
 
-/** 失败时把判据行转成 annotation(只在 CI 模式打,免得本机终端里出现一堆 ::error::)。 */
+/** 失败时把判据行转成 annotation(只在 CI 模式打,免得本机终端里出现一堆 ::error::)。
+ *  注意 GitHub 对每个 check run 的 annotation 数量有硬上限(~20),所以**只报最有信息量的少数几行**:
+ *  按"FAIL 行 → SUMMARY → 报错行 → 最后几行非 PASS"的顺序凑够 6 条为止。 */
 function annotate(result) {
   if (LOG === null) return;
   const lines = result.output.split(/\r?\n/);
-  const fails = lines.filter((line) => /^FAIL/u.test(line));
-  let picked = fails.slice(0, 12);
-  let kind = 'FAIL 行';
-  if (picked.length === 0) {
-    // 没有 FAIL 行 ⇒ 多半是**未捕获的异常/直接崩**(例如 exit 13 的 unsettled top-level await)。
-    // 这时不要只报尾几行,先挑"像报错"的行 —— 注解数量有上限,别浪费在 PASS 上,也别报太多条。
-    const noisy = lines.filter((line) => /(Error|error|ENOENT|EPERM|EACCES|EADDRINUSE|ERR_|\bat .*:\d+|^\s*\^)/u.test(line));
-    picked = (noisy.length > 0 ? noisy.slice(-5) : lines.filter((l) => l.trim() !== '').slice(-4));
-    kind = '异常/崩溃行';
+  // 不锚定 ^:孩子脚本的输出可能与其它行交织,锚定会让"有 FAIL 却挑不到"变成这种最难查的形态。
+  const fails = lines.filter((line) => /\bFAIL\b/u.test(line));
+  const summary = lines.filter((line) => /^\s*SUMMARY/u.test(line));
+  const noisy = lines.filter((line) => /(Error|error|ENOENT|EPERM|EACCES|EADDRINUSE|ERR_|\bat .*:\d+|^\s*\^)/u.test(line));
+  const rest = lines.filter((line) => line.trim() !== '' && !/^\s*PASS/u.test(line));
+  const picked = [];
+  for (const pool of [fails, summary, noisy, rest]) {
+    for (const line of pool) {
+      if (picked.length >= 6) break;
+      if (!picked.includes(line)) picked.push(line);
+    }
+    if (picked.length >= 6) break;
   }
-  console.log(`::error::${result.name} 失败(exit ${result.code}${result.error ? `,${result.error}` : ''};下面报 ${kind})`);
+  console.log(`::error::${result.name} 失败(exit ${result.code}${result.error ? `,${result.error}` : ''})`);
   for (const line of picked) console.log(`::error::${line.slice(0, 900)}`);
 }
 
