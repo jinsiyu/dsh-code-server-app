@@ -235,17 +235,26 @@ jobs:
       # profile 的 hoisted 布局里解析不到运行时依赖。
       # **必须全局装 CLI,不能用 npx**:`npx @deepseek-ai/dsh` 把 CLI 放进临时缓存,
       # 于是 ① profile 不会带上 DSH 运行时的依赖(schemastery 之类),② 插件解析 schemastery 的
-      # 第二条回退路径(`%APPDATA%\npm\node_modules\@deepseek-ai\dsh`,见 lib/index.js 顶部)也找不到 ——
+      # 回退路径(`%APPDATA%\npm\node_modules\@deepseek-ai\dsh`,见 lib/index.js 顶部)也找不到 ——
       # 0.3.47 第四跑就是挂在这里:`已安装的 lib/index.js 可加载 → schemastery not found`。
       # 真用户的流程本来就是全局装(README「安装插件」),冒烟要照抄它。
-      - name: 全局安装 DSH CLI(与用户一致)
+      #
+      # 为什么显式 `--prefix "$env:APPDATA\npm"`:runner 上 setup-node 把 npm 的全局前缀改成了
+      # node 工具缓存目录,而普通 Windows 用户的 `npm i -g` 默认就装在 `%APPDATA%\npm` ——
+      # 不指定前缀就复刻不出用户的真实布局(第五跑就是这么又挂了一次)。
+      - name: 全局安装 DSH CLI(装到 %APPDATA%\npm,普通用户的默认前缀)
         shell: pwsh
         run: |
           $cli = if ($env:DSH_CLI_VERSION) { "@deepseek-ai/dsh@$env:DSH_CLI_VERSION" } else { '@deepseek-ai/dsh@latest' }
-          Write-Host "npm install -g $cli"
-          npm install -g $cli
-          Write-Host "dsh 位置:$(where.exe dsh)"
-          dsh --help | Select-Object -First 2
+          $prefix = Join-Path $env:APPDATA 'npm'
+          New-Item -ItemType Directory -Force $prefix | Out-Null
+          Write-Host "npm install -g --prefix $prefix $cli"
+          npm install -g --prefix $prefix $cli
+          $dshCmd = Join-Path $prefix 'dsh.cmd'
+          if (-not (Test-Path $dshCmd)) { throw "全局装完没找到 $dshCmd" }
+          "DSH_EXE=$dshCmd" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "DSH CLI:$dshCmd"
+          & $dshCmd --help | Select-Object -First 2
 
       - name: 用官方路径把插件装进真 profile(dsh plugin --profile web add)
         shell: pwsh
@@ -254,23 +263,26 @@ jobs:
           $tgz = Join-Path $PWD "dsh-code-server-app-$V.tgz"
           if (-not (Test-Path $tgz)) { throw "tarball 不在:$tgz" }
           Write-Host "dsh plugin --profile web add $tgz"
-          dsh plugin --profile web add $tgz
+          & $env:DSH_EXE plugin --profile web add $tgz
+
+      # 放在断言之前有两个作用:① 验证插件的 cordis.patch.yml 真进了合成树;
+      # ② 让 DSH 先把 profile 层的运行时 fallback heal 出来(healProfilesModuleFallback)——
+      #    真实的插件加载就发生在 DSH 进程里、那层 junction 之后,所以断言要在同条件下跑。
+      - name: 合成配置里必须真的出现本插件(cordis.patch.yml 生效)
+        shell: pwsh
+        run: |
+          $dump = Join-Path $env:RUNNER_TEMP 'dump.yml'
+          & $env:DSH_EXE --profile web --dump-config | Out-File -FilePath $dump -Encoding utf8
+          if (-not (Select-String -Path $dump -Pattern '- id: code-server' -Quiet)) {
+            throw "dump-config 里没有 '- id: code-server' —— 插件的 cordis.patch.yml 没进合成树"
+          }
+          Write-Host "合成树里出现 - id: code-server ✓($((Get-Content $dump).Count) 行)"
 
       - name: 安装冒烟断言(装完必须真的能用)
         shell: pwsh
         run: |
           $V = node -p "require('./package.json').version"
           node scripts/test-installed.mjs "$env:DSH_HOME\profiles\web" --version $V
-
-      - name: 合成配置里必须真的出现本插件(cordis.patch.yml 生效)
-        shell: pwsh
-        run: |
-          $dump = Join-Path $env:RUNNER_TEMP 'dump.yml'
-          dsh --profile web --dump-config | Out-File -FilePath $dump -Encoding utf8
-          if (-not (Select-String -Path $dump -Pattern '- id: code-server' -Quiet)) {
-            throw "dump-config 里没有 '- id: code-server' —— 插件的 cordis.patch.yml 没进合成树"
-          }
-          Write-Host "合成树里出现 - id: code-server ✓($((Get-Content $dump).Count) 行)"
 
       - name: 汇总(install smoke)
         if: always()
