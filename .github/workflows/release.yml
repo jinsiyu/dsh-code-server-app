@@ -233,15 +233,28 @@ jobs:
       # 不必先发 npm(插件的依赖子包早就发过了)。这一步专门抓"仓库回归永远看不出"的安装类问题:
       # files 白名单漏产物、可选子树的依赖被 pnpm 丢掉(0.3.45 的 requires missing bindings)、
       # profile 的 hoisted 布局里解析不到运行时依赖。
+      # **必须全局装 CLI,不能用 npx**:`npx @deepseek-ai/dsh` 把 CLI 放进临时缓存,
+      # 于是 ① profile 不会带上 DSH 运行时的依赖(schemastery 之类),② 插件解析 schemastery 的
+      # 第二条回退路径(`%APPDATA%\npm\node_modules\@deepseek-ai\dsh`,见 lib/index.js 顶部)也找不到 ——
+      # 0.3.47 第四跑就是挂在这里:`已安装的 lib/index.js 可加载 → schemastery not found`。
+      # 真用户的流程本来就是全局装(README「安装插件」),冒烟要照抄它。
+      - name: 全局安装 DSH CLI(与用户一致)
+        shell: pwsh
+        run: |
+          $cli = if ($env:DSH_CLI_VERSION) { "@deepseek-ai/dsh@$env:DSH_CLI_VERSION" } else { '@deepseek-ai/dsh@latest' }
+          Write-Host "npm install -g $cli"
+          npm install -g $cli
+          Write-Host "dsh 位置:$(where.exe dsh)"
+          dsh --help | Select-Object -First 2
+
       - name: 用官方路径把插件装进真 profile(dsh plugin --profile web add)
         shell: pwsh
         run: |
           $V = node -p "require('./package.json').version"
-          $cli = if ($env:DSH_CLI_VERSION) { "@deepseek-ai/dsh@$env:DSH_CLI_VERSION" } else { '@deepseek-ai/dsh@latest' }
           $tgz = Join-Path $PWD "dsh-code-server-app-$V.tgz"
           if (-not (Test-Path $tgz)) { throw "tarball 不在:$tgz" }
-          Write-Host "用 $cli 安装 dsh-code-server-app@$V"
-          npx -y $cli plugin --profile web add $tgz
+          Write-Host "dsh plugin --profile web add $tgz"
+          dsh plugin --profile web add $tgz
 
       - name: 安装冒烟断言(装完必须真的能用)
         shell: pwsh
@@ -252,9 +265,8 @@ jobs:
       - name: 合成配置里必须真的出现本插件(cordis.patch.yml 生效)
         shell: pwsh
         run: |
-          $cli = if ($env:DSH_CLI_VERSION) { "@deepseek-ai/dsh@$env:DSH_CLI_VERSION" } else { '@deepseek-ai/dsh@latest' }
           $dump = Join-Path $env:RUNNER_TEMP 'dump.yml'
-          npx -y $cli --profile web --dump-config | Out-File -FilePath $dump -Encoding utf8
+          dsh --profile web --dump-config | Out-File -FilePath $dump -Encoding utf8
           if (-not (Select-String -Path $dump -Pattern '- id: code-server' -Quiet)) {
             throw "dump-config 里没有 '- id: code-server' —— 插件的 cordis.patch.yml 没进合成树"
           }
