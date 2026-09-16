@@ -23,9 +23,23 @@ const EXT = '../assets/extensions/dshcs-editor-bridge';
 let pass = 0;
 let fail = 0;
 let skip = 0;
+/** 每条用例都有超时:挂住时的症状是"什么都没输出 + exit 13(unsettled top-level await)",
+ *  看不出是哪条用例 —— 本机沙箱把真实 IPC 的用例全 EPERM-SKIP 掉了,这种形态只在真实机器上
+ *  暴露(2026-09-16 ubuntu runner 上本文件 exit 1、test-bridge-routes exit 13)。与
+ *  test-plugin-apply.mjs 同款做法。 */
+const TEST_TIMEOUT_MS = 20_000;
 async function test(name, fn) {
+  let timer = null;
   try {
-    await fn();
+    await Promise.race([
+      fn(),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`timeout ${TEST_TIMEOUT_MS / 1000}s(用例挂住:看它内部哪一步没返回)`)),
+          TEST_TIMEOUT_MS,
+        );
+      }),
+    ]);
     pass += 1;
     console.log(`PASS ${name}`);
   } catch (error) {
@@ -36,6 +50,8 @@ async function test(name, fn) {
     }
     fail += 1;
     console.log(`FAIL ${name}: ${error && error.message ? error.message : error}`);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
   }
 }
 

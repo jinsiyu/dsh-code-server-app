@@ -96,9 +96,16 @@ function annotate(result) {
   if (LOG === null) return;
   const lines = result.output.split(/\r?\n/);
   const fails = lines.filter((line) => /^FAIL/u.test(line));
-  // 有 FAIL 行就报它们(通常是断言);没有(未捕获异常栈 / 直接崩)就报尾部几行。
-  const picked = fails.length > 0 ? fails.slice(0, 12) : lines.filter((l) => l.trim() !== '').slice(-8);
-  console.log(`::error::${result.name} 失败(exit ${result.code}${result.error ? `,${result.error}` : ''})`);
+  let picked = fails.slice(0, 12);
+  let kind = 'FAIL 行';
+  if (picked.length === 0) {
+    // 没有 FAIL 行 ⇒ 多半是**未捕获的异常/直接崩**(例如 exit 13 的 unsettled top-level await)。
+    // 这时不要只报尾几行,先挑"像报错"的行 —— 注解数量有上限,别浪费在 PASS 上。
+    const noisy = lines.filter((line) => /(Error|error|ENOENT|EPERM|EACCES|EADDRINUSE|ERR_|\bat .*:\d+|^\s*\^)/u.test(line));
+    picked = (noisy.length > 0 ? noisy.slice(-8) : lines.filter((l) => l.trim() !== '').slice(-6));
+    kind = '异常/崩溃行';
+  }
+  console.log(`::error::${result.name} 失败(exit ${result.code}${result.error ? `,${result.error}` : ''};下面报 ${kind})`);
   for (const line of picked) console.log(`::error::${line.slice(0, 900)}`);
 }
 

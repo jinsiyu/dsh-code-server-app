@@ -25,14 +25,29 @@ process.env.DSH_HOME = HOME;
 
 let pass = 0;
 let fail = 0;
+/** 每条用例都得有超时:挂住时的症状是"什么都没输出 + exit 13(unsettled top-level await)",
+ *  连哪条用例挂都看不出来 —— 本机沙箱把 IPC 相关用例全 EPERM-SKIP 掉了,所以这种形态只在
+ *  真实机器上暴露(2026-09-16 ubuntu runner 上就是这个 exit 13)。与 test-plugin-apply.mjs 同款。 */
+const TEST_TIMEOUT_MS = 20_000;
 async function test(name, fn) {
+  let timer = null;
   try {
-    await fn();
+    await Promise.race([
+      fn(),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`timeout ${TEST_TIMEOUT_MS / 1000}s(用例挂住:看它内部哪一步没返回)`)),
+          TEST_TIMEOUT_MS,
+        );
+      }),
+    ]);
     pass += 1;
     console.log(`PASS ${name}`);
   } catch (error) {
     fail += 1;
     console.log(`FAIL ${name}: ${error && error.message ? error.message : error}`);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
   }
 }
 
@@ -641,7 +656,11 @@ await test('status 快照带 bridge 状态,但绝不泄露令牌', async () => {
   const body = await response.json();
   assert.ok(body.bridge !== undefined, 'status 必须带 bridge 字段');
   assert.equal(body.bridge.enabled, true, '默认应启用桥');
-  assert.equal(body.bridge.live, false, '没有 IDE 在跑时 live 应为 false');
+  assert.equal(body.bridge.live, false,
+    `没有 IDE 在跑时 live 应为 false(live=${body.bridge.live},`
+    + `file=${body.bridge.file},exists=${existsSync(body.bridge.file)})`
+    + ' —— live 的语义是「桥配置存在」,本测试框架不起 IDE,所以它必须是 false;'
+    + '真为 true 说明前面的用例把 bridge.json 留下来了(状态泄漏)');
   assert.equal(body.bridge.toolsRegistered, false);
   assert.ok(!/token/i.test(JSON.stringify(body.bridge)), 'status.bridge 不允许出现 token 字段');
   assert.ok(typeof body.bridge.file === 'string' && body.bridge.file.endsWith('bridge.json'));
