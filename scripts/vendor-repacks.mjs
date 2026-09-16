@@ -47,6 +47,10 @@ const DO_PACK = process.argv.includes('--pack');
 //          VS Code 树包、平台聚合包与插件 package.json。
 //          适用于「原生包没变、只调整打包结构」的场景(本机已无可分析的完整源树时也用它)。
 const REUSE = process.argv.includes('--reuse');
+// --skip-independent:不重建「平台无关」的重打包包。平台无关的包**只由 win32-x64 那条腿产出并发布**
+// (四个目标内容一致,不能四边都发同一个版本号),其它腿重建它们纯属浪费,而且会把一份"在别的宿主上
+// 打出来的同名包"塞进 artifact —— 谁要是从 artifact 手工发布,发出去的就是错的内容。
+const SKIP_INDEPENDENT = process.argv.includes('--skip-independent');
 const TARGETS = argValues('--target');
 // Copilot 整树排除:620MB、依赖链里还有带脚本的包,且 code-server 里用不到。
 const EXCLUDE = [/^@github\//, /^@vscode\/copilot-api$/];
@@ -830,8 +834,11 @@ function main() {
   //    源树分析只提供源目录与上游版本。照分析结论走的话,本机工具链编不出 .node 时这些模块会被
   //    静默当成平台无关、打成不带目标后缀的包,而依赖表里照旧写着「每目标一份」。
   if (!REUSE) {
-    for (const m of modules) {
-      if (m.platform) continue; // 平台专属的按目标处理
+    const independentModules = modules.filter((m) => !m.platform);
+    if (SKIP_INDEPENDENT) {
+      console.log(`[repack] --skip-independent:跳过 ${independentModules.length} 个平台无关包`
+        + '(它们由 win32-x64 腿产出并发布,本腿只产自己的平台专属包)');
+    } else for (const m of independentModules) {
       const r = repack.get(m.alias);
       if (r === undefined) continue; // 「保留」条目(本宿主看不到它的包)⇒ 没有源目录可打包
       const dir = writeRepack(r.dir, hostMap.get(m.alias), flat(m.alias));

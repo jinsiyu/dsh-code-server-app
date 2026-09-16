@@ -19,8 +19,10 @@
 # 这样集合不相交、可以并发:
 #   · win32-x64    :不带 --only ⇒ 发布「平台无关 + win32-x64 专用」(树包已存在会被自动跳过);
 #   · win32-arm64  :`--only win32-arm64`;
-#   · linux-x64    :`--only linux-x64`;
-#   · linux-arm64  :`--only linux-arm64`。
+#   · linux-x64    :`--only linux-x64`(构建时再加 `--skip-independent`,见下);
+#   · linux-arm64  :`--only linux-arm64`(同上)。
+# 三条非 x64 的腿都加 `--skip-independent`:平台无关包只由 win32-x64 腿**产出**,其它腿重打它们纯属浪费,
+#   而且会把「在别的宿主上打出来的同名包」塞进 artifact —— 谁从 artifact 手工发布,发出去的就是错内容。
 # 哪些模块在 Linux 上有子包,由 scripts/repack-platforms.json 的每模块白名单决定
 #   (上游不写 os/cpu,只能人工声明);某目标上编不出 .node 的会被自动跳过并打一行结论。
 #
@@ -261,7 +263,9 @@ jobs:
         working-directory: ${{ runner.temp }}/repacks
         run: |
           $ErrorActionPreference = 'Continue'
-          node scripts/vendor-repacks.mjs --target $env:TARGET --pack 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\repack.log"
+          # --skip-independent:平台无关包只由 win32-x64 腿产出(本腿只发 --only win32-arm64,
+          # 重打它们纯属浪费,还会把「在别的宿主上打出来的同名包」塞进 artifact)。
+          node scripts/vendor-repacks.mjs --target $env:TARGET --pack --skip-independent 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\repack.log"
           $code = $LASTEXITCODE
           Write-Host "repack 退出码 $code"
           if ($code -ne 0) {
@@ -388,7 +392,7 @@ jobs:
         working-directory: ${{ runner.temp }}/repacks
         run: |
           set +e
-          node scripts/vendor-repacks.mjs --target "$TARGET" --pack 2>&1 | tee "$RUNNER_TEMP/repack.log"
+          node scripts/vendor-repacks.mjs --target "$TARGET" --pack --skip-independent 2>&1 | tee "$RUNNER_TEMP/repack.log"
           code=${PIPESTATUS[0]}
           echo "repack 退出码 $code"
           if [ "$code" -ne 0 ]; then
@@ -531,7 +535,7 @@ jobs:
         working-directory: ${{ runner.temp }}/repacks
         run: |
           set +e
-          node scripts/vendor-repacks.mjs --target "$TARGET" --pack 2>&1 | tee "$RUNNER_TEMP/repack.log"
+          node scripts/vendor-repacks.mjs --target "$TARGET" --pack --skip-independent 2>&1 | tee "$RUNNER_TEMP/repack.log"
           code=${PIPESTATUS[0]}
           echo "repack 退出码 $code"
           if [ "$code" -ne 0 ]; then
