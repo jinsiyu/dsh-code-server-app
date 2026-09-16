@@ -501,10 +501,32 @@ pnpm run promote -- 0.3.47                 # 4) promote latest by hand once conf
 
 One-time setup (repository / account side, no files involved):
 
-- **npm trusted publishing (recommended, no long-lived credential)**: npmjs.com → `dsh-code-server-app` →
-  Trusted Publisher → GitHub Actions, repository `jinsiyu/dsh-code-server-app`, workflow `release.yml`.
-  Alternative: add an `NPM_TOKEN` repository secret and set the repository variable `NPM_AUTH_MODE=token`
-  (that mode does not attach provenance).
+- **npm trusted publishing (recommended, no long-lived credential)** — two equivalent routes to create a trust
+  relationship that lets **only this workflow** publish the package:
+  - **CLI (one command, dry-run verified locally)**:
+
+    ```
+    npm login                                   # already jinsiyu? skip
+    npm trust github dsh-code-server-app --file release.yml \
+      --repo jinsiyu/dsh-code-server-app --allow-publish
+    ```
+
+    `--allow-publish` is **required** (without it the entry is created but cannot publish);
+    `--file` takes the bare filename (`release.yml`), npm expands it to
+    `.github/workflows/release.yml`; the command itself **requires 2FA** (it will ask for an OTP).
+    In a sandboxed shell, an `EPERM … npm-cache` error means the npm cache is not writable —
+    point it at a writable directory with `npm_config_cache`, and do **not** put `--cache` before
+    `trust` (that breaks npm's subcommand parsing with `Unknown positional argument: github`).
+    Verify with `npm trust list dsh-code-server-app` (that endpoint can return 403 for older tokens —
+    then check the Trusted Publisher list on the npm website instead).
+  - **Web UI**: npmjs.com → `dsh-code-server-app` → Settings → Trusted Publisher → GitHub Actions:
+    Organization/user = `jinsiyu`, repository = `dsh-code-server-app`, workflow filename = `release.yml`,
+    **environment name left empty** (the release job declares no `environment:`).
+  - Semantics: this trust relationship means "**anyone with write access to this repository can publish
+    this package**" (npm's own wording).
+  - Alternative: add an `NPM_TOKEN` repository secret and set the repository variable
+    `NPM_AUTH_MODE=token` (that mode does not attach provenance). Note npm is restricting legacy
+    2FA-bypassing tokens, so OIDC is the durable option — once it works, delete the token.
 - **Optional** repository variable `DSH_UI_VERSION` = the version of `@deepseek-ai/dsh-web-frontend` in the current
   deployment: when set, `release.yml` enforces that the panel renderer matches the deployed UI (the local
   `build:webview` always checks this; a runner has no DSH deployment).

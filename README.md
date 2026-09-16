@@ -491,9 +491,32 @@ pnpm run promote -- 0.3.47                 # 4) 确认无误后推 latest(手动
 
 一次性配置(仓库 / 账号侧,非文件改动):
 
-- **npm trusted publishing(推荐,无长期凭据)**:npmjs.com → `dsh-code-server-app` → Trusted Publisher →
-  GitHub Actions,仓库填 `jinsiyu/dsh-code-server-app`,workflow 填 `release.yml`。
-  备选:仓库 Secrets 加 `NPM_TOKEN`,并设仓库 Variables `NPM_AUTH_MODE=token`(该模式不发 provenance)。
+- **npm trusted publishing(推荐,无长期凭据)**:两条路都行,结果一样 —— 给包建一条"只允许本仓库
+  这个 workflow 发布"的信任关系。
+  - **CLI(一条命令,本机实测 dry-run 通过)**:
+
+    ```powershell
+    npm login                                   # 已是 jinsiyu 可跳过
+    npm trust github dsh-code-server-app --file release.yml `
+      --repo jinsiyu/dsh-code-server-app --allow-publish
+    ```
+
+    - `--allow-publish` **必须显式给**,否则信任关系建了也不能发布;
+    - `--file` 只写文件名(`release.yml`),npm 会自己拼成 `.github/workflows/release.yml`;
+    - 这条命令**要求 2FA**(会要一次 OTP;`npm trust` 属于账号变更类操作);
+    - 沙箱/受限 shell 里若报 `EPERM … npm-cache`,把缓存挪到可写目录即可:
+      `$env:npm_config_cache='<可写目录>'`(**不要**把 `--cache` 写在 `trust` 前面 ——
+      会干扰 npm 的子命令解析,报 `Unknown positional argument: github`);
+    - 核对:`npm trust list dsh-code-server-app`(该接口对旧式 token 可能返回 403,
+      以 npm 网页上的 Trusted Publisher 列表为准)。
+  - **网页**:npmjs.com → `dsh-code-server-app` → Settings → Trusted Publisher → GitHub Actions:
+    Organization/user = `jinsiyu`,Repository = `dsh-code-server-app`,Workflow filename = `release.yml`,
+    **Environment name 留空**(本仓库 release job 没有 `environment:`,填了就对不上)。
+  - 语义提醒:这条信任关系等于"**任何对本仓库有写权限的人都能发布这个包**"(npm 的原文:
+    "Anyone with GitHub repository write access can publish")。
+  - 备选:仓库 Secrets 加 `NPM_TOKEN`,并设仓库 Variables `NPM_AUTH_MODE=token`(该模式不发
+    provenance)。注意 npm 正在收紧"绕过 2FA 的旧式 token"(见 registry 的
+    bypass2fa-deprecation 提示),所以 OIDC 是更长期的做法;它一旦可用就该把 NPM_TOKEN 删掉。
 - **可选**仓库 Variables `DSH_UI_VERSION` = 当前部署里 `@deepseek-ai/dsh-web-frontend` 的版本:设了之后
   `release.yml` 会强制面板渲染器版本与部署一致(本机 `build:webview` 本来就会比,runner 上没有 DSH 部署)。
 
