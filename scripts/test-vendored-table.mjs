@@ -17,7 +17,19 @@ import { fileURLToPath } from 'node:url';
 import { readVendoredTable, vendoredEntries, vendoredPackageName } from '../lib/native.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
+/** 读 JSON;**读不到/读坏都返回 null,不抛**。
+ *  为什么必须容错:`vendor/`(`vendor/VENDOR.json`、`vendor/vscode/package.json`)与 `repack/build`
+ *  都是 .gitignore 的**打包期产物** —— 全新 clone(CI 的 runner)上它们一律不存在。
+ *  那些断言本来就写成"能拿到基准值才比,拿不到就跳过",但 `JSON.parse(readFileSync(...))` 在文件
+ *  不存在时是 **ENOENT 抛出**而不是返回 undefined ⇒ 0.3.46 首次跑 CI 时 test-vendored-table 直接挂
+ *  (本机因为打过包,`vendor/VENDOR.json` 一直在 ⇒ 本地永远绿,这类"只在干净克隆上炸"的问题只有 CI 能抓)。 */
+const readJson = (p) => {
+  try {
+    return JSON.parse(readFileSync(p, 'utf8'));
+  } catch {
+    return null;
+  }
+};
 const pluginPkg = readJson(join(root, 'package.json'));
 const table = readJson(join(root, 'lib', 'vendored.json'));
 
@@ -102,7 +114,13 @@ await test('VS Code 树包仍按 dependencies 精确钉版本', async () => {
   assert.equal(tree.length, 1, `树包应恰好一个:dependencies 里是 ${tree.join(', ') || '(无)'}`);
   const pinned = readJson(join(root, 'vendor', 'VENDOR.json'))?.codeServerVersion
     ?? readJson(join(root, 'vendor', 'vscode', 'package.json'))?.version;
-  if (typeof pinned === 'string') assert.equal(deps[tree[0]], pinned, `${tree[0]} 应钉 ${pinned}`);
+  if (typeof pinned !== 'string') {
+    // 不静默:明确说清"这一条这次没验",以及为什么(全新 clone 没有打包期产物)。
+    console.log('     (vendor/ 不在(全新 clone / 没跑过 vendor:vscode)⇒ 跳过基准比对;'
+      + '发布流程里 pnpm pack 之前一定已经生成,那条路上这条断言是真跑的)');
+    return;
+  }
+  assert.equal(deps[tree[0]], pinned, `${tree[0]} 应钉 ${pinned}`);
 });
 
 await test('发布清单 files 带上 lib/vendored.json(否则装完读不到表)', async () => {

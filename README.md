@@ -459,6 +459,10 @@ pnpm test:vendored           # 重打包表 ↔ 插件依赖表一致(无 npm: �
 > 并改写真实的 `bridge.json`);脚本最后有一条"隔离自检"断言真实配置一字未动。
 > `pnpm test` 失败也继续跑完其余脚本(一次看到全部坏点);有的脚本在环境不满足时自己 SKIP 并
 > exit 0(如 `test:launcher-routes` 找不到"内部依赖已建链接"的 VS Code 树),属于通过。
+> `@deepseek-ai/schemastery` 是 **devDependency(钉 3.18.2,与部署同版本)**:`lib/index.js` 本来
+> 从 DSH 部署里取它(生产里就是 profile 中 hoist 的那一份),而干净 clone / CI runner 上没有 DSH,
+> 不钉一份的话 `apply` 类测试会直接抛 `schemastery not found`。它不进发布物(devDependencies
+> 不会给使用者安装)。
 
 ## GitHub Actions(CI + 打 tag 发布)
 

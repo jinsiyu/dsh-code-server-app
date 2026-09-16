@@ -85,7 +85,9 @@ await test('webview 产物:thread.js / thread.css / THIRD-PARTY.md 都在,大小
 });
 
 await test('webview 产物:第三方许可写清楚(MIT,与源码一起发布)', () => {
-  const third = read(`${WEBVIEW}/THIRD-PARTY.md`);
+  // 和 W1 一样必须走 requireArtifact():没跑构建是"没跑构建",不是代码错 ⇒ SKIP 并说清怎么修,
+  // 而不是像 0.3.46 首次 CI 那样抛 ENOENT 把整条回归判失败。
+  const third = readFileSync(requireArtifact(`${WEBVIEW}/THIRD-PARTY.md`), 'utf8');
   assert.match(third, /@deepseek-ai\/dsh-client-ui-primitives/, '要写明打包了官方渲染器');
   assert.match(third, /@deepseek-ai\/dsh-client-ui-theme/, '要写明打包了官方设计令牌');
   assert.match(third, /MIT/, '许可是 MIT');

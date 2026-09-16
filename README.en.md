@@ -517,6 +517,12 @@ Things you must know:
 - **Release gates** (any failure stops the run; `next` is never advanced): tag ≠ `package.json.version`, the
   version already exists on npm, the tree version does not match (`test:vendored`), the suite fails, or
   `DSH_UI_VERSION` mismatches.
+- `@deepseek-ai/schemastery` is a **devDependency** (pinned to 3.18.2, the version the deployment uses):
+  `lib/index.js` normally takes it from the DSH deployment (in production, the copy hoisted inside the
+  profile), and a clean clone / CI runner has no DSH at all — without this devDependency the `apply`-style
+  tests throw `schemastery not found`. It never ships to users (devDependencies are not installed for a
+  dependency). A CI job that actually deploys DSH is possible (`@deepseek-ai/dsh` is public on npm), but it
+  pulls the whole harness (~1.3GB profile), so it belongs in a slower job, not on every push.
 - The first release must use a **version that has never been published** (npm versions are immutable).
   `release.yml` supports a `workflow_dispatch` **rehearsal** (full pipeline, nothing published) — run it once
   before pushing a real tag.
