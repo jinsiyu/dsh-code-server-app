@@ -59,8 +59,20 @@ jobs:
 
       # 必须在构建之后跑:test-webview-bundle 见到产物才真验(缺产物时它逐项 SKIP),
       # test-launcher-routes 在 runner 上找不到「内部依赖已建链接」的 VS Code 树 ⇒ 自己 SKIP 并 exit 0。
+      # 显式 shell: bash(两个 runner 都有):这样能把整段输出 tee 下来,失败时把 FAIL 行转成
+      # ::error:: annotation —— annotation 在仓库公开时**不需要 token 就能读**
+      # (GET /repos/{owner}/{repo}/check-runs/{id}/annotations),排查"本机绿、runner 红"时不用先配 PAT。
       - name: 全量回归(脚本清单见 scripts/run-all-tests.mjs)
-        run: pnpm run test
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm run test 2>&1 | tee "$RUNNER_TEMP/suite.log"
+          status=$?
+          if [ "$status" != 0 ]; then
+            echo "::error::回归失败;下面把 FAIL 行转成 annotation(完整日志见本步输出)"
+            grep -a '^FAIL' "$RUNNER_TEMP/suite.log" | head -20 | sed 's/^/::error::/'
+          fi
+          exit "$status"
 
       # 只报告:内置树落后于上游 code-server 时要重打子包,那是另一条人工流程(README「打包」)。
       - name: 报告内置 VS Code 树 vs 上游 code-server 版本(不阻断)
