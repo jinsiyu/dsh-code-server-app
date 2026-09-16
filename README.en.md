@@ -501,6 +501,12 @@ Supporting Linux is not mainly about "compiling a few more packages" — it is a
   re-run `vendor-repacks.mjs`, publish the new sub-packages, then refresh the dependency table and
   `pnpm-lock.yaml`. The generator always prints such drift (`· <module>: 沿用表里已发布的版本 …`), so follow
   that line.
+  > Keep the two dependency classes apart: the rule above governs **our own repack sub-packages**
+  > (`@jinsiyu/dshcs-*`, whose version must be one we published). **Upstream pure-JS direct dependencies**
+  > (the `declare` set: `cookie`, `ws`, `@vscode/proxy-agent`, …) take their version from the source tree —
+  > whatever the tree installed came from npm, so following the tree is safe. Differences there are
+  > **time**-related (a fresh install of the same commit on another day can differ), which is why
+  > `repacks.yml` reports them as a notice rather than a warning.
 - **System headers needed to build the native packages on Linux**: `kerberos` needs the GSSAPI headers
   (`gssapi/gssapi.h`), so both Linux legs run `sudo apt-get install -y libkrb5-dev` and assert the header is
   present. Without it `make` fails outright and the `kerberos` sub-package cannot be produced (exposed by the

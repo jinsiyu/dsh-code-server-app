@@ -431,7 +431,26 @@ jobs:
             fi
           done
           # 这一步**只出信息,不判失败**:生成物由维护者在 Windows 上产出后提交,这里要回答的是
-          # 「换宿主平台会不会算出不同的表」,而不是拦住构建。
+          # 「换宿主平台会不会算出不同的表」,而不是拦住构建。两类差异要分开看:
+          #   · lib/vendored.json 不一致 = 平台政策没做到宿主无关(warning,真问题);
+          #   · package.json 不一致多半是**上游纯 JS 直装依赖**的 patch 漂移(notice):
+          #     它们的版本取自源树,而树里的版本一定来自 npm ⇒ 跟着树走是安全的;这种差异是
+          #     **时间**相关(同一 commit 换一天全新装就可能不同),不是宿主相关。
+          #     只有在 diff 里看到 @jinsiyu/dshcs-* 子包版本时才是真问题(那是我们自己发布的号)。
+          for f in lib/vendored.json package.json; do
+            if diff -q "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/repacks/$f" >/dev/null 2>&1; then
+              echo "::notice::$TARGET 上生成的 $f 与仓库里的完全一致"
+            elif [ "$f" = "package.json" ]; then
+              echo "::notice::$TARGET 上生成的 package.json 与仓库里有差异(多半是上游 JS 依赖的 patch 漂移,时间相关;若是 @jinsiyu/dshcs-* 版本则要查)"
+              diff -u "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/repacks/$f" | head -n 12 \
+                | while IFS= read -r line; do echo "::notice:: $line"; done || true
+            else
+              mismatch=$((mismatch + 1))
+              echo "::warning::$TARGET 上生成的 $f 与仓库里的不一致(平台政策本应宿主无关)"
+              diff -u "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/repacks/$f" | head -n 12 \
+                | while IFS= read -r line; do echo "::warning:: $line"; done || true
+            fi
+          done
           if [ "$mismatch" -gt 0 ]; then
             echo "::warning::$TARGET:有 $mismatch 个生成文件与仓库不一致(信息,不判失败)"
           fi
@@ -574,7 +593,26 @@ jobs:
             fi
           done
           # 这一步**只出信息,不判失败**:生成物由维护者在 Windows 上产出后提交,这里要回答的是
-          # 「换宿主平台会不会算出不同的表」,而不是拦住构建。
+          # 「换宿主平台会不会算出不同的表」,而不是拦住构建。两类差异要分开看:
+          #   · lib/vendored.json 不一致 = 平台政策没做到宿主无关(warning,真问题);
+          #   · package.json 不一致多半是**上游纯 JS 直装依赖**的 patch 漂移(notice):
+          #     它们的版本取自源树,而树里的版本一定来自 npm ⇒ 跟着树走是安全的;这种差异是
+          #     **时间**相关(同一 commit 换一天全新装就可能不同),不是宿主相关。
+          #     只有在 diff 里看到 @jinsiyu/dshcs-* 子包版本时才是真问题(那是我们自己发布的号)。
+          for f in lib/vendored.json package.json; do
+            if diff -q "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/repacks/$f" >/dev/null 2>&1; then
+              echo "::notice::$TARGET 上生成的 $f 与仓库里的完全一致"
+            elif [ "$f" = "package.json" ]; then
+              echo "::notice::$TARGET 上生成的 package.json 与仓库里有差异(多半是上游 JS 依赖的 patch 漂移,时间相关;若是 @jinsiyu/dshcs-* 版本则要查)"
+              diff -u "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/repacks/$f" | head -n 12 \
+                | while IFS= read -r line; do echo "::notice:: $line"; done || true
+            else
+              mismatch=$((mismatch + 1))
+              echo "::warning::$TARGET 上生成的 $f 与仓库里的不一致(平台政策本应宿主无关)"
+              diff -u "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/repacks/$f" | head -n 12 \
+                | while IFS= read -r line; do echo "::warning:: $line"; done || true
+            fi
+          done
           if [ "$mismatch" -gt 0 ]; then
             echo "::warning::$TARGET:有 $mismatch 个生成文件与仓库不一致(信息,不判失败)"
           fi

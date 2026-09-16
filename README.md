@@ -501,6 +501,10 @@ pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**�
   **要让插件升到新的上游版本**:在 `scripts/repack-platforms.json` 里给该模块钉 `"version"` → 重跑
   `vendor-repacks.mjs` → 发布新子包 → 刷新依赖表与 `pnpm-lock.yaml`。生成器每次都会把漂移打出来
   (`· <模块>:沿用表里已发布的版本 …(源树里是 …)`),照着那行做即可。
+  > 要区分两类依赖:上面这条只管**我们自己的重打包子包**(`@jinsiyu/dshcs-*`,版本必须是发布过的号);
+  > 而**上游纯 JS 直装依赖**(`declare` 那批:`cookie` / `ws` / `@vscode/proxy-agent` …)的版本取自源树
+  > —— 树里的版本一定来自 npm,跟着树走是安全的。所以后者的差异是**时间**相关(同一 commit 换一天
+  > 全新装就可能不同),CI 的「生成表与仓库一致吗」把它当 notice 报,不当 warning。
 - **Linux 上构建原生包的系统依赖**:`kerberos` 要 GSSAPI 头(`gssapi/gssapi.h`)⇒ 两条 Linux 腿都会先
   跑 `sudo apt-get install -y libkrb5-dev` 并校验头文件在位。缺它时 `make` 直接失败、`kerberos` 的子包
   产不出来(2026-09-16 第一次跑硬闸门时暴露)。本地在 Linux 上重打时同样要先装它。

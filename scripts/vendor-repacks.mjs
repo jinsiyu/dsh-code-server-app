@@ -737,6 +737,15 @@ function main() {
     const tag = m.platform ? `[平台专属 ${m.targets.join('|')}]` : '[全平台]';
     console.log(`  ${m.alias}@${m.version} → ${m.package}${m.platform ? '-<平台>' : ''}${m.carried ? ' (保留)' : ''} ${tag}`);
   }
+  const rootPkgFile = join(pkgRoot, 'package.json');
+  const previousDeps = readJson(rootPkgFile)?.dependencies ?? {};
+  for (const d of declare) {
+    const prev = previousDeps[d.name];
+    if (typeof prev === 'string' && prev !== d.version) {
+      console.log(`  · ${d.name}:源树版本 ${d.version}(仓库依赖表里是 ${prev})—— 上游纯 JS 包,跟着树走安全`
+        + '(树里的版本一定来自 npm;这类差异是**时间**相关而非宿主相关)');
+    }
+  }
   console.log(`\n直装集(${declare.length}): ${declare.map((d) => d.name).join(', ')}\n`);
 
   mkdirSync(join(OUT, 'build'), { recursive: true });
