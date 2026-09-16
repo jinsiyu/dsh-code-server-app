@@ -261,7 +261,9 @@ await test('repack/build 与 pack-plan.json 一致,且不出现白名单外的�
   assert.equal(missing.length, 0, `pack-plan 里的目录在 repack/build 里不存在:${missing.join(', ')}`);
   const illegal = [...planned].filter((d) => d !== 'vscode' && !legal.has(d));
   assert.equal(illegal.length, 0,
-    `pack-plan 里出现「模块×白名单目标」之外的目录:${illegal.join(', ')}(多半是白名单没更新或有旧构建残留)`);
+    `pack-plan 里出现「模块×白名单目标」之外的目录:${illegal.join(', ')}`
+    + '(多半是白名单没更新、有旧构建残留,或本地构建时原生包没编出 .node ——'
+    + ' 例如缺 MSVC v145 工具集,于是它们被当成平台无关包打成了不带目标后缀的名字)');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

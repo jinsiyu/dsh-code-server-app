@@ -532,10 +532,6 @@ function readRepackPlatforms() {
   return { allTargets, publishedTargets: list(doc?.publishedTargets), perModule };
 }
 
-/** 版本的「基版本」:去掉我们自家后缀(-dshcs.N)。kerberos 就是个例子 ——
- *  已发布的重打包版本是聚合包时代留下的 `2.1.1-dshcs.1`,而源树里装的是上游 `2.1.1`。 */
-const baseVersion = (v) => String(v).replace(/-dshcs\.\d+$/, '');
-
 /** 平台政策落到分析结果上:
  *   ① 分类(是不是平台专属)以声明为准 —— analyze() 的结论随宿主漂移(Linux 上 windows-registry
  *      没有 .node 会被判成平台无关,一旦写进 dependencies,Windows 运行时反而找不到 -win32-* 子包);
@@ -559,20 +555,27 @@ function applyPlatformPolicy(modules, platforms, allTargets) {
       console.warn(`  ⚠ ${m.alias}:分析结论 platform=${m.platform},声明写的是 platform=${decl.platform} ⇒ 以声明为准`);
       m.platform = decl.platform;
     }
-    // 版本政策(**必须宿主无关**):① 声明里钉的优先;② 否则沿用表里**已发布**的版本(基版本相同时)——
-    // 源树里装的是上游版本(例如 kerberos 2.1.1),而 registry 上我们发布的是 2.1.1-dshcs.1;
-    // 若照源树写,换个宿主平台就会把插件依赖改成从没发布过的号,装上直接解析失败。
+    // 版本政策(**必须宿主与时点都无关**):① 声明里钉的 `version` 优先;② 否则沿用表里**已发布**的
+    // 版本;③ 只有表里没有这个模块(新模块)时才采用源树版本。
+    // 为什么不能照源树写:表里的版本就是 registry 上我们发布的那个号,而源树的版本会漂 ——
+    //   · kerberos:源树上游 2.1.1,我们发布的是 2.1.1-dshcs.1(聚合包时代的后缀);
+    //   · @vscode/proxy-agent:同一个 code-server 版本,维护者当时装到 0.44.0,今天全新装到 0.45.0
+    //     —— 依赖范围允许漂移,而 0.45.0 这个子包我们根本没发过。
+    // 照源树写 ⇒ 换个宿主平台或换一天重跑,插件依赖就会指向不存在的版本,装上直接解析失败。
+    // 要让插件升到新上游版本:在 scripts/repack-platforms.json 里给该模块钉 `version`,重跑本脚本
+    // 并把新子包发出去(下面这行会说明清楚)。
     const prevVersion = typeof previous.get(m.alias)?.version === 'string' ? previous.get(m.alias).version : null;
     if (decl?.version !== null && decl?.version !== undefined) {
       if (decl.version !== m.version) console.log(`  · ${m.alias}:按声明钉版本 ${decl.version}(源树里是 ${m.version})`);
       m.version = decl.version;
-    } else if (prevVersion !== null && baseVersion(prevVersion) === baseVersion(m.version)) {
+    } else if (prevVersion !== null) {
       if (prevVersion !== m.version) {
-        console.log(`  · ${m.alias}:沿用表里已发布的版本 ${prevVersion}(源树里是 ${m.version},基版本相同)`);
+        console.log(`  · ${m.alias}:沿用表里已发布的版本 ${prevVersion}(源树里是 ${m.version});`
+          + `要让插件改用它,请在 scripts/repack-platforms.json 里钉 version=${m.version} 并先发布对应的子包`);
       }
       m.version = prevVersion;
-    } else if (prevVersion !== null) {
-      console.log(`  · ${m.alias}:源树版本 ${m.version} 与表里的 ${prevVersion} 基版本不同 ⇒ 采用源树版本(上游升级)`);
+    } else {
+      console.log(`  · ${m.alias}:新模块 ⇒ 采用源树版本 ${m.version}(记得先发布子包再把它写进依赖表)`);
     }
   }
 
