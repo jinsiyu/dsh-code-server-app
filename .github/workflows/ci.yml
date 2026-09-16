@@ -69,8 +69,10 @@ jobs:
           pnpm run test 2>&1 | tee "$RUNNER_TEMP/suite.log"
           status=$?
           if [ "$status" != 0 ]; then
-            echo "::error::回归失败;下面把 FAIL 行转成 annotation(完整日志见本步输出)"
-            grep -a '^FAIL' "$RUNNER_TEMP/suite.log" | head -20 | sed 's/^/::error::/'
+            echo "::error::回归失败(exit $status);完整输出见本步,下面把判据行转成 annotation"
+            grep -a '^FAIL' "$RUNNER_TEMP/suite.log" | head -25 | sed 's/^/::error::/' || true
+            echo "::error::---- 日志尾部(harness 汇总 + 最后一个脚本的输出)----"
+            tail -n 18 "$RUNNER_TEMP/suite.log" | sed 's/^/::error::/' || true
           fi
           exit "$status"
 
