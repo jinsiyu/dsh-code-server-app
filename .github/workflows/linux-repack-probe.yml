@@ -1,0 +1,141 @@
+# linux-repack-probe.yml —— 一次性/手动:在 Linux 上**试编**平台专属重打包包,只出结论,不发布。
+#
+# 为什么单独一个工作流:产品目前只打 win32(lib/vendored.json 的 targets + 插件
+# optionalDependencies 全是 -win32-*),Linux 上 pnpm 会跳过那 16 个子包 ⇒ 插件装得上但
+# sqlite3 / spdlog 等原生模块缺失,IDE server 起不来。要给 Linux 打包,先要回答:
+#   · 哪些"平台专属"模块在 Linux 上**真的能编出 .node**(哪些是 Windows-only 语义,不该产 linux 包);
+#   · 现有 vendor-repacks.mjs 的宿主路径在 ubuntu 上跑得通吗(工具链、kerberos 的 krb5 头文件等)。
+# 所以这里跑的是**现有脚本的本尊**(不是另写一套),而且:
+#   ① 改动只发生在 $RUNNER_TEMP 下的**仓库副本**里(vendor-repacks 会重写 repack/**、
+#      lib/vendored.json 与插件 package.json —— 探针不该把检出弄脏);
+#   ② 不发布任何东西(没有 publish 步骤);
+#   ③ 每个目标用**同架构宿主 runner**(x64 → ls 用 ubuntu-latest;arm64 → ubuntu-24.04-arm),
+#      避免 node-gyp 跨架构编译那堆坑。
+#
+# 产物:每个目标的 repack/tgz/*.tgz 作为 artifact(供后续阶段复用)+ 一份逐模块结论表。
+# 结论表同时以 ::notice:: 打印 —— notice/annotation 在公开仓库上不需要 token 就能读
+# (check-runs API),不必登录 UI 才能看到"哪些模块编不出来"。
+name: linux-repack-probe
+
+on:
+  # 首次跑靠 push 触发(只盯本文件):workflow_dispatch 需要 UI 或带 token 的 API,
+  # 而这条探针的价值就在于"推上去就有结论"。之后改本文件会重跑,也可以从 Actions 页面手动 dispatch。
+  push:
+    paths:
+      - '.github/workflows/linux-repack-probe.yml'
+  workflow_dispatch:
+    inputs:
+      upload_tgz:
+        description: 把编出来的 tgz 也作为 artifact 上传(默认上传,便于下一阶段直接复用)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 同架构宿主编译:runner 自带 gcc / python3,node-gyp 直接用宿主编译链
+          - runner: ubuntu-latest
+            target: linux-x64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: 检出
+        uses: actions/checkout@v7
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: 安装 Node 24 并缓存 pnpm store
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # 编译原生模块要的工具链:gcc/g++/make/python3 在 ubuntu runner 上自带;
+      # kerberos(npm 包)在 Linux 上要 krb5 头文件,缺了会直接编不过。
+      - name: 安装编译依赖(kerberos 需要 krb5 开发头文件)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libkrb5-dev
+
+      - name: 安装依赖(为了让树包 @jinsiyu/dshcs-vscode-server 落到 node_modules)
+        run: pnpm install --frozen-lockfile
+
+      - name: 定位已被完整安装的 code-server 树(--from 用)
+        id: tree
+        run: |
+          TREE="$(node -e 'const {createRequire}=require("node:module");const req=createRequire(process.cwd()+"/package.json");const p=req.resolve("@jinsiyu/dshcs-vscode-server/package.json");process.stdout.write(require("node:path").join(require("node:path").dirname(p),"vscode"))')"
+          test -f "$TREE/package.json" || { echo "::error::树不在:$TREE"; exit 1; }
+          echo "tree=$TREE" >> "$GITHUB_OUTPUT"
+          echo "树:$TREE(版本 $(node -p "require('$TREE/package.json').version"))"
+
+      # vendor-repacks 会重写 lib/vendored.json 与插件 package.json(那是它的正常职责)⇒ 探针在副本里跑。
+      - name: 复制仓库到 $RUNNER_TEMP(不弄脏检出)
+        run: |
+          mkdir -p "$RUNNER_TEMP/probe"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/probe"
+          ls "$RUNNER_TEMP/probe" | head -20
+
+      - name: 试编(--from 已装树,只打本目标)
+        id: repack
+        working-directory: ${{ runner.temp }}/probe
+        run: |
+          set +e
+          node scripts/vendor-repacks.mjs --from "${{ steps.tree.outputs.tree }}" --target "${{ matrix.target }}" --pack 2>&1 \
+            | tee "$RUNNER_TEMP/repack.log"
+          code=${PIPESTATUS[0]}
+          echo "exit=$code" >> "$GITHUB_OUTPUT"
+          echo "repack 退出码 $code"
+          exit 0
+
+      # 逐模块结论:脚本自己会打 "✓ <target>: <包> → <二进制>" 与 "⚠ <target>: <包> 未生成 .node 二进制"
+      - name: 逐模块结论(转成 notice,公开可读)
+        run: |
+          set +e
+          echo "::notice::${{ matrix.target }} 重打包集与分析结果:"
+          grep -aE '^(重打包集|直装集|  [^ ]+@[^ ]+ → )' "$RUNNER_TEMP/repack.log" | head -40 | sed 's/^/::notice::/'
+          ok="$(grep -acE "^  ✓ ${{ matrix.target }}:" "$RUNNER_TEMP/repack.log")"
+          warn="$(grep -acE "^  ⚠ ${{ matrix.target }}:" "$RUNNER_TEMP/repack.log")"
+          echo "::notice::${{ matrix.target }} 编出 .node 的模块 $ok 个,未产出二进制 $warn 个"
+          grep -aE "^  ⚠ ${{ matrix.target }}:" "$RUNNER_TEMP/repack.log" | sed 's/^/::notice::未产出: /'
+          echo "---- 面向人的可读输出 ----"
+          grep -aE "^  ✓ ${{ matrix.target }}:|^  ⚠ ${{ matrix.target }}:" "$RUNNER_TEMP/repack.log" | head -40
+          ls -l "$RUNNER_TEMP/probe/repack/tgz" 2>/dev/null | head -40
+
+      - name: 结论写进 job summary
+        if: always()
+        run: |
+          {
+            echo "### linux-repack-probe:${{ matrix.target }}"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| runner | \`${{ matrix.runner }}\` |"
+            echo "| 目标 | \`${{ matrix.target }}\` |"
+            echo "| repack 退出码 | \`${{ steps.repack.outputs.exit }}\` |"
+            echo "| 树 | \`${{ steps.tree.outputs.tree }}\` |"
+            echo ""
+            echo '```'
+            grep -aE "^  ✓ ${{ matrix.target }}:|^  ⚠ ${{ matrix.target }}:" "$RUNNER_TEMP/repack.log" | head -40
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传 tgz(下一阶段可直接复用)
+        if: ${{ inputs.upload_tgz }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-repacks-${{ matrix.target }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/probe/repack/tgz/*.tgz
+            ${{ runner.temp }}/repack.log
