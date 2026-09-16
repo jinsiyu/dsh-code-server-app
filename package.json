@@ -68,6 +68,7 @@
   "scripts": {
     "test": "node scripts/run-all-tests.mjs",
     "test:all": "node scripts/run-all-tests.mjs",
+    "test:installed": "node scripts/test-installed.mjs",
     "vendor:vscode": "node scripts/vendor-vscode-server.mjs",
     "vendor:latest": "node scripts/vendor-vscode-server.mjs --force",
     "vendor:check": "node scripts/vendor-vscode-server.mjs --check",

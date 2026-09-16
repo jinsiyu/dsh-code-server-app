@@ -465,7 +465,8 @@ Both workflows live in `.github/workflows/`, and the regression list exists exac
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `ci.yml` | push to `main` / PR / manual | `ubuntu-latest` + `windows-latest` matrix: `pnpm install --frozen-lockfile` → `build:client` → `build:webview` → `pnpm test` (the whole suite) → `vendor:check` (report only) → upload `lib/client.js` and the panel assets |
-| `release.yml` | push a `v<version>` tag / manual (rehearsal, never publishes) | prepares `vendor/vscode` **at the version pinned in `dependencies`** → builds → full suite → `pnpm pack` → verifies the tarball manifest → publishes to npm **`next`** → creates a GitHub Release with the tgz attached |
+| `release.yml` | push a `v<version>` tag / manual (rehearsal, never publishes) | prepares `vendor/vscode` **at the version pinned in `dependencies`** → builds → full suite → `pnpm pack` → verifies the tarball manifest → **really installs it** (deploys a real DSH on the runner, `dsh plugin --profile web add <tgz>`, then `test:installed` + `dump-config` assertions) → publishes to npm **`next`** → creates a GitHub Release with the tgz attached |
+| `linux-repack-probe.yml` | push to this file / manual | **feasibility probe (never publishes)**: on Linux, builds the platform-specific repack packages per target (`linux-x64` → `ubuntu-latest`, `linux-arm64` → `ubuntu-24.04-arm`) and reports which modules really produce a `.node` and which are Windows-only. It runs the existing `vendor-repacks.mjs` itself; all writes happen in a copy of the repo under `$RUNNER_TEMP` |
 
 The regression suite (also the single list CI uses) is:
 
@@ -480,6 +481,10 @@ pnpm test:launcher-routes    # launcher HTTP surface (spawns a real process; slo
 pnpm test:workspace-switch   # switching workspaces does not restart the process
 pnpm test:fullscreen         # opening the tab goes fullscreen
 pnpm test:vendored           # repack table ↔ plugin dependency table (no npm: aliases, no aggregator)
+pnpm test:installed          # install smoke: assert on what was **installed into a profile**
+                             # (default <DSH_HOME>/profiles/web): every `files` entry present, repack
+                             # packages complete for this platform, no missing natives, the installed
+                             # copy imports, the tree is in place — nothing the repo suite can see
 ```
 
 **The dist-tag policy is unchanged**: `release.yml` only publishes `next` and never touches `latest`; `latest` is

@@ -453,6 +453,9 @@ pnpm test:launcher-routes    # launcher 的 HTTP 面(起真进程,较慢)
 pnpm test:workspace-switch   # 切工作区不重启进程
 pnpm test:fullscreen         # 打开标签即全屏
 pnpm test:vendored           # 重打包表 ↔ 插件依赖表一致(无 npm: 别名 / 无聚合包 / vendored.json 进了 files)
+pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**做断言(默认 <DSH_HOME>/profiles/web)
+                             # files 白名单每条都在 / 重打包包在当前平台齐全 / 原生模块无缺失 /
+                             # 已安装副本能 import / 树在位 —— 仓库回归看不出这一类
 ```
 
 > `test:bridge-routes` 会把 `DSH_HOME` 指向临时目录(否则它会 adopt 开发机上正在跑的那个实例,
@@ -471,7 +474,8 @@ pnpm test:vendored           # 重打包表 ↔ 插件依赖表一致(无 npm: �
 | 工作流 | 触发 | 做什么 |
 |---|---|---|
 | `ci.yml` | push `main` / PR / 手动 | `ubuntu-latest` + `windows-latest` 双平台:`pnpm install --frozen-lockfile` → `build:client` → `build:webview` → `pnpm test`(全套回归)→ `vendor:check` 只报告版本差 → 上传 `lib/client.js` 与面板产物 |
-| `release.yml` | 推 `v<version>` 标签 / 手动(演练,不发布) | 按 `dependencies` 钉的版本准备 `vendor/vscode` → 构建 → 全套回归 → `pnpm pack` → 校验 tarball 清单 → 发 npm **`next`** → 建 GitHub Release(附 tgz) |
+| `release.yml` | 推 `v<version>` 标签 / 手动(演练,不发布) | 按 `dependencies` 钉的版本准备 `vendor/vscode` → 构建 → 全套回归 → `pnpm pack` → 校验 tarball 清单 → **真装一遍**(在 runner 上部署真 DSH,`dsh plugin --profile web add <tgz>`,再跑 `test:installed` + `dump-config` 断言)→ 发 npm **`next`** → 建 GitHub Release(附 tgz) |
+| `linux-repack-probe.yml` | push 本文件 / 手动 | **可行性探针(不发布)**:在 Linux 上按目标(`linux-x64` → `ubuntu-latest`、`linux-arm64` → `ubuntu-24.04-arm`)试编平台专属重打包包,输出「哪些模块真能编出 `.node`、哪些是 Windows-only」。跑的是现有 `vendor-repacks.mjs` 本尊,改动只发生在 `$RUNNER_TEMP` 的仓库副本里 |
 
 **dist-tag 政策不变**:`release.yml` 只发 `next`,绝不碰 `latest`;`latest` 仍由 `pnpm run promote -- <version>`
 在重启 dsh web 确认无误后手动推进(README 上方「打包」一节)。
