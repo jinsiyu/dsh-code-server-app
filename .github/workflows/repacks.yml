@@ -10,13 +10,19 @@
 # 每个目标都跑在**同架构宿主 runner** 上(R5 与 linux probe 同思路,避免 node-gyp 跨架构那堆坑):
 #   win32-x64   → windows-latest
 #   win32-arm64 → windows-11-arm
-#   若某个标签在你的仓库不可用,job 会一直排队 —— 取消它,然后用 `build_arm64=false` 只跑 x64 那条。
+#   linux-x64   → ubuntu-latest
+#   linux-arm64 → ubuntu-24.04-arm
+#   若某个标签在你的仓库不可用,job 会一直排队 —— 取消它,然后用对应的 build_*=false 只跑其它的。
 #
-# 产物归属(**避免并发发布撞车**):平台无关的 8 个包(xterm/koffi/node-pty/ssh2/…)两边都会产出,
-# 所以约定:
-#   · win32-x64 job:不带 `--only` ⇒ 发布「平台无关 + win32-x64 专用」(树包已存在会被自动跳过);
-#   · win32-arm64 job:`--only win32-arm64` ⇒ 只发 arm64 专用。
-#   两者集合不相交 ⇒ 可以并发,不会有两个 job 抢同一个包名。
+# 产物归属(**避免并发发布撞车**):平台无关的 8 个包(xterm/koffi/node-pty/ssh2/…)四个目标都会产出,
+# 内容一致 ⇒ 约定**只由 win32-x64 那条腿发布**(其余三条腿用 `--only <自己的目标>` 只发平台专属包),
+# 这样集合不相交、可以并发:
+#   · win32-x64    :不带 --only ⇒ 发布「平台无关 + win32-x64 专用」(树包已存在会被自动跳过);
+#   · win32-arm64  :`--only win32-arm64`;
+#   · linux-x64    :`--only linux-x64`;
+#   · linux-arm64  :`--only linux-arm64`。
+# 哪些模块在 Linux 上有子包,由 scripts/repack-platforms.json 的每模块白名单决定
+#   (上游不写 os/cpu,只能人工声明);某目标上编不出 .node 的会被自动跳过并打一行结论。
 #
 # 认证(两条路都支持,workflow 自己判断):
 #   A. `NPM_TOKEN`(仓库 Secrets;粒度令牌:对 `@jinsiyu` 作用域有 publish 权限 + 勾 bypass 2FA)
@@ -31,6 +37,8 @@
 #   没配 NPM_TOKEN 时,下面的发布步骤直接走 OIDC(不再写 .npmrc)。
 #
 # 用法(手动触发,见 Actions → repacks → Run workflow):
+#   build_x64 / build_arm64 / build_linux_x64 / build_linux_arm64(默认都是 true)
+#                        → 选择跑哪几条腿(Linux 腿默认也开:这是「加入 Linux 适配」后的常规动作)
 #   publish=false(默认) → 只构建 + 上传 repack/tgz/*.tgz
 #   publish=true         → 构建完再发布到 npm(dist_tag 默认 next;latest 仍由 promote 手动推进)
 #   probe_oidc=true      → 只跑「OIDC 通道巡检」job:对几个真实子包名做 staged(暂存)发布,
@@ -56,6 +64,14 @@ on:
         default: true
       build_arm64:
         description: 构建 win32-arm64(windows-11-arm)
+        type: boolean
+        default: true
+      build_linux_x64:
+        description: 构建 linux-x64(ubuntu-latest)
+        type: boolean
+        default: true
+      build_linux_arm64:
+        description: 构建 linux-arm64(ubuntu-24.04-arm)
         type: boolean
         default: true
       publish:
@@ -300,6 +316,263 @@ jobs:
             echo "| runner | \`windows-11-arm\` |"
             echo "| 目标 | \`${{ env.TARGET }}\` |"
             echo "| 发布 | \`${{ inputs.publish }}\`(--only win32-arm64) |"
+            echo "| 触发 | \`${{ github.event_name }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Linux 腿(linux-x64 / linux-arm64)──────────────────────────────────────────────
+  # 与 win32 腿同构,区别只有三处:
+  #   · 宿主换成同架构 Ubuntu runner(原生包现编,避免跨架构工具链);
+  #   · 只发自己的平台专属包(`--only linux-x64` / `--only linux-arm64`)—— 平台无关的 8 个包
+  #     由 win32-x64 腿发布,四个目标内容一致,不能四边抢同一个版本号;
+  #   · 多一步「生成的依赖表与仓库里的是否一致」:平台政策(scripts/repack-platforms.json)
+  #     的设计目标就是**宿主无关**,Linux 上跑出来的 lib/vendored.json / package.json
+  #     理应与 Windows 上一致;不一致就发 warning + diff 片段(不需要令牌即可读)。
+  # 哪些模块在 Linux 上有子包:白名单里给 linux-* 的模块;某目标上编不出 .node 的自动跳过,
+  # 每个目标一行结论(`[repack] linux-x64: 平台专属产出 N 个(…)`)会同时以 notice 发出来。
+  linux-x64:
+    name: repacks linux-x64
+    if: github.event_name == 'push' || inputs.build_linux_x64
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TARGET: linux-x64
+      DIST_TAG: ${{ inputs.dist_tag }}
+    steps:
+      - name: 检出
+        uses: actions/checkout@v7
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: 复制仓库到 $RUNNER_TEMP(不弄脏检出)
+        shell: bash
+        run: |
+          dst="$RUNNER_TEMP/repacks"
+          rm -rf "$dst"; mkdir -p "$dst"
+          git archive HEAD | tar -x -C "$dst"
+          echo "副本:$dst"
+
+      - name: 钉版本准备 vendor/vscode(与 dependencies 里钉的树版本一致)
+        shell: bash
+        working-directory: ${{ runner.temp }}/repacks
+        run: |
+          V=$(node -e "const p=require(process.env.GITHUB_WORKSPACE+'/package.json');const k=Object.keys(p.dependencies).filter(n=>/\/dshcs-vscode-server$/.test(n));if(k.length!==1){console.error('树包应恰好一个:',k);process.exit(1)}process.stdout.write(p.dependencies[k[0]])")
+          echo "内置树版本(code-server):$V"
+          node scripts/vendor-vscode-server.mjs --version "$V"
+          test -f vendor/vscode/lib/vscode/out/server-main.js \
+            || { echo "::error::vendor/vscode 不完整(缺 out/server-main.js)"; exit 1; }
+
+      - name: 重打打包(--pack)
+        shell: bash
+        working-directory: ${{ runner.temp }}/repacks
+        run: |
+          set +e
+          node scripts/vendor-repacks.mjs --target "$TARGET" --pack 2>&1 | tee "$RUNNER_TEMP/repack.log"
+          code=${PIPESTATUS[0]}
+          echo "repack 退出码 $code"
+          if [ "$code" -ne 0 ]; then
+            echo "::error::repack 失败(exit $code);下面把报错行与日志尾部转成 annotation"
+            grep -E 'Error|error:|✗|失败|未生成|throw|ENOENT|EACCES' "$RUNNER_TEMP/repack.log" | tail -n 10 \
+              | while IFS= read -r line; do echo "::error:: $line"; done
+            tail -n 8 "$RUNNER_TEMP/repack.log" | while IFS= read -r line; do echo "::error:: $line"; done
+            exit "$code"
+          fi
+
+      - name: 结论(产物清单,公开可读)
+        shell: bash
+        run: |
+          tgz="$RUNNER_TEMP/repacks/repack/tgz"
+          count=$(ls -1 "$tgz"/*.tgz 2>/dev/null | wc -l | tr -d ' ')
+          echo "::notice::$TARGET 产出 $count 个 tgz"
+          for f in "$tgz"/*.tgz; do
+            [ -e "$f" ] || continue
+            echo "::notice::  $(basename "$f") $(( $(stat -c%s "$f") / 1024 ))KB"
+          done
+          echo "---- 待发布目录(repack/build)----"
+          ls -1 "$RUNNER_TEMP/repacks/repack/build" || true
+
+      - name: 生成的依赖表与仓库里的一致吗(平台政策应当宿主无关)
+        shell: bash
+        run: |
+          for f in lib/vendored.json package.json; do
+            if diff -q "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/repacks/$f" >/dev/null 2>&1; then
+              echo "::notice::$TARGET 上生成的 $f 与仓库里的完全一致"
+            else
+              echo "::warning::$TARGET 上生成的 $f 与仓库里的不一致(平台政策本应宿主无关)"
+              diff -u "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/repacks/$f" | head -n 12 \
+                | while IFS= read -r line; do echo "::warning:: $line"; done
+            fi
+          done
+
+      - name: 上传 tgz
+        uses: actions/upload-artifact@v7
+        with:
+          name: repacks-linux-x64
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/repacks/repack/tgz/*.tgz
+
+      # 只发本目标的平台专属包(平台无关的那些由 win32-x64 那条腿发,避免四边抢同一个包名)。
+      - name: 发布到 npm(只发 linux-x64 专用)
+        if: inputs.publish
+        shell: bash
+        working-directory: ${{ runner.temp }}/repacks
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            printf '//registry.npmjs.org/:_authToken=%s' "$NPM_TOKEN" > .npmrc
+            echo "认证:NPM_TOKEN(已写入 .npmrc,publish-repacks.mjs 会 --userconfig 指向它)"
+          else
+            echo "认证:OIDC trusted publishing(没配 NPM_TOKEN)⇒ 每个子包都需要一条 Trusted Publisher,workflow 名 repacks.yml"
+          fi
+          set +e
+          node scripts/publish-repacks.mjs --tag "$DIST_TAG" --only "$TARGET" 2>&1 | tee "$RUNNER_TEMP/publish.log"
+          code=${PIPESTATUS[0]}
+          rm -f .npmrc
+          if [ "$code" -ne 0 ]; then
+            echo "::error::发布失败(exit $code)"
+            grep -E 'npm error|npm ERR|403|404|409|E402|EPUBLISH|ENEEDAUTH|EOTP|forbidden|trusted' "$RUNNER_TEMP/publish.log" \
+              | tail -n 10 | while IFS= read -r line; do echo "::error:: $line"; done
+            exit "$code"
+          fi
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "### repacks / ${{ env.TARGET }}"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| runner | \`ubuntu-latest\` |"
+            echo "| 目标 | \`${{ env.TARGET }}\` |"
+            echo "| 发布 | \`${{ inputs.publish }}\`(--only ${{ env.TARGET }}) |"
+            echo "| 触发 | \`${{ github.event_name }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  linux-arm64:
+    name: repacks linux-arm64
+    if: github.event_name == 'push' || inputs.build_linux_arm64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      TARGET: linux-arm64
+      DIST_TAG: ${{ inputs.dist_tag }}
+    steps:
+      - name: 检出
+        uses: actions/checkout@v7
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: 复制仓库到 $RUNNER_TEMP(不弄脏检出)
+        shell: bash
+        run: |
+          dst="$RUNNER_TEMP/repacks"
+          rm -rf "$dst"; mkdir -p "$dst"
+          git archive HEAD | tar -x -C "$dst"
+          echo "副本:$dst"
+
+      - name: 钉版本准备 vendor/vscode(与 dependencies 里钉的树版本一致)
+        shell: bash
+        working-directory: ${{ runner.temp }}/repacks
+        run: |
+          V=$(node -e "const p=require(process.env.GITHUB_WORKSPACE+'/package.json');const k=Object.keys(p.dependencies).filter(n=>/\/dshcs-vscode-server$/.test(n));if(k.length!==1){console.error('树包应恰好一个:',k);process.exit(1)}process.stdout.write(p.dependencies[k[0]])")
+          echo "内置树版本(code-server):$V"
+          node scripts/vendor-vscode-server.mjs --version "$V"
+          test -f vendor/vscode/lib/vscode/out/server-main.js \
+            || { echo "::error::vendor/vscode 不完整(缺 out/server-main.js)"; exit 1; }
+
+      - name: 重打打包(--pack)
+        shell: bash
+        working-directory: ${{ runner.temp }}/repacks
+        run: |
+          set +e
+          node scripts/vendor-repacks.mjs --target "$TARGET" --pack 2>&1 | tee "$RUNNER_TEMP/repack.log"
+          code=${PIPESTATUS[0]}
+          echo "repack 退出码 $code"
+          if [ "$code" -ne 0 ]; then
+            echo "::error::repack 失败(exit $code);下面把报错行与日志尾部转成 annotation"
+            grep -E 'Error|error:|✗|失败|未生成|throw|ENOENT|EACCES' "$RUNNER_TEMP/repack.log" | tail -n 10 \
+              | while IFS= read -r line; do echo "::error:: $line"; done
+            tail -n 8 "$RUNNER_TEMP/repack.log" | while IFS= read -r line; do echo "::error:: $line"; done
+            exit "$code"
+          fi
+
+      - name: 结论(产物清单,公开可读)
+        shell: bash
+        run: |
+          tgz="$RUNNER_TEMP/repacks/repack/tgz"
+          count=$(ls -1 "$tgz"/*.tgz 2>/dev/null | wc -l | tr -d ' ')
+          echo "::notice::$TARGET 产出 $count 个 tgz"
+          for f in "$tgz"/*.tgz; do
+            [ -e "$f" ] || continue
+            echo "::notice::  $(basename "$f") $(( $(stat -c%s "$f") / 1024 ))KB"
+          done
+          echo "---- 待发布目录(repack/build)----"
+          ls -1 "$RUNNER_TEMP/repacks/repack/build" || true
+
+      - name: 生成的依赖表与仓库里的一致吗(平台政策应当宿主无关)
+        shell: bash
+        run: |
+          for f in lib/vendored.json package.json; do
+            if diff -q "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/repacks/$f" >/dev/null 2>&1; then
+              echo "::notice::$TARGET 上生成的 $f 与仓库里的完全一致"
+            else
+              echo "::warning::$TARGET 上生成的 $f 与仓库里的不一致(平台政策本应宿主无关)"
+              diff -u "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/repacks/$f" | head -n 12 \
+                | while IFS= read -r line; do echo "::warning:: $line"; done
+            fi
+          done
+
+      - name: 上传 tgz
+        uses: actions/upload-artifact@v7
+        with:
+          name: repacks-linux-arm64
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/repacks/repack/tgz/*.tgz
+
+      - name: 发布到 npm(只发 linux-arm64 专用)
+        if: inputs.publish
+        shell: bash
+        working-directory: ${{ runner.temp }}/repacks
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            printf '//registry.npmjs.org/:_authToken=%s' "$NPM_TOKEN" > .npmrc
+            echo "认证:NPM_TOKEN(已写入 .npmrc,publish-repacks.mjs 会 --userconfig 指向它)"
+          else
+            echo "认证:OIDC trusted publishing(没配 NPM_TOKEN)⇒ 每个子包都需要一条 Trusted Publisher,workflow 名 repacks.yml"
+          fi
+          set +e
+          node scripts/publish-repacks.mjs --tag "$DIST_TAG" --only "$TARGET" 2>&1 | tee "$RUNNER_TEMP/publish.log"
+          code=${PIPESTATUS[0]}
+          rm -f .npmrc
+          if [ "$code" -ne 0 ]; then
+            echo "::error::发布失败(exit $code)"
+            grep -E 'npm error|npm ERR|403|404|409|E402|EPUBLISH|ENEEDAUTH|EOTP|forbidden|trusted' "$RUNNER_TEMP/publish.log" \
+              | tail -n 10 | while IFS= read -r line; do echo "::error:: $line"; done
+            exit "$code"
+          fi
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "### repacks / ${{ env.TARGET }}"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| runner | \`ubuntu-24.04-arm\` |"
+            echo "| 目标 | \`${{ env.TARGET }}\` |"
+            echo "| 发布 | \`${{ inputs.publish }}\`(--only ${{ env.TARGET }}) |"
             echo "| 触发 | \`${{ github.event_name }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 

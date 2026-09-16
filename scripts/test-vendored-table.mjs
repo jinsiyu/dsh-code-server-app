@@ -5,6 +5,9 @@
 // requires missing(见 docs/desktop-first-install-root-cause.md)。新模型要求:
 //   · 平台无关的重打包包 → 插件 dependencies(真名);
 //   · 平台专属的重打包包 → 插件 optionalDependencies(真名 + 包自带 os/cpu,每目标一份);
+//   · 平台专属包**自己的注册表依赖**(bindings / fs-extra / uuid / mkdirp…)→ 也必须写进插件
+//     dependencies:它们在 optional 子树 depth≥2 处,pnpm 的增量 hoisted 安装会把整支丢进
+//     `skipped`(0.3.45 的残留下沉,见 docs/desktop-first-install-root-cause.md 第 5 节);
 //   · 依赖表里**不允许出现任何 npm: 别名**,也不允许再引用平台聚合包;
 //   · 原始名字(调用方 import 的名字)只由 lib/vendored.json + 运行时 junction 提供。
 // 这一层错了不会立刻报错(装得上、跑不起来),所以钉死。
@@ -12,11 +15,13 @@
 // 用法:node scripts/test-vendored-table.mjs
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readVendoredTable, vendoredEntries, vendoredPackageName } from '../lib/native.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+/** 上游包名 → 重打包目录名(与 scripts/vendor-repacks.mjs 的 flat() 同一规则)。 */
+const flat = (name) => name.replace(/^@/u, '').replaceAll('/', '-');
 /** 读 JSON;**读不到/读坏都返回 null,不抛**。
  *  为什么必须容错:`vendor/`(`vendor/VENDOR.json`、`vendor/vscode/package.json`)与 `repack/build`
  *  都是 .gitignore 的**打包期产物** —— 全新 clone(CI 的 runner)上它们一律不存在。
@@ -83,16 +88,52 @@ await test('平台无关的重打包包都写在 dependencies(精确版本)', as
   }
 });
 
-await test('平台专属的重打包包按目标写在 optionalDependencies(精确版本)', async () => {
+await test('平台专属的重打包包按「每模块目标白名单 ∩ 已发布目标」写在 optionalDependencies', async () => {
   assert.ok(specific.length > 0, '应至少有一个平台专属重打包包');
-  for (const target of table.targets) {
+  const policy = readJson(join(root, 'scripts', 'repack-platforms.json'));
+  const published = Array.isArray(policy?.publishedTargets) ? policy.publishedTargets : null;
+  assert.ok(published !== null && published.length > 0,
+    'scripts/repack-platforms.json 应有 publishedTargets —— 否则看不出哪些目标已经能写进插件依赖');
+  const targetsOf = (m) => (Array.isArray(m.targets) ? m.targets : table.targets);
+  const allowed = new Set();
+  for (const target of published) {
     for (const m of specific) {
       const name = `${m.package}-${target}`;
+      if (!targetsOf(m).includes(target)) {
+        assert.ok(!(name in optional), `${name} 不在 ${m.alias} 的目标白名单里,不该写进 optionalDependencies`);
+        continue;
+      }
+      allowed.add(name);
       assert.equal(optional[name], m.version, `${name} 应在 optionalDependencies 且为 ${m.version},实际 ${optional[name]}`);
     }
   }
-  assert.equal(Object.keys(optional).length, specific.length * table.targets.length,
-    'optionalDependencies 应恰好是「平台专属包 × 目标数」,不允许多余项');
+  // 反向:未发布的目标(例如还没首次发布的 linux 子包)一个都不许出现 ——
+  // 写进去 pnpm install 就会去解析一个不存在的包。
+  const extra = Object.keys(optional).filter((name) => !allowed.has(name));
+  assert.equal(extra.length, 0,
+    `optionalDependencies 里有「未发布目标 / 白名单外」的条目:${extra.join(', ')}`
+    + `(已发布目标:${published.join(', ')})`);
+  assert.equal(Object.keys(optional).length, allowed.size, 'optionalDependencies 应恰好等于「白名单 ∩ 已发布目标」的笛卡尔积');
+});
+
+await test('平台专属重打包包的注册表依赖已提为插件直接依赖(optional 子树会被 pnpm 丢包)', async () => {
+  const buildRoot = join(root, 'repack', 'build');
+  if (!existsSync(buildRoot)) return; // 没编过原生包(全新克隆)→ 跳过
+  const platformDirs = readdirSync(buildRoot).filter((name) => /-(?:win32|darwin|linux)-(?:arm64|x64)$/u.test(name));
+  assert.ok(platformDirs.length > 0, `repack/build 里应有平台专属重打包目录:${readdirSync(buildRoot).join(', ')}`);
+  const missing = [];
+  for (const dir of platformDirs) {
+    const manifest = readJson(join(buildRoot, dir, 'package.json'));
+    for (const field of ['dependencies', 'optionalDependencies']) {
+      for (const [name, spec] of Object.entries(manifest?.[field] ?? {})) {
+        if (String(spec).startsWith('npm:')) continue; // 已重打包的真名子包
+        if (!(name in deps)) missing.push(`${manifest.name}.${field}.${name}@${spec}`);
+      }
+    }
+  }
+  assert.equal(missing.length, 0,
+    `这些依赖在 optional 子树里(depth≥2),pnpm 增量 hoisted 安装会整支丢进 skipped,`
+    + ` dsh-desktop 装完立刻校验 ⇒ 必须写进插件 dependencies:${missing.join(', ')}`);
 });
 
 await test('依赖表里没有任何 npm: 别名(本次改造的核心不变式)', async () => {
@@ -129,18 +170,63 @@ await test('发布清单 files 带上 lib/vendored.json(否则装完读不到表
   assert.ok(pluginPkg.files.includes('lib/native.js'), 'files 里缺 lib/native.js');
 });
 
-await test('运行时表:vendoredEntries() 与 vendored.json 一致且按平台拼后缀', async () => {
+await test('运行时表:vendoredEntries() 只含本平台适用的模块,并按该平台拼后缀', async () => {
+  const hostKey = `${process.platform}-${process.arch}`;
+  const applies = (m, key) => m.platform !== true || !Array.isArray(m.targets) || m.targets.includes(key);
   const host = vendoredEntries();
-  assert.equal(host.length, table.modules.length, '条目数应与表一致');
-  for (const m of table.modules) {
+  const applicable = table.modules.filter((m) => applies(m, hostKey));
+  assert.equal(host.length, applicable.length,
+    `宿主适用条目数应为 ${applicable.length}(表里 ${table.modules.length} 个,其余只属于别的平台),实际 ${host.length}`);
+  for (const m of applicable) {
     const hit = host.find((e) => e.alias === m.alias);
     assert.ok(hit !== undefined, `运行时表缺 ${m.alias}`);
-    assert.equal(hit.packageName, m.platform === true ? `${m.package}-${process.platform}-${process.arch}` : m.package,
+    assert.equal(hit.packageName, m.platform === true ? `${m.package}-${hostKey}` : m.package,
       `${m.alias} 的真包名不对:${hit.packageName}`);
   }
-  // 换平台只改后缀,基名不动
-  const foreign = vendoredEntries('linux', 'x64').find((e) => e.alias === specific[0].alias);
-  assert.equal(foreign.packageName, `${specific[0].package}-linux-x64`, '跨平台拼名不对');
+  // 跨平台:适用性按白名单判定,真名只换后缀;Windows-only 的模块在 Linux 上必须消失
+  // (否则运行时会去找 @jinsiyu/dshcs-vscode-windows-registry-linux-x64 这种永远不存在的包)
+  for (const key of ['linux-x64', 'win32-x64', 'linux-arm64', 'win32-arm64']) {
+    const aliases = new Set(vendoredEntries(...key.split('-')).map((e) => e.alias));
+    for (const m of table.modules) {
+      assert.equal(aliases.has(m.alias), applies(m, key),
+        `${m.alias} 在 ${key} 上的适用性判定与白名单不符(targets=${JSON.stringify(m.targets ?? null)})`);
+    }
+  }
+  const linuxCapable = specific.find((m) => Array.isArray(m.targets) && m.targets.includes('linux-x64'));
+  if (linuxCapable !== undefined) {
+    const hit = vendoredEntries('linux', 'x64').find((e) => e.alias === linuxCapable.alias);
+    assert.equal(hit.packageName, `${linuxCapable.package}-linux-x64`, `跨平台拼名不对:${hit.packageName}`);
+  }
+});
+
+await test('平台政策(scripts/repack-platforms.json)与重打包表一致', async () => {
+  const policy = readJson(join(root, 'scripts', 'repack-platforms.json'));
+  assert.ok(policy !== null, 'scripts/repack-platforms.json 必须存在:它是「每模块平台白名单」的唯一来源,'
+    + '生成器据此决定构建/依赖/运行时过滤(上游不写 os/cpu,analyze() 的结论随宿主漂移)');
+  assert.deepEqual(table.targets, policy.targets,
+    `vendored.json 的 targets 应与政策一致:${JSON.stringify(table.targets)} vs ${JSON.stringify(policy.targets)}`);
+  const known = new Map(Object.entries(policy.modules ?? {}));
+  const unknown = table.modules.map((m) => m.alias).filter((alias) => !known.has(alias));
+  assert.equal(unknown.length, 0, `表里的模块没在政策里登记:${unknown.join(', ')}(换宿主平台时分类会漂移)`);
+  const missing = [...known.keys()].filter((alias) => !table.modules.some((m) => m.alias === alias));
+  assert.equal(missing.length, 0, `政策里登记了但表里没有的模块:${missing.join(', ')}`);
+  for (const m of table.modules) {
+    const decl = known.get(m.alias);
+    assert.equal(m.platform === true, decl.platform === true, `${m.alias}: platform 标记与政策不一致`);
+    if (m.platform !== true) {
+      assert.equal(m.targets, undefined, `${m.alias} 是平台无关模块,不该有 targets`);
+      continue;
+    }
+    const want = Array.isArray(decl.targets) ? table.targets.filter((t) => decl.targets.includes(t)) : [...table.targets];
+    assert.deepEqual(m.targets, want,
+      `${m.alias}: 目标白名单与政策不一致(${JSON.stringify(m.targets)} vs ${JSON.stringify(want)})`);
+    assert.ok(m.targets.length > 0, `${m.alias} 是平台专属模块,却没有任何目标`);
+  }
+  for (const m of table.modules) {
+    if (!/windows-/u.test(m.alias)) continue;
+    const linuxHit = (m.targets ?? []).filter((t) => t.startsWith('linux-'));
+    assert.equal(linuxHit.length, 0, `${m.alias} 是 Windows-only 模块,不该有 ${linuxHit.join(', ')} 目标`);
+  }
 });
 
 await test('readVendoredTable() 读得到 scope 与 targets', async () => {
@@ -152,16 +238,30 @@ await test('readVendoredTable() 读得到 scope 与 targets', async () => {
   assert.equal(vendoredPackageName({ package: '@x/y', platform: true }, 'win32', 'arm64'), '@x/y-win32-arm64');
 });
 
-await test('repack/build 里的重打包目录与表一一对应(构建产物存在时)', async () => {
+await test('repack/build 与 pack-plan.json 一致,且不出现白名单外的目录(构建产物存在时)', async () => {
   const buildRoot = join(root, 'repack', 'build');
   if (!existsSync(buildRoot)) return; // 没编过原生包(全新克隆)→ 跳过
-  const flat = (name) => name.replace(/^@/u, '').replaceAll('/', '-');
   const dirs = new Set(readdirSync(buildRoot));
-  const expected = new Set();
-  for (const m of independent) expected.add(flat(m.alias));
-  for (const target of table.targets) for (const m of specific) expected.add(`${flat(m.alias)}-${target}`);
-  const missing = [...expected].filter((d) => !dirs.has(d));
-  assert.equal(missing.length, 0, `repack/build 缺目录:${missing.join(', ')}`);
+  const legal = new Set();
+  for (const m of independent) legal.add(flat(m.alias));
+  for (const m of specific) for (const t of m.targets ?? table.targets) legal.add(`${flat(m.alias)}-${t}`);
+  const plan = readJson(join(root, 'repack', 'pack-plan.json'));
+  if (!Array.isArray(plan)) {
+    // 没有计划文件(旧构建残留)⇒ 只对宿主目标做实检查,并把检查范围说清楚
+    const hostKey = `${process.platform}-${process.arch}`;
+    const expected = new Set();
+    for (const m of independent) expected.add(flat(m.alias));
+    for (const m of specific) if ((m.targets ?? table.targets).includes(hostKey)) expected.add(`${flat(m.alias)}-${hostKey}`);
+    const missing = [...expected].filter((d) => !dirs.has(d));
+    assert.equal(missing.length, 0, `repack/build 缺宿主目标的目录:${missing.join(', ')}(无 pack-plan.json,只查 ${hostKey})`);
+    return;
+  }
+  const planned = new Set(plan.map((item) => basename(item.dir)));
+  const missing = [...planned].filter((d) => !dirs.has(d));
+  assert.equal(missing.length, 0, `pack-plan 里的目录在 repack/build 里不存在:${missing.join(', ')}`);
+  const illegal = [...planned].filter((d) => d !== 'vscode' && !legal.has(d));
+  assert.equal(illegal.length, 0,
+    `pack-plan 里出现「模块×白名单目标」之外的目录:${illegal.join(', ')}(多半是白名单没更新或有旧构建残留)`);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

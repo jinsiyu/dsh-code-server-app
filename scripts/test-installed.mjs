@@ -27,7 +27,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { readVendoredTable, vendoredPackageName } from '../lib/native.js';
+import { readVendoredTable, vendoredAppliesTo, vendoredPackageName } from '../lib/native.js';
 
 const argv = process.argv.slice(2);
 const profileArg = argv.find((a) => !a.startsWith('--')) ?? null;
@@ -77,17 +77,22 @@ function dumpProfile() {
   }
 }
 
-/** 产品目前**只发 win32 原生子包**(见 README「安装插件」:16 个平台专属重打包包 = 8 模块 ×
- *  win32-arm64/x64,子包自带 os/cpu)。所以在 Linux/macOS 上:pnpm 会按 os 字段跳过它们,
- *  profile 里当然没有 ⇒ 「重打包包齐全 / 原生模块无缺失」这两条在非 win32 上是**无意义**的断言,
- *  必须 SKIP 并说明原因,而不是判失败(2026-09-16 release 门禁在 ubuntu 上就是这么被拦住的 ——
- *  拦得对:那次等于暴露了"在错误的平台上做安装冒烟"这件事)。Linux 目标补齐后这两条会自动变成真检查。 */
-const SHIPS_NATIVE = process.platform === 'win32';
+/** 这个平台有没有预编译原生子包:看**已安装插件自己**的 optionalDependencies 里有没有本平台后缀的
+ *  条目(win32-* 一直是;linux-* 在首次发布并把它们写进依赖表之后自动生效 —— 这里不必改代码)。
+ *  非支持平台:包管理器按包自带 os/cpu 跳过它们,profile 里当然没有 ⇒「重打包包齐全 / 原生模块
+ *  无缺失」这两条在那里是**无意义**的断言,必须 SKIP 并说明原因,而不是判失败(2026-09-16 release
+ *  门禁在 ubuntu 上就是这么被拦住的 —— 拦得对:那次等于暴露了"在错误的平台上做安装冒烟"这件事)。
+ *  Linux 目标发布后,这两条在 Linux 上会自动变成真检查。 */
+const pluginPkgFile = join(pluginDir, 'package.json');
+const platformSuffix = `-${process.platform}-${process.arch}`;
+const SHIPS_NATIVE = existsSync(pluginPkgFile)
+  && Object.keys(JSON.parse(readFileSync(pluginPkgFile, 'utf8')).optionalDependencies ?? {})
+    .some((name) => name.endsWith(platformSuffix));
 
 console.log(`[verify] profile   : ${profile}`);
 console.log(`[verify] 已安装插件: ${pluginDir}`);
 console.log(`[verify] 主机平台  : ${process.platform}/${process.arch}`
-  + `${SHIPS_NATIVE ? '' : '(本产品目前只发 win32 子包,原生相关断言会 SKIP)'}`);
+  + `${SHIPS_NATIVE ? '' : `(该插件副本没有 ${platformSuffix} 的原生子包 ⇒ 原生相关断言会 SKIP)`}`);
 
 // ① 激活登记
 const profilePkgFile = join(profile, 'package.json');
@@ -133,17 +138,22 @@ try {
 // ⑤ 重打包表 ↔ profile 里真实存在的包(0.3.45 那类"optional 子树被丢包"的探针)
 const profileModules = join(profile, 'node_modules');
 const table = readVendoredTable();
+// 只看**本平台适用**的条目:只属于其它平台的模块(如 Linux 上的 @vscode/windows-registry)
+// 它们的子包永远不会存在,拿它们判"缺包"没有意义。
+const applicable = table.modules.filter((m) => vendoredAppliesTo(m));
+const foreignCount = table.modules.length - applicable.length;
+const tableCheckName = `重打包表里 ${applicable.length} 个适用包在当前平台都能在 profile 里找到`
+  + `${foreignCount > 0 ? `(另有 ${foreignCount} 个只属于其它平台,不计)` : ''}`;
 if (!SHIPS_NATIVE) {
-  skip(`重打包表里 ${table.modules.length} 个包在当前平台都能在 profile 里找到`,
-    `产品目前只发 win32 子包,${process.platform} 上 pnpm 按 os 字段跳过它们`);
+  skip(tableCheckName, `已安装的插件副本没有 ${platformSuffix} 的原生子包 ⇒ 该平台还没发布原生产物`);
 } else {
   const unresolved = [];
-  for (const entry of table.modules) {
+  for (const entry of applicable) {
     const name = vendoredPackageName(entry, process.platform, process.arch);
     if (existsSync(join(profileModules, name)) || existsSync(join(pluginDir, 'node_modules', name))) continue;
     unresolved.push(name);
   }
-  check(`重打包表里 ${table.modules.length} 个包在当前平台都能在 profile 里找到`, unresolved.length === 0,
+  check(tableCheckName, unresolved.length === 0,
     unresolved.length > 0 ? `缺:${unresolved.slice(0, 6).join(', ')}${unresolved.length > 6 ? ' …' : ''}` : '');
 }
 
@@ -155,7 +165,7 @@ try {
     `created=${layout.created.length} failed=${layout.failed.length}`);
   const status = native.nativeRuntimeStatus();
   if (!SHIPS_NATIVE) {
-    skip('原生模块全部可解析', `同上:${process.platform} 上没有这些子包(缺 ${status.missing.length} 个)`);
+    skip('原生模块全部可解析', `同上:该插件副本没有 ${platformSuffix} 的原生子包(缺 ${status.missing.length} 个)`);
   } else {
     check('原生模块全部可解析', status.missing.length === 0,
       `resolved=${status.resolved} missing=${status.missing.length}${status.missing.length ? `:${status.missing.slice(0, 6).join(',')}` : ''}`);

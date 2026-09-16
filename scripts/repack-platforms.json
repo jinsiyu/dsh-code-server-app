@@ -1,0 +1,57 @@
+{
+  "_comment": [
+    "重打包模块的平台政策(人工评审的声明)。scripts/vendor-repacks.mjs **只读不写**这份文件。",
+    "",
+    "为什么必须显式声明,而不是从上游元数据推断:",
+    "  · 上游包的 package.json 基本不写 os/cpu —— 实测 16 个模块里只有 @vscode/windows-ca-certs",
+    "    声明了 os:[\"win32\"];连 @vscode/windows-registry / windows-process-tree 都没写;",
+    "  · 树清单(vendor/vscode/lib/vscode/package.json)把这 8 个原生模块**全放在普通 dependencies**,",
+    "    所以 Linux 上 npm 一样会把 Windows-only 的包装出来 ⇒ 换宿主平台,analyze() 看到的集合与",
+    "    「有没有 .node 二进制」都会变 ⇒ 分类会漂移(在 Linux 上 windows-registry 会被判成平台无关,",
+    "    于是被写进 dependencies,Windows 运行时反而找不到 -win32-* 子包)。",
+    "所以:「哪些模块需要按平台分包」「每个模块在哪些目标上有包」由这张表钉死,生成器据此产出",
+    "lib/vendored.json 的每模块 targets(运行时据此跳过本平台不适用的模块)与插件 package.json 的",
+    "optionalDependencies(不再盲目 × 全部目标)。",
+    "",
+    "targets 缺省 = 全部目标(见下一项 targets 列表);platform 缺省 = 由 analyze() 判断。",
+    "新增模块时把别名加进来(vendor-repacks.mjs 会在发现未声明模块时打印提醒)。"
+  ],
+  "targets": [
+    "win32-x64",
+    "win32-arm64",
+    "linux-x64",
+    "linux-arm64"
+  ],
+  "_publishedTargetsNote": [
+    "publishedTargets = 子包**已经发布到 npm** 的目标,只有它们能写进插件 package.json 的",
+    "optionalDependencies(写进去而包不存在 ⇒ pnpm install 直接解析失败)。",
+    "bootstrap 顺序:先用 repacks.yml 的构建腿产出 linux 子包 → 由维护者带 2FA 首发(新包名没法",
+    "预先建 Trusted Publisher)→ 把 linux-x64 / linux-arm64 加进这里 → 重跑 vendor-repacks.mjs",
+    "→ pnpm install 刷新 pnpm-lock.yaml。此前 lib/vendored.json 已经带上 linux 目标,运行时只是",
+    "把它们报成「本平台缺包」(Linux 本来就还没支持),不会影响 Windows。"
+  ],
+  "publishedTargets": [
+    "win32-x64",
+    "win32-arm64"
+  ],
+  "modules": {
+    "@vscode/windows-ca-certs": { "platform": true, "targets": ["win32-x64", "win32-arm64"] },
+    "@vscode/windows-process-tree": { "platform": true, "targets": ["win32-x64", "win32-arm64"] },
+    "@vscode/windows-registry": { "platform": true, "targets": ["win32-x64", "win32-arm64"] },
+
+    "@vscode/deviceid": { "platform": true },
+    "@vscode/native-watchdog": { "platform": true },
+    "@vscode/spdlog": { "platform": true },
+    "@vscode/sqlite3": { "platform": true },
+    "kerberos": { "platform": true },
+
+    "@microsoft/mxc-sdk": { "platform": false },
+    "@parcel/watcher": { "platform": false },
+    "@vscode/fs-copyfile": { "platform": false },
+    "@vscode/proxy-agent": { "platform": false },
+    "cpu-features": { "platform": false },
+    "koffi": { "platform": false },
+    "node-pty": { "platform": false },
+    "ssh2": { "platform": false }
+  }
+}

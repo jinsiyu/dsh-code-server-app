@@ -3,8 +3,10 @@
   "generatedBy": "scripts/vendor-repacks.mjs",
   "scope": "@jinsiyu",
   "targets": [
+    "win32-x64",
     "win32-arm64",
-    "win32-x64"
+    "linux-x64",
+    "linux-arm64"
   ],
   "modules": [
     {
@@ -21,7 +23,13 @@
       "alias": "@vscode/deviceid",
       "package": "@jinsiyu/dshcs-vscode-deviceid",
       "version": "0.1.5",
-      "platform": true
+      "platform": true,
+      "targets": [
+        "win32-x64",
+        "win32-arm64",
+        "linux-x64",
+        "linux-arm64"
+      ]
     },
     {
       "alias": "@vscode/fs-copyfile",
@@ -32,7 +40,13 @@
       "alias": "@vscode/native-watchdog",
       "package": "@jinsiyu/dshcs-vscode-native-watchdog",
       "version": "1.4.6",
-      "platform": true
+      "platform": true,
+      "targets": [
+        "win32-x64",
+        "win32-arm64",
+        "linux-x64",
+        "linux-arm64"
+      ]
     },
     {
       "alias": "@vscode/proxy-agent",
@@ -43,31 +57,55 @@
       "alias": "@vscode/spdlog",
       "package": "@jinsiyu/dshcs-vscode-spdlog",
       "version": "0.15.8",
-      "platform": true
+      "platform": true,
+      "targets": [
+        "win32-x64",
+        "win32-arm64",
+        "linux-x64",
+        "linux-arm64"
+      ]
     },
     {
       "alias": "@vscode/sqlite3",
       "package": "@jinsiyu/dshcs-vscode-sqlite3",
       "version": "5.1.12-vscode",
-      "platform": true
+      "platform": true,
+      "targets": [
+        "win32-x64",
+        "win32-arm64",
+        "linux-x64",
+        "linux-arm64"
+      ]
     },
     {
       "alias": "@vscode/windows-ca-certs",
       "package": "@jinsiyu/dshcs-vscode-windows-ca-certs",
       "version": "0.3.4",
-      "platform": true
+      "platform": true,
+      "targets": [
+        "win32-x64",
+        "win32-arm64"
+      ]
     },
     {
       "alias": "@vscode/windows-process-tree",
       "package": "@jinsiyu/dshcs-vscode-windows-process-tree",
       "version": "0.8.0",
-      "platform": true
+      "platform": true,
+      "targets": [
+        "win32-x64",
+        "win32-arm64"
+      ]
     },
     {
       "alias": "@vscode/windows-registry",
       "package": "@jinsiyu/dshcs-vscode-windows-registry",
       "version": "1.2.0",
-      "platform": true
+      "platform": true,
+      "targets": [
+        "win32-x64",
+        "win32-arm64"
+      ]
     },
     {
       "alias": "cpu-features",
@@ -78,7 +116,13 @@
       "alias": "kerberos",
       "package": "@jinsiyu/dshcs-kerberos",
       "version": "2.1.1-dshcs.1",
-      "platform": true
+      "platform": true,
+      "targets": [
+        "win32-x64",
+        "win32-arm64",
+        "linux-x64",
+        "linux-arm64"
+      ]
     },
     {
       "alias": "koffi",

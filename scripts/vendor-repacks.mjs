@@ -326,6 +326,15 @@ function peMachine(file) {
   } catch { return null; }
 }
 
+/** ELF e_machine(0x3e=x86-64 / 0xb7=AArch64),用于 Linux 目标的静态校验。 */
+function elfMachine(file) {
+  try {
+    const b = readFileSync(file);
+    if (b[0] !== 0x7f || b[1] !== 0x45 || b[2] !== 0x4c || b[3] !== 0x46) return null;
+    return `0x${b.readUInt16LE(0x12).toString(16)}`;
+  } catch { return null; }
+}
+
 /** ① VS Code 树(平台无关):vendor/vscode → repack/build/vscode/vscode/。
  *  排除 VS Code 的「内部依赖目录」(lib/vscode/node_modules、lib/vscode/extensions/node_modules)
  *  —— 它们由包管理器安装 + 平台聚合包按架构提供,树里只留 lib/vscode 本体与静态资源。
@@ -499,9 +508,151 @@ function readModules(targets) {
   return modules;
 }
 
+/** 重打包模块的平台政策(scripts/repack-platforms.json,**人工评审**;本脚本只读不写)。
+ *  @returns {{allTargets:string[]|null, publishedTargets:string[]|null,
+ *             perModule:Map<string,{platform:boolean|null, targets:string[]|null}>}} */
+function readRepackPlatforms() {
+  const doc = readJson(join(here, 'repack-platforms.json'));
+  const list = (v) => (Array.isArray(v) ? v.filter((t) => typeof t === 'string' && t !== '') : null);
+  const allTargets = list(doc?.targets);
+  if (allTargets === null || allTargets.length === 0) {
+    console.warn('  ⚠ 读不到 scripts/repack-platforms.json 的 targets ⇒ 平台政策退化为「构建目标即全部目标」,'
+      + '每模块白名单与跨平台保留都会失效');
+  }
+  const perModule = new Map();
+  for (const [alias, spec] of Object.entries(doc?.modules ?? {})) {
+    if (spec === null || typeof spec !== 'object') continue;
+    perModule.set(alias, {
+      platform: typeof spec.platform === 'boolean' ? spec.platform : null,
+      targets: list(spec.targets),
+    });
+  }
+  return { allTargets, publishedTargets: list(doc?.publishedTargets), perModule };
+}
+
+/** 平台政策落到分析结果上:
+ *   ① 分类(是不是平台专属)以声明为准 —— analyze() 的结论随宿主漂移(Linux 上 windows-registry
+ *      没有 .node 会被判成平台无关,一旦写进 dependencies,Windows 运行时反而找不到 -win32-* 子包);
+ *   ② 平台专属模块补上目标白名单(缺席 = 全部目标);
+ *   ③ **保留本次分析看不到的条目**:用 --target 只构建本机目标时,表里其它平台的模块必须原样留下;
+ *   ④ 未在声明里登记的模块给出提醒(新模块).
+ *  @param modules - 就地修改的重打包条目(来自 analyze 或 --reuse) */
+function applyPlatformPolicy(modules, platforms, allTargets) {
+  const declared = (alias) => platforms.perModule.get(alias);
+  for (const m of modules) {
+    const decl = declared(m.alias);
+    if (decl === undefined) {
+      console.warn(`  ⚠ ${m.alias} 不在 scripts/repack-platforms.json 的模块表里 ⇒ 沿用分析结论`
+        + `(platform=${m.platform});建议登记它,否则换宿主平台时分类会漂移`);
+      continue;
+    }
+    if (decl.platform !== null && decl.platform !== m.platform) {
+      console.warn(`  ⚠ ${m.alias}:分析结论 platform=${m.platform},声明写的是 platform=${decl.platform} ⇒ 以声明为准`);
+      m.platform = decl.platform;
+    }
+  }
+
+  const seen = new Set(modules.map((m) => m.alias));
+  const existing = readJson(join(pkgRoot, 'lib', 'vendored.json'));
+  const kept = [];
+  for (const e of Array.isArray(existing?.modules) ? existing.modules : []) {
+    if (e === null || typeof e !== 'object' || typeof e.alias !== 'string' || seen.has(e.alias)) continue;
+    const decl = declared(e.alias);
+    kept.push({
+      alias: e.alias,
+      package: typeof e.package === 'string' && e.package !== '' ? e.package : `${SCOPE}/dshcs-${flat(e.alias)}`,
+      version: typeof e.version === 'string' ? e.version : null,
+      platform: decl?.platform ?? e.platform === true,
+      targets: decl?.targets ?? (Array.isArray(e.targets) ? e.targets : null),
+      carried: true,
+    });
+    seen.add(e.alias);
+  }
+  if (kept.length > 0) {
+    console.log(`[repack] 保留 ${kept.length} 个本次分析看不到的条目(其它平台的模块):${kept.map((k) => k.alias).join(', ')}`);
+    modules.push(...kept);
+    modules.sort((a, b) => a.alias.localeCompare(b.alias));
+  }
+
+  for (const m of modules) {
+    if (!m.platform) continue;
+    const wanted = m.targets ?? declared(m.alias)?.targets ?? null;
+    m.targets = wanted === null ? [...allTargets] : allTargets.filter((t) => wanted.includes(t));
+    if (m.targets.length === 0) {
+      console.warn(`  ⚠ ${m.alias}(平台专属)在白名单里没有任何目标 ⇒ 不会产出任何子包`);
+    }
+  }
+  for (const [alias, decl] of platforms.perModule) {
+    if (seen.has(alias) || decl.platform !== true) continue;
+    console.warn(`  ⚠ 声明里的 ${alias} 既不在本次分析结果、也不在 lib/vendored.json 里 ⇒ 无法为它产出子包`);
+  }
+  return modules;
+}
+
+/** 平台专属重打包包(写在插件 `optionalDependencies`)自带的**注册表依赖** —— 必须同时提成插件
+ *  自己的直接依赖。原因(0.3.46 实测,复现与证据见 docs/desktop-first-install-root-cause.md 第 5 节):
+ *  pnpm 的增量 hoisted 安装会把「optional 子树里 depth≥2」的依赖整支丢进 `node_modules/.modules.yaml`
+ *  的 `skipped`(`bindings` / `fs-extra` / `uuid` / `mkdirp` 全在内),而 dsh-desktop 在 `pnpm add`
+ *  之后**立刻**用 `require.resolve.paths()` 校验依赖图 ⇒ 首次安装报
+ *  `@jinsiyu/dshcs-kerberos-win32-arm64 requires missing bindings@^1.5.0`;
+ *  更糟的是 `pnpm install --frozen-lockfile` 会认为 «Already up to date»(锁文件本身也缺这些条目),
+ *  于是 profile 永远修不好,只能靠删 node_modules 重装。提到插件根依赖后它们落在 profile 根
+ *  `node_modules`,校验器与运行时都能解析到。这些都是纯 JS、无 ABI 约束,版本在此钉死;
+ *  将来平台专属包新增注册表依赖时 verifyOptionalSubtreeDeps() 会在构建期直接报错。 */
+const OPTIONAL_SUBTREE_DEPS = {
+  bindings: '1.5.0',
+  mkdirp: '1.0.4',
+  'fs-extra': '11.4.0',
+  uuid: '14.0.2',
+};
+
+/** 构建期闸门:平台专属重打包清单里的每个非别名依赖都必须落在**插件根依赖**里,
+ *  否则 pnpm 会把它丢进 skipped。两条来源都算数:
+ *    · OPTIONAL_SUBTREE_DEPS(仅这些包才需要、由本表钉版本的,例如 bindings);
+ *    · 树自己的直装集 `declare`(例如 node-addon-api —— VS Code 树本来就把它列为直接依赖,
+ *      生成器会按树里的版本写进插件 dependencies,同样落在 profile 根 node_modules)。
+ *  @param dirs - 已生成的平台专属重打包目录。
+ *  @param directDeps - 本次将写进插件 dependencies 的名字集合。 */
+function verifyOptionalSubtreeDeps(dirs, directDeps) {
+  const seen = new Set();
+  for (const dir of dirs) {
+    const m = readJson(join(dir, 'package.json'));
+    if (m === null) continue;
+    for (const fld of ['dependencies', 'optionalDependencies']) {
+      for (const [name, spec] of Object.entries(m[fld] ?? {})) {
+        if (String(spec).startsWith('npm:')) continue; // 已重打包(真名子包),不走注册表
+        seen.add(name);
+        if (!Object.hasOwn(OPTIONAL_SUBTREE_DEPS, name) && !directDeps.has(name)) {
+          throw new Error(`${m.name}: 注册表依赖 ${name}@${spec} 既不在 OPTIONAL_SUBTREE_DEPS、也不在插件的`
+            + ' 直装依赖里 —— 它位于 optional 子树(depth≥2),pnpm 的增量 hoisted 安装会丢包,'
+            + ' dsh-desktop 安装后立刻校验必报 requires missing;请把它提为插件直接依赖'
+            + '(见 docs/desktop-first-install-root-cause.md 第 5 节)');
+        }
+      }
+    }
+  }
+  const unused = Object.keys(OPTIONAL_SUBTREE_DEPS).filter((name) => !seen.has(name));
+  if (unused.length > 0) {
+    console.warn(`  ⚠ OPTIONAL_SUBTREE_DEPS 里的 ${unused.join(', ')} 已不再被任何平台专属包需要,可以删掉`);
+  }
+}
+
 function main() {
   const hostKey = `${process.platform}-${process.arch}`;
-  const targets = TARGETS.length > 0 ? TARGETS : [hostKey];
+  // 「构建哪些目标」(--target,缺省本机)与「产品覆盖哪些目标」是两件事:前者只影响本次构建,
+  // 后者来自 scripts/repack-platforms.json,决定 lib/vendored.json 的 targets、每模块白名单与插件
+  // optionalDependencies —— 否则在 Windows 上构建会把 Linux 的条目从依赖表里挤掉(反之亦然)。
+  const platforms = readRepackPlatforms();
+  const buildTargets = TARGETS.length > 0 ? TARGETS : [hostKey];
+  const allTargets = platforms.allTargets ?? buildTargets;
+  const publishedTargets = (platforms.publishedTargets ?? buildTargets).filter((t) => allTargets.includes(t));
+  for (const t of buildTargets) {
+    if (!allTargets.includes(t)) console.warn(`  ⚠ --target ${t} 不在 repack-platforms.json 的 targets 里(仍按请求构建)`);
+  }
+  if (publishedTargets.length === 0) {
+    throw new Error('repack-platforms.json 的 publishedTargets 与 targets 没有交集 ⇒ 生成不出插件依赖表');
+  }
+  console.log(`[repack] 平台政策:产品目标 ${allTargets.join(', ')};已发布(可写进插件依赖)${publishedTargets.join(', ')}`);
 
   let repack = null;
   let modules;
@@ -509,7 +660,7 @@ function main() {
   let reusedItems = [];
   let autoSourceTree = null;
   if (REUSE) {
-    ({ modules, declare, reusedItems } = reuseExisting(targets));
+    ({ modules, declare, reusedItems } = reuseExisting(buildTargets));
   } else {
     const autoSource = FROM === null;
     const sourceTree = autoSource ? prepareSourceTree() : FROM;
@@ -525,9 +676,11 @@ function main() {
       .sort((a, b) => a.alias.localeCompare(b.alias));
     rmSync(OUT, { recursive: true, force: true });
   }
+  applyPlatformPolicy(modules, platforms, allTargets);
   console.log(`\n重打包集(${modules.length}):`);
   for (const m of modules) {
-    console.log(`  ${m.alias}@${m.version} → ${m.package}${m.platform ? `-<平台>` : ''} ${m.platform ? '[平台专属]' : '[全平台]'}`);
+    const tag = m.platform ? `[平台专属 ${m.targets.join('|')}]` : '[全平台]';
+    console.log(`  ${m.alias}@${m.version} → ${m.package}${m.platform ? '-<平台>' : ''}${m.carried ? ' (保留)' : ''} ${tag}`);
   }
   console.log(`\n直装集(${declare.length}): ${declare.map((d) => d.name).join(', ')}\n`);
 
@@ -535,7 +688,7 @@ function main() {
 
   // 每个目标的包名映射:平台专属的按目标拼后缀,平台无关的到处同名
   const byTarget = new Map();
-  for (const target of targets) {
+  for (const target of buildTargets) {
     const map = new Map(); // 原包名 -> { pkgName, version, platformSpecific }
     for (const m of modules) {
       map.set(m.alias, {
@@ -588,6 +741,20 @@ function main() {
         if (wrong.length > 0) {
           console.warn(`  ⚠ ${pkg.pkgName}: ${wrong.length} 个 .node 架构不符(期望 ${want})`);
         }
+      } else if (platform === 'linux') {
+        // 同上,ELF 版:e_machine 必须是目标架构(0x3e=x86-64 / 0xb7=AArch64)
+        const want = arch === 'x64' ? '0x3e' : '0xb7';
+        const files = nodeFilesOf(dir);
+        const wrong = files
+          .map((file) => [file, elfMachine(file)])
+          .filter(([, machine]) => machine !== null && machine !== want);
+        if (files.length > 0 && wrong.length === files.length) {
+          throw new Error(`${pkg.pkgName}: 所有 .node 架构都不是 ${want}`
+            + `(${wrong.map(([file, machine]) => `${relative(dir, file)}=${machine}`).join(', ')})`);
+        }
+        if (wrong.length > 0) {
+          console.warn(`  ⚠ ${pkg.pkgName}: ${wrong.length} 个 .node 架构不符(期望 ${want})`);
+        }
       }
     }
     for (const fld of ['dependencies', 'optionalDependencies']) {
@@ -615,34 +782,85 @@ function main() {
       plan.push({ dir, file: tgzName(hostMap.get(name).pkgName, r.pkg.version) });
     }
   }
-  // 3) 平台专属包:host 用现成树,其它目标用交叉安装树(--reuse 时用已打包目录)
-  if (!REUSE) for (const target of targets) {
+  // 3) 平台专属包:host 用现成树,其它目标用交叉安装树(--reuse 时用已打包目录)。
+  //    「哪个模块在哪些目标上有包」由 scripts/repack-platforms.json 的白名单决定:
+  //      · 白名单不含该目标 ⇒ 跳过(Windows-only 模块不产 -linux-*,反之亦然);
+  //      · 该目标上没能产出 .node 二进制 ⇒ 也跳过:平台专属包的全部意义就是那份二进制,
+  //        发一个只有 JS 的空壳既装不起来也解释不通,宁可在日志/annotation 里明确报出来。
+  const moduleTargetsOf = new Map(modules.map((m) => [m.alias, Array.isArray(m.targets) ? m.targets : [...allTargets]]));
+  const platformDirs = [];
+  const builtByTarget = new Map(buildTargets.map((t) => [t, []]));
+  const skipped = { policy: [], noBinary: [], missing: [] };
+  if (!REUSE) for (const target of buildTargets) {
     const map = byTarget.get(target);
-    const specs = [...repack].filter(([, r]) => r.platformSpecific).map(([name, r]) => ({ name, version: r.pkg.version }));
+    const specs = [...repack]
+      .filter(([name, r]) => r.platformSpecific && moduleTargetsOf.get(name).includes(target))
+      .map(([name, r]) => ({ name, version: r.pkg.version }));
     let crossTree = null;
     if (target !== hostKey && specs.length > 0) crossTree = prepareCrossTree(specs, target);
     for (const [name, r] of repack) {
       if (!r.platformSpecific) continue;
+      if (!moduleTargetsOf.get(name).includes(target)) { skipped.policy.push(`${name}@${target}`); continue; }
       const info = map.get(name);
       const srcDir = target === hostKey ? r.dir : join(crossTree, 'node_modules', name);
       if (!existsSync(join(srcDir, 'package.json'))) {
         console.warn(`  ⚠ ${target}: 缺少 ${name},跳过`);
+        skipped.missing.push(`${name}@${target}`);
+        continue;
+      }
+      if (nodeFilesOf(srcDir).length === 0) {
+        console.warn(`  ⚠ ${target}: ${name} 没有产出 .node 二进制 ⇒ 跳过(该目标很可能不需要它,或编译失败)`);
+        skipped.noBinary.push(`${name}@${target}`);
         continue;
       }
       const dir = writeRepack(srcDir, info, `${flat(name)}-${target}`);
+      platformDirs.push(dir);
+      builtByTarget.get(target).push(name);
       plan.push({ dir, file: tgzName(info.pkgName, r.pkg.version) });
     }
     if (crossTree !== null) rmSync(crossTree, { recursive: true, force: true });
   }
+  // 3b) --reuse 时平台专属目录已存在(不重新构建),就地复查闸门
+  if (REUSE) for (const item of reusedItems) {
+    if (PLATFORM_SUFFIX.test(String(readJson(join(item.dir, 'package.json'))?.name ?? ''))) platformDirs.push(item.dir);
+  }
+  // 每个构建目标一行结论(CI 里同时发 annotation:Actions 原始日志要鉴权读不回,
+  // annotation 匿名可读,且 ≤20 条上限 —— 所以这里**只发汇总行**,不逐个模块发)。
+  if (REUSE) {
+    const line = `[repack] --reuse:复用 ${platformDirs.length} 个平台专属目录(不重新构建,故不做白名单/二进制过滤)`;
+    console.log(line);
+    if (process.env.GITHUB_ACTIONS === 'true') console.log(`::notice::${line}`);
+  } else for (const target of buildTargets) {
+    const built = builtByTarget.get(target);
+    const n = (list) => list.filter((s) => s.endsWith(`@${target}`)).length;
+    const line = `[repack] ${target}: 平台专属产出 ${built.length} 个(${built.join(', ') || '无'})`
+      + `;白名单排除 ${n(skipped.policy)};无二进制跳过 ${n(skipped.noBinary)}`
+      + `${n(skipped.missing) > 0 ? `;目录缺失跳过 ${n(skipped.missing)}` : ''}`;
+    console.log(line);
+    if (process.env.GITHUB_ACTIONS === 'true') console.log(`::notice::${line}`);
+  }
+  if (skipped.noBinary.length > 0) {
+    console.warn(`  ⚠ 以下「模块×目标」在白名单里但没编出二进制:${skipped.noBinary.join(', ')};`
+      + '若该平台确实需要它,查编译日志;若不需要,请从 scripts/repack-platforms.json 里删掉该目标');
+  }
+  verifyOptionalSubtreeDeps(platformDirs, new Set([
+    ...declare.map((d) => d.name),
+    ...Object.keys(OPTIONAL_SUBTREE_DEPS),
+  ]));
   // 3) 重打包表(lib/vendored.json,随插件发布):运行时用它把真名子包补成原始名字
   const vendoredDoc = {
     schemaVersion: 1,
     generatedBy: 'scripts/vendor-repacks.mjs',
     scope: SCOPE,
-    targets,
+    targets: allTargets,
     modules: modules.map((m) => {
       const entry = { alias: m.alias, package: m.package, version: m.version };
-      if (m.platform) entry.platform = true;
+      if (m.platform) {
+        entry.platform = true;
+        // 每模块目标白名单:运行时(lib/native.js)据此跳过本平台不适用的模块 ——
+        // 否则 Linux 上会去找 @jinsiyu/dshcs-vscode-windows-registry-linux-x64,把缺包报成故障。
+        entry.targets = [...(Array.isArray(m.targets) ? m.targets : allTargets)];
+      }
       return entry;
     }),
   };
@@ -655,7 +873,8 @@ function main() {
   console.log(`[repack] 生成 ${plan.length} 个待打包目录 → repack/ (计划:repack/pack-plan.json)`);
 
   // 4) 改写插件 package.json 的依赖:树 + 纯 JS 直装集 + **全平台**重打包包写 dependencies(真名);
-  //    平台专属的重打包包按目标写 optionalDependencies(真名 + 包自带 os/cpu,包管理器按架构自动选)。
+  //    平台专属的重打包包按目标写 optionalDependencies(真名 + 包自带 os/cpu,包管理器按架构自动选),
+  //    它们自己的注册表依赖再由 OPTIONAL_SUBTREE_DEPS 提到 dependencies(否则 pnpm 丢包,见该表注释)。
   //    这样每个包在依赖图里都是「根项目的直接依赖」,不依赖 pnpm 对可选子树别名的处理
   //    (见 docs/desktop-first-install-root-cause.md)。
   const pkgFile = join(pkgRoot, 'package.json');
@@ -664,15 +883,23 @@ function main() {
     [vscodePkg.name, vscodePkg.version],
     ...declare.map((d) => [d.name, d.version]),
     ...independent.map((m) => [m.package, m.version]),
+    ...Object.entries(OPTIONAL_SUBTREE_DEPS),
   ].sort(([a], [b]) => a.localeCompare(b)));
-  pluginPkg.optionalDependencies = Object.fromEntries(targets
-    .flatMap((t) => specific.map((m) => [`${m.package}-${t}`, m.version]))
+  pluginPkg.optionalDependencies = Object.fromEntries(publishedTargets
+    .flatMap((t) => specific.filter((m) => m.targets.includes(t)).map((m) => [`${m.package}-${t}`, m.version]))
     .sort(([a], [b]) => a.localeCompare(b)));
   writeFileSync(pkgFile, JSON.stringify(pluginPkg, null, 2) + '\n', 'utf8');
   console.log(`[repack] 已写入 package.json:dependencies ${Object.keys(pluginPkg.dependencies).length} 个`
-    + `(VS Code 树 + 纯 JS + ${independent.length} 个全平台重打包包),`
+    + `(VS Code 树 + 纯 JS + ${independent.length} 个全平台重打包包`
+    + ` + ${Object.keys(OPTIONAL_SUBTREE_DEPS).length} 个 optional 子树兜底依赖),`
     + `optionalDependencies ${Object.keys(pluginPkg.optionalDependencies).length} 个`
-    + `(${specific.length} 个平台专属重打包包 × ${targets.length} 个目标)`);
+    + `(${specific.length} 个平台专属重打包包 × 已发布目标 ${publishedTargets.join('|')},按每模块白名单取交集)`);
+  const pendingTargets = allTargets.filter((t) => !publishedTargets.includes(t));
+  if (pendingTargets.length > 0) {
+    console.log(`[repack] 注意:${pendingTargets.join(', ')} 的子包**还没发布到 npm** ⇒ 暂不写进插件依赖`
+      + '(写进去会让 pnpm install 解析一个不存在的包)。发布后把 scripts/repack-platforms.json 的'
+      + ' publishedTargets 补齐、再跑一次本脚本,并刷新 pnpm-lock.yaml');
+  }
 
   // 5) 可选:直接打包
   if (DO_PACK) {
