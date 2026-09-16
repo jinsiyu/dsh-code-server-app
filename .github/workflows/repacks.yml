@@ -1,0 +1,271 @@
+# repacks.yml —— 平台专属重打包包(`@jinsiyu/dshcs-*[-<平台>-<架构>]`)的构建 / 发布。
+#
+# 为什么单独一个工作流、而且默认不发布:
+#   · 这批包只在**换 VS Code 树版本**时才需要重打(见 README「升级 VS Code 树」),不是每次改动都发;
+#   · 一次完整重打要:从 registry 取 code-server@<钉住版本>(53MB)→ 裁成 vendor/vscode(197MB)→
+#     再装一棵**完整源树**用于分析(npm install + lib/vscode 内部依赖 ≈1GB)→ 用宿主编译链
+#     `npm rebuild` 编译原生包 → npm pack 出十几个 tgz。所以手动 `workflow_dispatch` 触发,
+#     默认 `publish=false`(只构建 + 传 artifact),要发才显式打开。
+#
+# 每个目标都跑在**同架构宿主 runner** 上(R5 与 linux probe 同思路,避免 node-gyp 跨架构那堆坑):
+#   win32-x64   → windows-latest
+#   win32-arm64 → windows-11-arm
+#   若某个标签在你的仓库不可用,job 会一直排队 —— 取消它,然后用 `build_arm64=false` 只跑 x64 那条。
+#
+# 产物归属(**避免并发发布撞车**):平台无关的 8 个包(xterm/koffi/node-pty/ssh2/…)两边都会产出,
+# 所以约定:
+#   · win32-x64 job:不带 `--only` ⇒ 发布「平台无关 + win32-x64 专用」(树包已存在会被自动跳过);
+#   · win32-arm64 job:`--only win32-arm64` ⇒ 只发 arm64 专用。
+#   两者集合不相交 ⇒ 可以并发,不会有两个 job 抢同一个包名。
+#
+# 认证:这批子包**不能**用插件的 OIDC trusted publishing(npm 的信任关系是**按包**配的,26 个子包
+# 要建 26 条)。所以这里走 `NPM_TOKEN`(仓库 Secrets,粒度令牌:对 `@jinsiyu` 作用域有 publish 权限,
+# 需要勾选 bypass 2FA —— 否则无人值守时会让 CLI 要一次性口令)。要改走 OIDC 也行:在 npm 网页上给
+# 每个子包各加一条 Trusted Publisher(workflow 填 `repacks.yml`,环境留空),然后删掉 token 分支。
+#
+# 用法(手动触发,见 Actions → repacks → Run workflow):
+#   publish=false(默认) → 只构建 + 上传 repack/tgz/*.tgz
+#   publish=true         → 构建完再发布到 npm(dist_tag 默认 next;latest 仍由 promote 手动推进)
+name: repacks
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_x64:
+        description: 构建 win32-x64(windows-latest)
+        type: boolean
+        default: true
+      build_arm64:
+        description: 构建 win32-arm64(windows-11-arm)
+        type: boolean
+        default: true
+      publish:
+        description: 构建完成后发布到 npm(需要仓库 Secrets 里的 NPM_TOKEN)
+        type: boolean
+        default: false
+      dist_tag:
+        description: 发布用的 dist-tag(政策:默认 next,不碰 latest)
+        type: string
+        default: next
+  # 本文件被改动时自动跑一次**只构建**的演练(方便验证这个工作流本身);
+  # publish 的输入在 push 事件下为空 ⇒ 永远为 false。
+  push:
+    paths:
+      - '.github/workflows/repacks.yml'
+
+concurrency:
+  group: repacks-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  win32-x64:
+    name: repacks win32-x64 (+ 平台无关包)
+    if: github.event_name == 'push' || inputs.build_x64
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      TARGET: win32-x64
+      DIST_TAG: ${{ inputs.dist_tag }}
+    steps:
+      - name: 检出
+        uses: actions/checkout@v7
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # vendor-repacks 会重写 lib/vendored.json 与插件 package.json(那是它的正常职责)⇒ 在副本里跑,
+      # 不弄脏检出(与 linux 探针同一做法)。脚本只用 Node 内置模块 ⇒ 副本不需要 node_modules。
+      - name: 复制仓库到 $RUNNER_TEMP(不弄脏检出)
+        shell: pwsh
+        run: |
+          $dst = Join-Path $env:RUNNER_TEMP 'repacks'
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          git archive HEAD | tar -x -C $dst
+          Write-Host "副本:$dst"
+          Get-ChildItem $dst | Select-Object -ExpandProperty Name
+
+      - name: 钉版本准备 vendor/vscode(与 dependencies 里钉的树版本一致)
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/repacks
+        run: |
+          $V = node -e "const p=require('$env:GITHUB_WORKSPACE/package.json');const k=Object.keys(p.dependencies).filter(n=>/\/dshcs-vscode-server$/.test(n));if(k.length!==1){console.error('树包应恰好一个:',k);process.exit(1)}process.stdout.write(p.dependencies[k[0]])"
+          Write-Host "内置树版本(code-server):$V"
+          node scripts/vendor-vscode-server.mjs --version $V
+          if (-not (Test-Path vendor\vscode\lib\vscode\out\server-main.js)) { throw 'vendor/vscode 不完整' }
+
+      - name: 重打打包(--pack)
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/repacks
+        run: |
+          $ErrorActionPreference = 'Continue'
+          node scripts/vendor-repacks.mjs --target $env:TARGET --pack 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\repack.log"
+          $code = $LASTEXITCODE
+          Write-Host "repack 退出码 $code"
+          if ($code -ne 0) {
+            Write-Host "::error::repack 失败(exit $code);下面把报错行与日志尾部转成 annotation"
+            Select-String -Path "$env:RUNNER_TEMP\repack.log" -Pattern 'Error|error:|✗|失败|未生成|throw|ENOENT|EACCES' |
+              Select-Object -Last 10 | ForEach-Object { Write-Host "::error:: $($_.Line)" }
+            Get-Content "$env:RUNNER_TEMP\repack.log" -Tail 8 | ForEach-Object { Write-Host "::error:: $_" }
+            exit $code
+          }
+
+      - name: 结论(产物清单,公开可读)
+        shell: pwsh
+        run: |
+          $tgz = Join-Path $env:RUNNER_TEMP 'repacks\repack\tgz'
+          $files = if (Test-Path $tgz) { Get-ChildItem $tgz -Filter *.tgz | Sort-Object Name } else { @() }
+          Write-Host "::notice::$env:TARGET 产出 $($files.Count) 个 tgz"
+          foreach ($f in $files) { Write-Host "::notice::  $($f.Name) $([math]::Round($f.Length/1KB,1))KB" }
+          Write-Host "---- 待发布目录(repack/build)----"
+          Get-ChildItem (Join-Path $env:RUNNER_TEMP 'repacks\repack\build') -Directory |
+            Select-Object -ExpandProperty Name
+
+      - name: 上传 tgz
+        uses: actions/upload-artifact@v7
+        with:
+          name: repacks-${{ env.TARGET }}
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/repacks/repack/tgz/*.tgz
+
+      # 发布:平台无关的 8 个包 + 本目标的平台专属包(arm64 那条腿用 --only 只发自己的,见文件头)。
+      - name: 发布到 npm(不含平台无关以外的包;已存在的版本自动跳过)
+        if: inputs.publish
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/repacks
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if (-not $env:NPM_TOKEN) { throw 'publish=true 但仓库没有 NPM_TOKEN secret(见 .github/workflows/repacks.yml 头部注释)' }
+          "//registry.npmjs.org/:_authToken=$env:NPM_TOKEN" | Out-File -FilePath .npmrc -Encoding ascii -NoNewline
+          Write-Host "已写入 .npmrc(publish-repacks.mjs 会 --userconfig 指向它)"
+          $ErrorActionPreference = 'Continue'
+          node scripts/publish-repacks.mjs --tag $env:DIST_TAG 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\publish.log"
+          $code = $LASTEXITCODE
+          Remove-Item .npmrc -Force -ErrorAction SilentlyContinue
+          if ($code -ne 0) {
+            Write-Host "::error::发布失败(exit $code)"
+            Select-String -Path "$env:RUNNER_TEMP\publish.log" -Pattern 'npm error|npm ERR|403|404|409|E402|EPUBLISH|ENEEDAUTH|EOTP|forbidden' |
+              Select-Object -Last 10 | ForEach-Object { Write-Host "::error:: $($_.Line)" }
+            exit $code
+          }
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "### repacks / ${{ env.TARGET }}"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| runner | \`${{ runner.os }} / windows-latest\` |"
+            echo "| 目标 | \`${{ env.TARGET }}\` |"
+            echo "| 发布 | \`${{ inputs.publish }}\`(dist-tag \`${{ inputs.dist_tag }}\`) |"
+            echo "| 触发 | \`${{ github.event_name }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  win32-arm64:
+    name: repacks win32-arm64
+    if: github.event_name == 'push' || inputs.build_arm64
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+    env:
+      TARGET: win32-arm64
+      DIST_TAG: ${{ inputs.dist_tag }}
+    steps:
+      - name: 检出
+        uses: actions/checkout@v7
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: 复制仓库到 $RUNNER_TEMP(不弄脏检出)
+        shell: pwsh
+        run: |
+          $dst = Join-Path $env:RUNNER_TEMP 'repacks'
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          git archive HEAD | tar -x -C $dst
+          Write-Host "副本:$dst"
+
+      - name: 钉版本准备 vendor/vscode(与 dependencies 里钉的树版本一致)
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/repacks
+        run: |
+          $V = node -e "const p=require('$env:GITHUB_WORKSPACE/package.json');const k=Object.keys(p.dependencies).filter(n=>/\/dshcs-vscode-server$/.test(n));if(k.length!==1){console.error('树包应恰好一个:',k);process.exit(1)}process.stdout.write(p.dependencies[k[0]])"
+          Write-Host "内置树版本(code-server):$V"
+          node scripts/vendor-vscode-server.mjs --version $V
+          if (-not (Test-Path vendor\vscode\lib\vscode\out\server-main.js)) { throw 'vendor/vscode 不完整' }
+
+      - name: 重打打包(--pack)
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/repacks
+        run: |
+          $ErrorActionPreference = 'Continue'
+          node scripts/vendor-repacks.mjs --target $env:TARGET --pack 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\repack.log"
+          $code = $LASTEXITCODE
+          Write-Host "repack 退出码 $code"
+          if ($code -ne 0) {
+            Write-Host "::error::repack 失败(exit $code);下面把报错行与日志尾部转成 annotation"
+            Select-String -Path "$env:RUNNER_TEMP\repack.log" -Pattern 'Error|error:|✗|失败|未生成|throw|ENOENT|EACCES' |
+              Select-Object -Last 10 | ForEach-Object { Write-Host "::error:: $($_.Line)" }
+            Get-Content "$env:RUNNER_TEMP\repack.log" -Tail 8 | ForEach-Object { Write-Host "::error:: $_" }
+            exit $code
+          }
+
+      - name: 结论(产物清单,公开可读)
+        shell: pwsh
+        run: |
+          $tgz = Join-Path $env:RUNNER_TEMP 'repacks\repack\tgz'
+          $files = if (Test-Path $tgz) { Get-ChildItem $tgz -Filter *.tgz | Sort-Object Name } else { @() }
+          Write-Host "::notice::$env:TARGET 产出 $($files.Count) 个 tgz"
+          foreach ($f in $files) { Write-Host "::notice::  $($f.Name) $([math]::Round($f.Length/1KB,1))KB" }
+
+      - name: 上传 tgz
+        uses: actions/upload-artifact@v7
+        with:
+          name: repacks-${{ env.TARGET }}
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/repacks/repack/tgz/*.tgz
+
+      # 只发本目标的平台专属包(平台无关的那些由 win32-x64 那条腿发,避免两边抢同一个包名)。
+      - name: 发布到 npm(只发 win32-arm64 专用)
+        if: inputs.publish
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/repacks
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if (-not $env:NPM_TOKEN) { throw 'publish=true 但仓库没有 NPM_TOKEN secret(见 .github/workflows/repacks.yml 头部注释)' }
+          "//registry.npmjs.org/:_authToken=$env:NPM_TOKEN" | Out-File -FilePath .npmrc -Encoding ascii -NoNewline
+          $ErrorActionPreference = 'Continue'
+          node scripts/publish-repacks.mjs --tag $env:DIST_TAG --only win32-arm64 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\publish.log"
+          $code = $LASTEXITCODE
+          Remove-Item .npmrc -Force -ErrorAction SilentlyContinue
+          if ($code -ne 0) {
+            Write-Host "::error::发布失败(exit $code)"
+            Select-String -Path "$env:RUNNER_TEMP\publish.log" -Pattern 'npm error|npm ERR|403|404|409|E402|EPUBLISH|ENEEDAUTH|EOTP|forbidden' |
+              Select-Object -Last 10 | ForEach-Object { Write-Host "::error:: $($_.Line)" }
+            exit $code
+          }
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "### repacks / ${{ env.TARGET }}"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| runner | \`windows-11-arm\` |"
+            echo "| 目标 | \`${{ env.TARGET }}\` |"
+            echo "| 发布 | \`${{ inputs.publish }}\`(--only win32-arm64) |"
+            echo "| 触发 | \`${{ github.event_name }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

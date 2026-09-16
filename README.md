@@ -430,7 +430,7 @@ pnpm run promote -- <version>
 | **开发期让树可直接跑** | `pnpm run vendor:vscode -- --dev-links`(额外把 `lib/vscode/node_modules` 用 junction 补上) |
 | **完整重打子包** | `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack`(不给 `--from` 会自动 npm install 解包 + 编译,耗时) |
 | **只重打树包 + 依赖表** | `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64 --pack`(复用 `repack/build` 里已有的原生包,不重新分析源树;顺带重写 `lib/vendored.json` 与插件依赖表) |
-| **发布子包** | `pnpm run publish:repacks`(`--dry-run` 预览;`--only <子串>` 过滤;`--otp <code>` / `--limit N` 应对 2FA) |
+| **发布子包** | 推荐用 CI:`.github/workflows/repacks.yml`(Actions → repacks → Run workflow,勾 `publish`);本地等价命令 `pnpm run publish:repacks`(`--dry-run` 预览;`--only <子串>` 过滤;`--otp <code>` / `--limit N` 应对 2FA;默认跳过已存在的版本,可反复重跑) |
 | **发布插件本体** | `pnpm run publish:plugin`(发布**已验证过的那份 tarball**,不会重新打包;默认 dist-tag = `next`) |
 | **推进 latest** | `pnpm run promote -- <version>`(用户重启确认无误后;`--dry-run` 先看当前标签) |
 | **只报告版本** | `pnpm run vendor:check` |
@@ -476,6 +476,7 @@ pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**�
 | `ci.yml` | push `main` / PR / 手动 | `ubuntu-latest` + `windows-latest` 双平台:`pnpm install --frozen-lockfile` → `build:client` → `build:webview` → `pnpm test`(全套回归)→ `vendor:check` 只报告版本差 → 上传 `lib/client.js` 与面板产物 |
 | `release.yml` | 推 `v<version>` 标签 / 手动(演练,不发布) | 按 `dependencies` 钉的版本准备 `vendor/vscode` → 构建 → 全套回归 → `pnpm pack` → 校验 tarball 清单 → **真装一遍**(在 runner 上部署真 DSH,`dsh plugin --profile web add <tgz>`,再跑 `test:installed` + `dump-config` 断言)→ 发 npm **`next`** → 建 GitHub Release(附 tgz) |
 | `linux-repack-probe.yml` | push 本文件 / 手动 | **可行性探针(不发布)**:在 Linux 上按目标(`linux-x64` → `ubuntu-latest`、`linux-arm64` → `ubuntu-24.04-arm`)试编平台专属重打包包,输出「哪些模块真能编出 `.node`、哪些是 Windows-only」。跑的是现有 `vendor-repacks.mjs` 本尊,改动只发生在 `$RUNNER_TEMP` 的仓库副本里 |
+| `repacks.yml` | 手动(`publish` 默认 **false**)/ push 本文件 | **平台专属子包(`@jinsiyu/dshcs-*`)的构建与发布**:同架构宿主 runner 各打一条(`win32-x64` → `windows-latest`、`win32-arm64` → `windows-11-arm`),默认只构建 + 传 `repack/tgz/*.tgz`;勾上 `publish` 才发 npm(默认 `next`)。发布归属:win32-x64 那条腿发「平台无关 + win32-x64 专用」,arm64 那条只发 `--only win32-arm64` ⇒ 集合不相交、并发不撞车。**认证用 `NPM_TOKEN`**(npm 的信任关系是按包配的,26 个子包建 26 条不现实;要改走 OIDC 就给每个子包各加一条,workflow 填 `repacks.yml`) |
 
 **dist-tag 政策不变**:`release.yml` 只发 `next`,绝不碰 `latest`;`latest` 仍由 `pnpm run promote -- <version>`
 在重启 dsh web 确认无误后手动推进(README 上方「打包」一节)。
