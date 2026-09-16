@@ -84,9 +84,12 @@ function runOne(name) {
     child.on('error', (error) => resolve({ name, code: 1, ms: Date.now() - started, error: error.message, output: '' }));
     child.on('close', (code, signal) => {
       const size = existsSync(LOG) ? statSync(LOG).size : before;
-      // 往前多读 2000 字节做重叠容错:万一上一段输出还没落盘完,也不至于把本段开头切掉
-      // (切掉开头会让 FAIL 行消失,只剩 SUMMARY fail=1 —— 那种注解等于没报)。
-      const output = readFileSync(LOG, 'utf8').slice(Math.max(0, before - 2000), size);
+      // **按字节切**:before/size 是 statSync 给的**字节**偏移,直接拿它们当字符串下标会在
+      // 非 ASCII 输出(本仓库的用例名全是中文)下错位 —— 切片会从中间开始,把 FAIL 行整段切掉,
+      // 于是注解里只剩 SUMMARY(2026-09-16 ubuntu 上 test-bridge-extension 就是这么被掩盖的:
+      // 输出 947 字符 vs SUMMARY fail=4)。往前多读 2000 字节做重叠容错。
+      const buf = readFileSync(LOG);
+      const output = buf.subarray(Math.max(0, before - 2000), size).toString('utf8');
       process.stdout.write(output); // 让 Actions UI 里仍然按顺序看到每个脚本的输出
       resolve({ name, code: code ?? 1, ms: Date.now() - started, ...(signal ? { signal } : {}), output });
     });

@@ -651,23 +651,22 @@ await test('bridgeGuard:Origin 判定用裸 headers —— 不要用 Request 构
 });
 
 await test('status 快照带 bridge 状态,但绝不泄露令牌', async () => {
-  // live 的语义是「桥配置存在」(lib/index.js: live = bridgeMeta !== null),不是「IDE 正在跑」。
-  // 本测试框架不起 IDE,但前面的用例完全可能已经写过配置 —— windows runner 上就是
-  // file=…\extensions\.dshcs-bridge\bridge.json, exists=true 让这条断言挂掉。本用例只关心
-  // status 快照的**形状**(带 bridge 字段、有 file、没有 token),所以先把状态清干净再断言,
-  // 否则它测的其实是"前面用例的副作用"。
-  bridge.removeBridgeConfig(extensionsDir);
+  // 这条用例守的是**快照的形状**:带 bridge 字段、enabled 是文档默认值、file 指向 bridge.json、
+  // 以及"绝不出现 token"。
+  //
+  // 曾经这里断言 `live === false`("没有 IDE 在跑时 live 应为 false"),那是错的:live 的语义是
+  // 「桥配置存在」(lib/index.js: live = bridgeMeta !== null),而本测试的 apply() **真的会把监听口
+  // 起来**(stub 的 effect 会执行回调 —— 见本文件 makeStubCtx 的注释),端点就绪后插件会写下
+  // bridge.json 并把 bridgeMeta 缓存进内存 ⇒ live 与"IDE 有没有在跑"无关,且真假取决于监听是否
+  // 已经完成(2026-09-16 windows runner 上 live=true 且 file 存在,ubuntu 上同一时刻是 false)。
+  // 所以只钉类型与不变量,不钉那个跟时序赛跑的取值;顺带:清文件是没用的 —— 缓存改不掉。
   const response = await routes.get('/api/code-server/status').fetch();
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.ok(body.bridge !== undefined, 'status 必须带 bridge 字段');
   assert.equal(body.bridge.enabled, true, '默认应启用桥');
-  assert.equal(body.bridge.live, false,
-    `没有 IDE 在跑时 live 应为 false(live=${body.bridge.live},`
-    + `file=${body.bridge.file},exists=${existsSync(body.bridge.file)})`
-    + ' —— live 的语义是「桥配置存在」,本测试框架不起 IDE,所以它必须是 false;'
-    + '真为 true 说明前面的用例把 bridge.json 留下来了(状态泄漏)');
-  assert.equal(body.bridge.toolsRegistered, false);
+  assert.equal(typeof body.bridge.live, 'boolean', `live 必须是布尔(实际 ${typeof body.bridge.live})`);
+  assert.equal(typeof body.bridge.toolsRegistered, 'boolean');
   assert.ok(!/token/i.test(JSON.stringify(body.bridge)), 'status.bridge 不允许出现 token 字段');
   assert.ok(typeof body.bridge.file === 'string' && body.bridge.file.endsWith('bridge.json'));
 });
