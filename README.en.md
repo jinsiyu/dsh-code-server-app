@@ -501,6 +501,10 @@ Supporting Linux is not mainly about "compiling a few more packages" — it is a
   re-run `vendor-repacks.mjs`, publish the new sub-packages, then refresh the dependency table and
   `pnpm-lock.yaml`. The generator always prints such drift (`· <module>: 沿用表里已发布的版本 …`), so follow
   that line.
+- **System headers needed to build the native packages on Linux**: `kerberos` needs the GSSAPI headers
+  (`gssapi/gssapi.h`), so both Linux legs run `sudo apt-get install -y libkrb5-dev` and assert the header is
+  present. Without it `make` fails outright and the `kerberos` sub-package cannot be produced (exposed by the
+  hard gate on 2026-09-16). Do the same before re-packing locally on Linux.
 - **Measured on Linux** (both legs really compile; the verdict line reads
   `[repack] linux-x64: 平台专属产出 5 个(…)`): five modules produce a `.node` —
   `@vscode/deviceid`, `@vscode/native-watchdog`, `@vscode/spdlog`, `@vscode/sqlite3`, `kerberos`;

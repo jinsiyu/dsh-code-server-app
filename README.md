@@ -501,6 +501,9 @@ pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**�
   **要让插件升到新的上游版本**:在 `scripts/repack-platforms.json` 里给该模块钉 `"version"` → 重跑
   `vendor-repacks.mjs` → 发布新子包 → 刷新依赖表与 `pnpm-lock.yaml`。生成器每次都会把漂移打出来
   (`· <模块>:沿用表里已发布的版本 …(源树里是 …)`),照着那行做即可。
+- **Linux 上构建原生包的系统依赖**:`kerberos` 要 GSSAPI 头(`gssapi/gssapi.h`)⇒ 两条 Linux 腿都会先
+  跑 `sudo apt-get install -y libkrb5-dev` 并校验头文件在位。缺它时 `make` 直接失败、`kerberos` 的子包
+  产不出来(2026-09-16 第一次跑硬闸门时暴露)。本地在 Linux 上重打时同样要先装它。
 - **Linux 上实测**(`linux-x64` / `linux-arm64` 两条腿各真编译一遍,结论行:
   `[repack] linux-x64: 平台专属产出 5 个(…)`):这 5 个模块编出了 `.node` ——
   `@vscode/deviceid` / `@vscode/native-watchdog` / `@vscode/spdlog` / `@vscode/sqlite3` / `kerberos`;
@@ -754,6 +757,25 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 
 ### Windows 原生构建要点(打包期,本机实测 ARM64)
 
+- **MSVC 平台工具集必须齐**(MSB8020 `无法找到 v145 的生成工具`):VS Code 那批 `@vscode/*` 原生包在
+  binding.gyp 里写死了工具集版本,机器上的 VS 缺那一套就直接报 `npm error … MSB8020`,而**整条链以前
+  会带着这个错跑完并"成功"**(见下「硬闸门」)。装法(需要管理员;ARM64 主机加 `VC.v145.ARM64`,
+  x64/x86 主机加 `VC.v145.x86.x64`):
+  ```pwsh
+  $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+  $vc = & $vswhere -products * -latest -property installationPath
+  & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe" modify `
+    --installPath $vc --add Microsoft.VisualStudio.Component.VC.v145.ARM64 `
+    --add Microsoft.VisualStudio.Component.VC.v145.x86.x64 --quiet --norestart --nocache
+  ```
+  先看看装了什么:`Get-ChildItem "$vc\VC\Tools\MSVC"`。**CI 上不需要这一步** —— runner 镜像里工具集是齐的
+  (`repacks.yml` 四条腿本来就编得出 `sqlite3 / spdlog / native-watchdog / …`);
+- **硬闸门(0.3.48 起)**:`vendor-repacks.mjs` 收尾会核对「`scripts/repack-platforms.json` 里承诺的
+  『模块×目标』是否都真的产出了子包」,缺一个就抛错退出。以前它是**静默退化**的:`npm rebuild` 的失败
+  被容错吞掉 ⇒ 那些模块被判成"平台无关"、打成不带目标后缀的包,而依赖表里照旧写着「每目标一份」⇒
+  CI 绿着发出去一套装不起来的东西(2026-09-16 由"为什么日志里有 npm error 仍然通过"暴露)。
+  现在原生包是**逐个 rebuild** 的(整树 rebuild 会在第一个失败处中断、级联坑掉后面的包),失败的包
+  逐条打印;若本机确实编不出来,就用 CI 腿或修工具集,别让它带着缺口发出去;
 - **VS 需 Spectre 缓解库组件**(MSB8040):Visual Studio Installer → 单个组件 →
   "MSVC v14x Spectre-mitigated libs",**ARM64 与 x86/x64 要分别安装**(只装一个架构会缺另一个)。
 - **node-gyp 13.x**(旧版 9.x 不识别 VS 2026):`npm install -g node-gyp@latest`。

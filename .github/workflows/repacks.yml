@@ -372,6 +372,17 @@ jobs:
           test -f vendor/vscode/lib/vscode/out/server-main.js \
             || { echo "::error::vendor/vscode 不完整(缺 out/server-main.js)"; exit 1; }
 
+      # kerberos 这个原生包要 GSSAPI 头(../src/unix/kerberos_gss.h → gssapi/gssapi.h),
+      # Ubuntu runner 上默认没有 ⇒ 不装就是 make 失败、kerberos 的子包产不出来(硬闸门会判失败)。
+      # 2026-09-16 由 Linux 腿第一次跑硬闸门时暴露。
+      - name: 装原生包需要的系统头文件(kerberos → libkrb5-dev)
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libkrb5-dev
+          test -f /usr/include/gssapi/gssapi.h || { echo "::error::libkrb5-dev 装完仍找不到 gssapi/gssapi.h"; exit 1; }
+          echo "gssapi 头就位"
+
       - name: 重打打包(--pack)
         shell: bash
         working-directory: ${{ runner.temp }}/repacks
@@ -503,6 +514,17 @@ jobs:
           node scripts/vendor-vscode-server.mjs --version "$V"
           test -f vendor/vscode/lib/vscode/out/server-main.js \
             || { echo "::error::vendor/vscode 不完整(缺 out/server-main.js)"; exit 1; }
+
+      # kerberos 这个原生包要 GSSAPI 头(../src/unix/kerberos_gss.h → gssapi/gssapi.h),
+      # Ubuntu runner 上默认没有 ⇒ 不装就是 make 失败、kerberos 的子包产不出来(硬闸门会判失败)。
+      # 2026-09-16 由 Linux 腿第一次跑硬闸门时暴露。
+      - name: 装原生包需要的系统头文件(kerberos → libkrb5-dev)
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libkrb5-dev
+          test -f /usr/include/gssapi/gssapi.h || { echo "::error::libkrb5-dev 装完仍找不到 gssapi/gssapi.h"; exit 1; }
+          echo "gssapi 头就位"
 
       - name: 重打打包(--pack)
         shell: bash
