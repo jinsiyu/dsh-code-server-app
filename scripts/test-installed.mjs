@@ -22,7 +22,7 @@
 //   ⑤ lib/vendored.json 里每个重打包包在当前平台的真名都能在 profile 里找到
 //   ⑥ 已安装的 lib/native.js:ensureRuntimeLayout() 补 junction 后没有缺失的原生模块
 //   ⑦ VS Code 树本体在位(dshcs-vscode-server/vscode/lib/vscode/out/server-main.js)
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -41,14 +41,41 @@ const profile = resolve(profileArg ?? join(dshHome, 'profiles', 'web'));
 const pluginDir = join(profile, 'node_modules', 'dsh-code-server-app');
 const checks = [];
 const skipped = [];
+/** 在 GitHub Actions 里,失败的判据同时打成 `::error::` annotation —— 原始日志要鉴权才能拉
+ *  (公开仓库的 jobs/logs 也返回 403),而 annotation 走 check-runs API **不需要 token**。
+ *  这条通道在本仓库的 CI 里已经反复证明是唯一能读回 runner-only 失败的路径。 */
+const IN_ACTIONS = process.env.GITHUB_ACTIONS === 'true';
 const check = (name, ok, detail = '') => {
   checks.push([name, ok]);
   console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`);
+  if (!ok && IN_ACTIONS) console.log(`::error::${name}${detail ? ` — ${detail}` : ''}`);
 };
 const skip = (name, reason) => {
   skipped.push(name);
   console.log(`SKIP ${name} — ${reason}`);
 };
+
+/** 失败时把"profile 里到底有什么"打出来 —— 装完断言挂掉时,第一件要看的就是这个。 */
+function dumpProfile() {
+  try {
+    const scoped = join(profile, 'node_modules', '@jinsiyu');
+    const names = existsSync(scoped) ? readdirSync(scoped) : [];
+    const line = `profile 里 @jinsiyu 下的包(${names.length}):${names.slice(0, 20).join(', ')}${names.length > 20 ? ' …' : ''}`;
+    console.log(`[verify] ${line}`);
+    if (IN_ACTIONS) console.log(`::error::${line}`);
+  } catch (error) {
+    console.log(`[verify] 列 @jinsiyu 失败:${error && error.message ? error.message : error}`);
+  }
+  try {
+    const pkg = JSON.parse(readFileSync(join(profile, 'package.json'), 'utf8'));
+    const line = `profile:dependencies=${Object.keys(pkg.dependencies ?? {}).length} 项,`
+      + `bundles=${JSON.stringify(pkg?.dsh?.profile?.bundles ?? [])}`;
+    console.log(`[verify] ${line}`);
+    if (IN_ACTIONS) console.log(`::error::${line}`);
+  } catch (error) {
+    console.log(`[verify] 读 profile package.json 失败:${error && error.message ? error.message : error}`);
+  }
+}
 
 /** 产品目前**只发 win32 原生子包**(见 README「安装插件」:16 个平台专属重打包包 = 8 模块 ×
  *  win32-arm64/x64,子包自带 os/cpu)。所以在 Linux/macOS 上:pnpm 会按 os 字段跳过它们,
@@ -142,6 +169,7 @@ const treeEntry = join(profileModules, '@jinsiyu', 'dshcs-vscode-server', 'vscod
 check('VS Code 树本体在位(server-main.js)', existsSync(treeEntry), treeEntry);
 
 const failed = checks.filter(([, ok]) => !ok);
+if (failed.length > 0) dumpProfile();
 console.log(`\n[verify] ${checks.length} 项,失败 ${failed.length} 项`
   + `${skipped.length > 0 ? `,跳过 ${skipped.length} 项(见上面 SKIP 行)` : ''}`
   + `${failed.length > 0 ? `:${failed.map(([name]) => name).join(' / ')}` : ''}`);
