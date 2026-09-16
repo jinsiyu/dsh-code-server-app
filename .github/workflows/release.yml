@@ -1,4 +1,17 @@
-# release.yml —— 推 `v<version>` 标签即:重建 tarball → 全量回归 → 发 npm `next` → 建 GitHub Release(附 tgz)。
+# release.yml —— 推 `v<version>` 标签即:重建 tarball → 全量回归 → **在真 DSH 里真装一遍** →
+# 发 npm `next` → 建 GitHub Release(附 tgz)。
+#
+# 三个 job 的分工(为什么拆开):
+#   · `build`(ubuntu):门禁 + 构建 + 打包 + 传 tarball 产物。tarball 是平台无关的
+#     (VENDOR.json 里的 platform 字段只是元数据),所以在哪个平台打都一样。
+#   · `install-smoke`(**windows**):拿刚打出来的 tgz,部署真 DSH、走官方安装路径装进 profile,
+#     再断言"装完真的能用"。**必须在 windows 上跑**:本产品目前只发 win32 原生子包
+#     (16 个平台专属重打包包 = 8 模块 × win32-arm64/x64,子包自带 os/cpu),在 Linux 上 pnpm 会
+#     按 os 字段跳过它们 ⇒ Linux 上的安装冒烟根本验不到 0.3.45 那类"optional 子树被丢包 /
+#     requires missing bindings"的问题。第一次跑(0.3.47)就是因为把它放在 ubuntu 上而被门禁拦住 ——
+#     拦得对,但平台得换。
+#   · `publish`(ubuntu):**needs: [build, install-smoke]** ⇒ 前两步全过才会发 npm。
+#     非 tag 触发(workflow_dispatch 演练)时这一步整段跳过:演练会真跑构建与安装冒烟,但绝不发布。
 #
 # 与 README「dist-tag 政策」的关系(不变):
 #   · 本工作流**只发 `next`**,绝不碰 `latest`;`latest` 仍由 `pnpm run promote -- <version>`
@@ -14,24 +27,15 @@
 #   准备好,prepack 因此变成 no-op(它仍会重跑一次 build:webview,幂等)。
 #
 # 认证:npm trusted publishing(OIDC,`id-token: write`)优先,无需长期凭据;
-#   需要在 npmjs.com 上把包 `dsh-code-server-app` 的 Trusted Publisher 指到本仓库 + 本文件名。
+#   需要在 npmjs.com 上把包 `dsh-code-server-app` 的 Trusted Publisher 指到本仓库 + 本文件名
+#   (本文件:release.yml;Environment name 留空 —— 本工作流的 job 不声明 environment)。
 #   备选:仓库 Secrets 加 `NPM_TOKEN`,并设仓库 Variables 的 `NPM_AUTH_MODE=token`(则不发 provenance)。
-#
-# 门禁(任一不过即中止,next 不会被推进):
-#   ① tag == package.json.version ② 该版本尚未发布过 ③ 树包版本一致(test:vendored)
-#   ④ 全套回归 ⑤ 可选 DSH_UI_VERSION 与面板渲染器一致
-#   ⑥ **真装一遍**:在 runner 上 `npx @deepseek-ai/dsh plugin --profile web add <刚打的 tgz>`
-#      (真 DSH 部署 + 官方安装路径),再跑 scripts/test-installed.mjs 断言(files 白名单、
-#      profile 里重打包包齐全、原生模块无缺失、已安装副本能 import),最后 dump-config 确认
-#      本插件的 cordis.patch.yml 真的进了合成树。这一步专门抓"仓库回归永远看不出"的安装类问题
-#      (0.3.45 的 requires missing bindings 就属于这一类)。
 name: release
 
 on:
   push:
     tags: ['v*']
-  # 演练:完整跑一遍(安装 → 构建 → 回归 → 打包 → 上传 tgz 产物),但**不发布、不建 Release**。
-  # 发布只可能由 tag 触发(见下面各步的 if 条件)。
+  # 演练:完整跑一遍(build + 安装冒烟 + 上传 tgz 产物),但**不发布、不建 Release**。
   workflow_dispatch:
 
 concurrency:
@@ -43,17 +47,16 @@ permissions:
   id-token: write # npm trusted publishing(provenance)
 
 jobs:
-  release:
-    name: release (${{ github.ref_name }})
-    runs-on: ubuntu-latest # tarball 平台无关;VENDOR.json 的 platform 字段仅为元数据
-    timeout-minutes: 90
+  # ============================================================ 构建 + 门禁 + 打包
+  build:
+    name: build + gates (${{ github.ref_name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     env:
-      # 'token' ⇒ 用 NPM_TOKEN(不附 provenance);其它/未设置 ⇒ OIDC trusted publishing
-      NPM_AUTH_MODE: ${{ vars.NPM_AUTH_MODE }}
       # 可选:当前部署里 @deepseek-ai/dsh-web-frontend 的版本(设了才做下面的 UI 版本守卫)
       DSH_UI_VERSION: ${{ vars.DSH_UI_VERSION }}
-      # 可选:钉住安装冒烟用的 DSH CLI 版本(默认 latest —— 用户装到的就是 latest,顺便当漂移探针)
-      DSH_CLI_VERSION: ${{ vars.DSH_CLI_VERSION }}
     steps:
       - name: 检出
         uses: actions/checkout@v7
@@ -68,6 +71,10 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: 读出本版本号
+        id: ver
+        run: echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
 
       # ---- 门禁 1:tag 与 package.json.version 必须一致 --------------------------------------
       - name: 版本守卫(tag == package.json.version)
@@ -122,6 +129,8 @@ jobs:
 
       # ---- 门禁 3:全套回归(与 ci.yml 同一份清单)-------------------------------------------
       - name: 全量回归(pnpm test)
+        env:
+          DSHCS_SUITE_LOG: ${{ runner.temp }}/suite.log
         run: pnpm run test
 
       # ---- 门禁 4:面板渲染器必须与部署的 DSH 界面同版本 --------------------------------------
@@ -167,36 +176,126 @@ jobs:
           retention-days: 30
           path: dsh-code-server-app-*.tgz
 
-      # ---- 门禁 6:真装一遍(在 runner 上部署真 DSH,用官方安装路径把刚打的 tgz 装进 profile)------
-      # 仓库自己的回归永远看不出这一类问题:files 白名单漏产物、可选子树的依赖被 pnpm 丢掉
-      # (0.3.45 的 requires missing bindings)、profile 的 hoisted 布局里解析不到运行时依赖。
-      # 这里装的是**刚打出来的本地 tgz**(不必先发 npm:插件的依赖子包早就发过了)。
-      - name: 部署真 DSH 并把插件装进 profile(官方路径 dsh plugin --profile web add)
+      - name: 汇总(build)
+        if: always()
         run: |
-          set -euo pipefail
-          echo "DSH_HOME=$RUNNER_TEMP/dshhome" >> "$GITHUB_ENV"
-          mkdir -p "$RUNNER_TEMP/dshhome"
-          V="$(node -p 'require("./package.json").version')"
-          echo "用 @deepseek-ai/dsh@${DSH_CLI_VERSION:-latest} 安装 dsh-code-server-app@$V"
-          npx -y "@deepseek-ai/dsh@${DSH_CLI_VERSION:-latest}" plugin --profile web add "$PWD/dsh-code-server-app-$V.tgz"
+          {
+            echo "### release / build"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 触发 | \`${{ github.event_name }}\` \`${{ github.ref_name }}\` |"
+            echo "| 版本 | \`${{ steps.ver.outputs.version }}\` |"
+            echo "| 树版本 | \`${{ steps.tree.outputs.tree_version }}\` |"
+            echo "| UI 版本守卫 | \`${ui_version_check:-未执行}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ============================================================ 真装一遍(windows:产品发行的平台)
+  install-smoke:
+    name: install smoke (windows-latest)
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      # 可选:钉住安装冒烟用的 DSH CLI 版本(默认 latest —— 用户装到的就是 latest,顺便当漂移探针)
+      DSH_CLI_VERSION: ${{ vars.DSH_CLI_VERSION }}
+    steps:
+      - name: 检出(拿 scripts/test-installed.mjs 与 package.json)
+        uses: actions/checkout@v7
+
+      # DSH CLI 的 plugin 子命令是把参数转发给 profile 里的 pnpm ⇒ 这份 pnpm 得在 PATH 上。
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: 取回本 run 打好的 tarball
+        uses: actions/download-artifact@v8
+        with:
+          name: tarball-${{ github.ref_name }}-${{ github.run_number }}
+          path: .
+
+      - name: 部署真 DSH(隔离的 DSH_HOME,不碰别的 profile)
+        shell: pwsh
+        run: |
+          $home = Join-Path $env:RUNNER_TEMP 'dshhome'
+          New-Item -ItemType Directory -Force $home | Out-Null
+          "DSH_HOME=$home" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-ChildItem -Filter *.tgz | Select-Object Name, @{n = 'MB'; e = { [math]::Round($_.Length / 1MB, 2) } }
+
+      # 门禁 6:官方安装路径(与用户完全一致),装的是**刚打出来的本地 tgz** ——
+      # 不必先发 npm(插件的依赖子包早就发过了)。这一步专门抓"仓库回归永远看不出"的安装类问题:
+      # files 白名单漏产物、可选子树的依赖被 pnpm 丢掉(0.3.45 的 requires missing bindings)、
+      # profile 的 hoisted 布局里解析不到运行时依赖。
+      - name: 用官方路径把插件装进真 profile(dsh plugin --profile web add)
+        shell: pwsh
+        run: |
+          $V = node -p "require('./package.json').version"
+          $cli = if ($env:DSH_CLI_VERSION) { "@deepseek-ai/dsh@$env:DSH_CLI_VERSION" } else { '@deepseek-ai/dsh@latest' }
+          $tgz = Join-Path $PWD "dsh-code-server-app-$V.tgz"
+          if (-not (Test-Path $tgz)) { throw "tarball 不在:$tgz" }
+          Write-Host "用 $cli 安装 dsh-code-server-app@$V"
+          npx -y $cli plugin --profile web add $tgz
 
       - name: 安装冒烟断言(装完必须真的能用)
+        shell: pwsh
         run: |
-          set -euo pipefail
-          V="$(node -p 'require("./package.json").version')"
-          node scripts/test-installed.mjs "$DSH_HOME/profiles/web" --version "$V"
-          echo "install_smoke=ok(dsh ${DSH_CLI_VERSION:-latest} + profile 安装 + 断言全过)" >> "$GITHUB_ENV"
+          $V = node -p "require('./package.json').version"
+          node scripts/test-installed.mjs "$env:DSH_HOME\profiles\web" --version $V
 
       - name: 合成配置里必须真的出现本插件(cordis.patch.yml 生效)
+        shell: pwsh
         run: |
-          set -euo pipefail
-          npx -y "@deepseek-ai/dsh@${DSH_CLI_VERSION:-latest}" --profile web --dump-config > "$RUNNER_TEMP/dump.yml"
-          grep -q -- "- id: code-server" "$RUNNER_TEMP/dump.yml"
-          echo "合成树里出现 - id: code-server ✓(dump $(wc -l < "$RUNNER_TEMP/dump.yml") 行)"
+          $cli = if ($env:DSH_CLI_VERSION) { "@deepseek-ai/dsh@$env:DSH_CLI_VERSION" } else { '@deepseek-ai/dsh@latest' }
+          $dump = Join-Path $env:RUNNER_TEMP 'dump.yml'
+          npx -y $cli --profile web --dump-config | Out-File -FilePath $dump -Encoding utf8
+          if (-not (Select-String -Path $dump -Pattern '- id: code-server' -Quiet)) {
+            throw "dump-config 里没有 '- id: code-server' —— 插件的 cordis.patch.yml 没进合成树"
+          }
+          Write-Host "合成树里出现 - id: code-server ✓($((Get-Content $dump).Count) 行)"
 
-      # ---- 发布:仅 tag 触发;只发 next ------------------------------------------------------
+      - name: 汇总(install smoke)
+        if: always()
+        run: |
+          {
+            echo "### release / install smoke(windows-latest)"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 状态 | \`${{ job.status }}\` |"
+            echo "| 结论 | 真 DSH 部署 + 官方路径安装 + test-installed 断言 + dump-config |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ============================================================ 发布(仅 tag 触发)
+  publish:
+    name: publish to npm (next) + GitHub Release
+    needs: [build, install-smoke]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # 'token' ⇒ 用 NPM_TOKEN(不附 provenance);其它/未设置 ⇒ OIDC trusted publishing
+      NPM_AUTH_MODE: ${{ vars.NPM_AUTH_MODE }}
+    steps:
+      - name: 检出
+        uses: actions/checkout@v7
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: 取回 tarball(发的是安装冒烟验过的那一份)
+        uses: actions/download-artifact@v8
+        with:
+          name: tarball-${{ github.ref_name }}-${{ github.run_number }}
+          path: .
+
       - name: 准备 npm 凭据(仅 token 模式;OIDC 模式无需任何凭据)
-        if: github.event_name == 'push' && env.NPM_AUTH_MODE == 'token'
+        if: env.NPM_AUTH_MODE == 'token'
         run: |
           set -euo pipefail
           if [ -z "${NPM_TOKEN:-}" ]; then
@@ -210,9 +309,9 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: 发布到 npm(dist-tag = next;latest 不动)
-        if: github.event_name == 'push'
         run: |
           set -euo pipefail
+          ls -l dsh-code-server-app-*.tgz
           if [ "${NPM_AUTH_MODE:-}" = "token" ]; then
             npm whoami --registry https://registry.npmjs.org/
             node scripts/publish-plugin.mjs
@@ -225,7 +324,6 @@ jobs:
 
       # ---- Release:附 tarball,便于事后核对/回滚参考 -----------------------------------------
       - name: 创建 GitHub Release(附 tarball)
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -234,26 +332,21 @@ jobs:
           gh release create "$GITHUB_REF_NAME" "dsh-code-server-app-$V.tgz" \
             --title "$GITHUB_REF_NAME" --generate-notes
 
-      - name: 汇总
+      - name: 汇总(publish)
         if: always()
         run: |
           V="$(node -p 'require("./package.json").version')"
           {
-            echo "### release 结果"
+            echo "### release / publish"
             echo ""
             echo "| 项 | 值 |"
             echo "|---|---|"
-            echo "| 触发 | \`${{ github.event_name }}\` \`${{ github.ref_name }}\` |"
             echo "| 版本 | \`$V\` |"
-            echo "| 树版本 | \`${{ steps.tree.outputs.tree_version }}\` |"
-            echo "| npm 认证 | \`${NPM_AUTH_MODE:-oidc(OIDC trusted publishing)}\` |"
-            echo "| UI 版本守卫 | \`${ui_version_check:-未执行}\` |"
-            echo "| 安装冒烟 | \`${install_smoke:-未执行}\` |"
+            echo "| 认证 | \`${NPM_AUTH_MODE:-oidc(OIDC trusted publishing)}\` |"
+            echo "| 状态 | \`${{ job.status }}\` |"
             echo ""
-            if [ "${{ github.event_name }}" != "push" ]; then
-              echo "本次是**演练**(workflow_dispatch):没有发布、没有建 Release。"
-            elif [ "${{ job.status }}" != "success" ]; then
-              echo "**本次没有发布成功**(${{ job.status }})—— 请先看失败的那一步;npm 上仍是上一个版本。"
+            if [ "${{ job.status }}" != "success" ]; then
+              echo "**没有发布成功** —— npm 上应该还是上一个版本(发布步骤失败时请核对 \`npm dist-tag ls\`)。"
             else
               echo "已发 \`next\`;**\`latest\` 未动** —— 重启 dsh web 确认无误后再执行:"
               echo ""
