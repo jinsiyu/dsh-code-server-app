@@ -490,6 +490,14 @@ Supporting Linux is not mainly about "compiling a few more packages" — it is a
   `--target` must not drop the other platforms' modules), **skips** a per-platform package when no `.node`
   was produced for that target (rather than publishing an empty shell), and validates ELF `e_machine` for
   Linux targets (mirroring the PE machine check for win32).
+- **Measured on Linux** (both legs really compile; the verdict line reads
+  `[repack] linux-x64: 平台专属产出 5 个(…)`): five modules produce a `.node` —
+  `@vscode/deviceid`, `@vscode/native-watchdog`, `@vscode/spdlog`, `@vscode/sqlite3`, `kerberos`;
+  `windows-ca-certs` / `windows-process-tree` / `windows-registry` are Windows-only (whitelisted for
+  `win32-*` and reported as "excluded by the whitelist" on Linux). The earlier manual probe
+  `linux-repack-probe.yml` has been **removed**: its job (build without publishing) is now done by these two
+  legs, and its per-module notices hit GitHub's ~20-annotations-per-check-run cap, so only the tail was
+  readable.
 
 **To actually install native modules on Linux, three steps remain (one 2FA-authenticated sitting)**:
 

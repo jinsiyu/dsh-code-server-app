@@ -475,8 +475,7 @@ pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**�
 |---|---|---|
 | `ci.yml` | push `main` / PR / 手动 | `ubuntu-latest` + `windows-latest` 双平台:`pnpm install --frozen-lockfile` → `build:client` → `build:webview` → `pnpm test`(全套回归)→ `vendor:check` 只报告版本差 → 上传 `lib/client.js` 与面板产物 |
 | `release.yml` | 推 `v<version>` 标签 / 手动(演练,不发布) | 按 `dependencies` 钉的版本准备 `vendor/vscode` → 构建 → 全套回归 → `pnpm pack` → 校验 tarball 清单 → **真装一遍**(在 runner 上部署真 DSH,`dsh plugin --profile web add <tgz>`,再跑 `test:installed` + `dump-config` 断言)→ 发 npm **`next`** → 建 GitHub Release(附 tgz) |
-| `linux-repack-probe.yml` | push 本文件 / 手动 | **可行性探针(不发布,已被 `repacks.yml` 的 Linux 腿取代)**:在 Linux 上按目标(`linux-x64` → `ubuntu-latest`、`linux-arm64` → `ubuntu-24.04-arm`)试编平台专属重打包包,输出「哪些模块真能编出 `.node`、哪些是 Windows-only」。跑的是现有 `vendor-repacks.mjs` 本尊,改动只发生在 `$RUNNER_TEMP` 的仓库副本里。**注意**:它的 notice 是按模块发的,会撞上 GitHub「每个 check run 约 20 条 annotation」的上限而只留下尾部;要完整结论请看 `repacks.yml` 的 Linux 腿(每个目标只发一行汇总) |
-| `repacks.yml` | 手动(`publish` / `probe_oidc` 默认 **false**,四条腿的 `build_*` 默认 **true**)/ push 本文件 / push `.github/oidc-probe.enabled` | **平台专属子包(`@jinsiyu/dshcs-*`)的构建与发布**:同架构宿主 runner 各打一条(`win32-x64` → `windows-latest`、`win32-arm64` → `windows-11-arm`、`linux-x64` → `ubuntu-latest`、`linux-arm64` → `ubuntu-24.04-arm`),默认只构建 + 传 `repack/tgz/*.tgz`;勾上 `publish` 才发 npm(默认 `next`)。发布归属:win32-x64 那条腿发「平台无关 + win32-x64 专用」,其余三条腿只发 `--only <自己的目标>` ⇒ 集合不相交、并发不撞车。**认证**:没配 `NPM_TOKEN` 就走 OIDC(per-package Trusted Publisher,workflow 都填 `repacks.yml`,见下)。Linux 腿还会顺带校验「Linux 上生成的 `lib/vendored.json` / `package.json` 与仓库里的一致」(平台政策应当宿主无关)。额外有一个 `probe-oidc` job:对几个真实子包名做**只暂存、不发正式版**的巡检,用来证明这条 OIDC 通道真的可用 |
+| `repacks.yml` | 手动(`publish` / `probe_oidc` 默认 **false**,四条腿的 `build_*` 默认 **true**)/ push 本文件 / push `.github/oidc-probe.enabled` | **平台专属子包(`@jinsiyu/dshcs-*`)的构建与发布**:同架构宿主 runner 各打一条(`win32-x64` → `windows-latest`、`win32-arm64` → `windows-11-arm`、`linux-x64` → `ubuntu-latest`、`linux-arm64` → `ubuntu-24.04-arm`),默认只构建 + 传 `repack/tgz/*.tgz`(**不发布**,所以它同时就是 Linux 可行性验证的正式位置);勾上 `publish` 才发 npm(默认 `next`)。发布归属:win32-x64 那条腿发「平台无关 + win32-x64 专用」,其余三条腿只发 `--only <自己的目标>` ⇒ 集合不相交、并发不撞车。**认证**:没配 `NPM_TOKEN` 就走 OIDC(per-package Trusted Publisher,workflow 都填 `repacks.yml`,见下)。Linux 腿还会顺带校验「Linux 上生成的 `lib/vendored.json` / `package.json` 与仓库里的一致」(平台政策应当宿主无关)。额外有一个 `probe-oidc` job:对几个真实子包名做**只暂存、不发正式版**的巡检,用来证明这条 OIDC 通道真的可用 |
 
 ### Linux 适配(x64 / arm64):改了什么、还差什么
 
@@ -494,6 +493,13 @@ pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**�
 - 生成器同时:保留本次分析看不到的条目(用 `--target` 只构建本机目标时,别的平台的模块必须原样留下)、
   平台专属包在该目标上编不出 `.node` 时**跳过而不是发空壳**、Linux 目标补 ELF `e_machine` 校验
   (与 win32 的 PE machine 校验对称)。
+- **Linux 上实测**(`linux-x64` / `linux-arm64` 两条腿各真编译一遍,结论行:
+  `[repack] linux-x64: 平台专属产出 5 个(…)`):这 5 个模块编出了 `.node` ——
+  `@vscode/deviceid` / `@vscode/native-watchdog` / `@vscode/spdlog` / `@vscode/sqlite3` / `kerberos`;
+  `windows-ca-certs` / `windows-process-tree` / `windows-registry` 是 Windows-only(白名单里只给 win32),
+  在 Linux 上被白名单排除(一次运行里报「白名单排除 N 个」)。
+  早先那个手工探针 `linux-repack-probe.yml` **已删除**:它的职责(不发布地试编)现在由这两条腿承担,
+  而它按模块发 notice 会撞上「每个 check run 约 20 条 annotation」的上限、结论只能读到尾部。
 
 **要真正让 Linux 装上原生模块,还差三步(需要维护者带 2FA 做一次)**:
 
@@ -563,11 +569,14 @@ pnpm run promote -- 0.3.47                 # 4) 确认无误后推 latest(手动
     ⚠️ npm 官方已公告:2026-07-31 起 bypass-2FA 令牌**不能再做账号/包管理类操作**,并且
     **2027-01 起将失去直接发布**(只剩读取私有包 + 暂存发布,要维护者用 2FA 批准)⇒ 长期请迁到 B。
   - **B. per-package trusted publishing(长期方案)**:npm 的信任关系是**按包**配的(2026-09 起一个包
-    可以配多条,但**没有作用域级**),这批 25 个包要 25 条。先生成命令,再在浏览器授权一次后逐条执行:
+    可以配多条,但**没有作用域级**),有多少个子包就要多少条(win32 阶段是 25 条;Linux 上线后按
+    `lib/vendored.json` 里每模块的 `targets` 增加)。先生成命令,再在浏览器授权一次后逐条执行:
     ```powershell
-    node -e "const t=require('./lib/vendored.json');const p=require('./package.json');const tree=Object.keys(p.dependencies).find(n=>n.endsWith('/dshcs-vscode-server'));const names=[tree,t.modules.flatMap(m=>m.platform?t.targets.map(x=>m.package+'-'+x):m.package)];require('fs').writeFileSync('trust-all.txt',names.flat().map(n=>'npm trust github '+n+' --file repacks.yml --allow-publish -y').join('\n')+'\n')"
+    node -e "const t=require('./lib/vendored.json');const p=require('./package.json');const tree=Object.keys(p.dependencies).find(n=>n.endsWith('/dshcs-vscode-server'));const names=[tree,...t.modules.flatMap(m=>m.platform?m.targets.map(x=>m.package+'-'+x):[m.package])];require('fs').writeFileSync('trust-all.txt',names.map(n=>'npm trust github '+n+' --file repacks.yml --allow-publish -y').join('\n')+'\n')"
     Get-Content trust-all.txt | ForEach-Object { Invoke-Expression $_ }
     ```
+    > 注意这里用的是**每模块**的 `targets`(不是「模块 × 全部目标」):`@vscode/windows-registry`
+    > 只在 `win32-*` 有子包,`-linux-*` 的包名永远不会存在 —— 给不存在的包建信任关系只会白跑一遍。
     配完把 `NPM_TOKEN` 删掉即可(workflow 会自动走 OIDC)。npm 也允许把每条配置设成**只允许暂存发布**
     (版本要你 2FA 批准才生效)—— 更安全,但每批子包都要你手动批准多个版本,按需取舍。
     核对:对任意子包执行 `npm trust list <包名>`,应显示 `file: repacks.yml` 与

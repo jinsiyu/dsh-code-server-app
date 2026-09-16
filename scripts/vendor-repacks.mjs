@@ -19,7 +19,7 @@
 //   不给 --from 时自动准备源树(按 vendor/VENDOR.json 的版本 npm install --ignore-scripts,再在
 //   lib/vscode 里解包 + rebuild;耗时且需要工具链,维护者换版本时用)。--pack 生成 repack/tgz/*.tgz。
 import { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, writeFileSync, cpSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
@@ -525,10 +525,16 @@ function readRepackPlatforms() {
     perModule.set(alias, {
       platform: typeof spec.platform === 'boolean' ? spec.platform : null,
       targets: list(spec.targets),
+      // 可选:我们自己定义的版本(重打包内容变了、而上游版本没变时用它,例如 2.1.1-dshcs.2)。
+      version: typeof spec.version === 'string' && spec.version !== '' ? spec.version : null,
     });
   }
   return { allTargets, publishedTargets: list(doc?.publishedTargets), perModule };
 }
+
+/** 版本的「基版本」:去掉我们自家后缀(-dshcs.N)。kerberos 就是个例子 ——
+ *  已发布的重打包版本是聚合包时代留下的 `2.1.1-dshcs.1`,而源树里装的是上游 `2.1.1`。 */
+const baseVersion = (v) => String(v).replace(/-dshcs\.\d+$/, '');
 
 /** 平台政策落到分析结果上:
  *   ① 分类(是不是平台专属)以声明为准 —— analyze() 的结论随宿主漂移(Linux 上 windows-registry
@@ -539,23 +545,40 @@ function readRepackPlatforms() {
  *  @param modules - 就地修改的重打包条目(来自 analyze 或 --reuse) */
 function applyPlatformPolicy(modules, platforms, allTargets) {
   const declared = (alias) => platforms.perModule.get(alias);
+  const existing = readJson(join(pkgRoot, 'lib', 'vendored.json'));
+  const previous = new Map((Array.isArray(existing?.modules) ? existing.modules : [])
+    .filter((e) => e !== null && typeof e === 'object' && typeof e.alias === 'string')
+    .map((e) => [e.alias, e]));
+
   for (const m of modules) {
     const decl = declared(m.alias);
     if (decl === undefined) {
       console.warn(`  ⚠ ${m.alias} 不在 scripts/repack-platforms.json 的模块表里 ⇒ 沿用分析结论`
         + `(platform=${m.platform});建议登记它,否则换宿主平台时分类会漂移`);
-      continue;
-    }
-    if (decl.platform !== null && decl.platform !== m.platform) {
+    } else if (decl.platform !== null && decl.platform !== m.platform) {
       console.warn(`  ⚠ ${m.alias}:分析结论 platform=${m.platform},声明写的是 platform=${decl.platform} ⇒ 以声明为准`);
       m.platform = decl.platform;
+    }
+    // 版本政策(**必须宿主无关**):① 声明里钉的优先;② 否则沿用表里**已发布**的版本(基版本相同时)——
+    // 源树里装的是上游版本(例如 kerberos 2.1.1),而 registry 上我们发布的是 2.1.1-dshcs.1;
+    // 若照源树写,换个宿主平台就会把插件依赖改成从没发布过的号,装上直接解析失败。
+    const prevVersion = typeof previous.get(m.alias)?.version === 'string' ? previous.get(m.alias).version : null;
+    if (decl?.version !== null && decl?.version !== undefined) {
+      if (decl.version !== m.version) console.log(`  · ${m.alias}:按声明钉版本 ${decl.version}(源树里是 ${m.version})`);
+      m.version = decl.version;
+    } else if (prevVersion !== null && baseVersion(prevVersion) === baseVersion(m.version)) {
+      if (prevVersion !== m.version) {
+        console.log(`  · ${m.alias}:沿用表里已发布的版本 ${prevVersion}(源树里是 ${m.version},基版本相同)`);
+      }
+      m.version = prevVersion;
+    } else if (prevVersion !== null) {
+      console.log(`  · ${m.alias}:源树版本 ${m.version} 与表里的 ${prevVersion} 基版本不同 ⇒ 采用源树版本(上游升级)`);
     }
   }
 
   const seen = new Set(modules.map((m) => m.alias));
-  const existing = readJson(join(pkgRoot, 'lib', 'vendored.json'));
   const kept = [];
-  for (const e of Array.isArray(existing?.modules) ? existing.modules : []) {
+  for (const e of [...previous.values()]) {
     if (e === null || typeof e !== 'object' || typeof e.alias !== 'string' || seen.has(e.alias)) continue;
     const decl = declared(e.alias);
     kept.push({
@@ -790,9 +813,11 @@ function main() {
   const moduleTargetsOf = new Map(modules.map((m) => [m.alias, Array.isArray(m.targets) ? m.targets : [...allTargets]]));
   const platformDirs = [];
   const builtByTarget = new Map(buildTargets.map((t) => [t, []]));
+  const gradedSpecific = new Map(buildTargets.map((t) => [t, []]));
   const skipped = { policy: [], noBinary: [], missing: [] };
   if (!REUSE) for (const target of buildTargets) {
     const map = byTarget.get(target);
+    gradedSpecific.set(target, [...repack].filter(([, r]) => r.platformSpecific).map(([name]) => name));
     const specs = [...repack]
       .filter(([name, r]) => r.platformSpecific && moduleTargetsOf.get(name).includes(target))
       .map(([name, r]) => ({ name, version: r.pkg.version }));
@@ -831,13 +856,25 @@ function main() {
     console.log(line);
     if (process.env.GITHUB_ACTIONS === 'true') console.log(`::notice::${line}`);
   } else for (const target of buildTargets) {
-    const built = builtByTarget.get(target);
+    const built = builtByTarget.get(target) ?? [];
+    const graded = gradedSpecific.get(target) ?? [];
+    // 记账 vs 产物自校验:计划的目录名就是「flat(别名)-目标」,所以这一眼能看出有没有漏记
+    const packedDirs = plan.map((item) => basename(String(item.dir ?? ''))).filter((d) => d.endsWith(`-${target}`));
     const n = (list) => list.filter((s) => s.endsWith(`@${target}`)).length;
-    const line = `[repack] ${target}: 平台专属产出 ${built.length} 个(${built.join(', ') || '无'})`
-      + `;白名单排除 ${n(skipped.policy)};无二进制跳过 ${n(skipped.noBinary)}`
-      + `${n(skipped.missing) > 0 ? `;目录缺失跳过 ${n(skipped.missing)}` : ''}`;
+    const line = `[repack] ${target}: 源树判定平台专属 ${graded.length} 个(${graded.join(', ') || '无'})`
+      + ` ⇒ 打包 ${built.length} 个;白名单排除 ${n(skipped.policy)};无二进制跳过 ${n(skipped.noBinary)}`
+      + `${n(skipped.missing) > 0 ? `;目录缺失跳过 ${n(skipped.missing)}` : ''}`
+      + `;平台无关 ${[...repack].filter(([, r]) => !r.platformSpecific).length} 个`
+      + `;计划里属于本目标的目录 ${packedDirs.length} 个`;
     console.log(line);
     if (process.env.GITHUB_ACTIONS === 'true') console.log(`::notice::${line}`);
+    if (built.length !== packedDirs.length) {
+      const diff = `${built.length} vs ${packedDirs.length}`;
+      console.warn(`  ⚠ ${target}: 记账与产物不一致(${diff})—— 计划里 ${packedDirs.join(', ')}`);
+      if (process.env.GITHUB_ACTIONS === 'true') {
+        console.log(`::warning::${target}: 记账的平台专属包数与计划不一致(${diff});计划里:${packedDirs.join(', ')}`);
+      }
+    }
   }
   if (skipped.noBinary.length > 0) {
     console.warn(`  ⚠ 以下「模块×目标」在白名单里但没编出二进制:${skipped.noBinary.join(', ')};`

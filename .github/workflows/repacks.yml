@@ -396,15 +396,23 @@ jobs:
       - name: 生成的依赖表与仓库里的一致吗(平台政策应当宿主无关)
         shell: bash
         run: |
+          mismatch=0
           for f in lib/vendored.json package.json; do
             if diff -q "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/repacks/$f" >/dev/null 2>&1; then
               echo "::notice::$TARGET 上生成的 $f 与仓库里的完全一致"
             else
+              mismatch=$((mismatch + 1))
               echo "::warning::$TARGET 上生成的 $f 与仓库里的不一致(平台政策本应宿主无关)"
               diff -u "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/repacks/$f" | head -n 12 \
-                | while IFS= read -r line; do echo "::warning:: $line"; done
+                | while IFS= read -r line; do echo "::warning:: $line"; done || true
             fi
           done
+          # 这一步**只出信息,不判失败**:生成物由维护者在 Windows 上产出后提交,这里要回答的是
+          # 「换宿主平台会不会算出不同的表」,而不是拦住构建。
+          if [ "$mismatch" -gt 0 ]; then
+            echo "::warning::$TARGET:有 $mismatch 个生成文件与仓库不一致(信息,不判失败)"
+          fi
+          exit 0
 
       - name: 上传 tgz
         uses: actions/upload-artifact@v7
@@ -520,15 +528,23 @@ jobs:
       - name: 生成的依赖表与仓库里的一致吗(平台政策应当宿主无关)
         shell: bash
         run: |
+          mismatch=0
           for f in lib/vendored.json package.json; do
             if diff -q "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/repacks/$f" >/dev/null 2>&1; then
               echo "::notice::$TARGET 上生成的 $f 与仓库里的完全一致"
             else
+              mismatch=$((mismatch + 1))
               echo "::warning::$TARGET 上生成的 $f 与仓库里的不一致(平台政策本应宿主无关)"
               diff -u "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/repacks/$f" | head -n 12 \
-                | while IFS= read -r line; do echo "::warning:: $line"; done
+                | while IFS= read -r line; do echo "::warning:: $line"; done || true
             fi
           done
+          # 这一步**只出信息,不判失败**:生成物由维护者在 Windows 上产出后提交,这里要回答的是
+          # 「换宿主平台会不会算出不同的表」,而不是拦住构建。
+          if [ "$mismatch" -gt 0 ]; then
+            echo "::warning::$TARGET:有 $mismatch 个生成文件与仓库不一致(信息,不判失败)"
+          fi
+          exit 0
 
       - name: 上传 tgz
         uses: actions/upload-artifact@v7
