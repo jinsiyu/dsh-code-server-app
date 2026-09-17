@@ -516,21 +516,36 @@ pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**�
   早先那个手工探针 `linux-repack-probe.yml` **已删除**:它的职责(不发布地试编)现在由这两条腿承担,
   而它按模块发 notice 会撞上「每个 check run 约 20 条 annotation」的上限、结论只能读到尾部。
 
-**要真正让 Linux 装上原生模块,还差三步(需要维护者带 2FA 做一次)**:
+**Linux 上线现状(2026-09-17 更新)**:
 
-1. **首次发布 Linux 子包** —— 新包名**没法预先建 Trusted Publisher**(信任关系要求包已存在),
-   所以第一次必须由维护者本人发:Actions → repacks → Run workflow,勾上 `publish`
-   (四条腿一起跑;或只勾 `build_linux_x64` / `build_linux_arm64` + `publish`)。
-   已在用的子包走 OIDC 自动发;新包名需要一个有 publish 权限的 `NPM_TOKEN`(或本机 `npm publish`)。
-2. 给这些新包各加一条信任关系(`npm trust github <包名> --file repacks.yml --repo jinsiyu/dsh-code-server-app --allow-publish -y`),
-   之后 `NPM_TOKEN` 就可以删掉。
-3. 把 `scripts/repack-platforms.json` 的 `publishedTargets` 补上 `linux-x64` / `linux-arm64`
-   → 重跑 `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64`
-   (它会把这 10 个 Linux 子包写进插件 `optionalDependencies`)
-   → `pnpm install` 刷新 `pnpm-lock.yaml` → 走正常发版流程。
-   > 在完成第 3 步之前,插件依赖表里**不会**出现 linux 子包(写进去 pnpm 会去解析一个不存在的包,
-   > 直接装不上);但 `lib/vendored.json` 已经带上 Linux 目标 —— 这在 Windows 上完全无影响,
-   > 在 Linux 上只是把原生模块如实报成「缺」。
+1. ✅ **10 个 Linux 子包已首发**(5 个模块 × x64/arm64)。新包名没法预先建 Trusted Publisher,
+   所以首发由维护者本机带 2FA 完成(`npm login --auth-type=web` → 逐个 `npm publish <tgz>`),
+   版本与 `lib/vendored.json` 逐字一致,`os=linux` / `cpu=x64|arm64` 都在 registry 上核对过。
+2. ⏳ **给这 10 个新包名各加一条信任关系**(一条命令一条,浏览器确认即可,**不需要 OTP**):
+
+   ```powershell
+   $env:npm_config_auth_type = 'web'; npm login     # 已登录可跳过
+   $names = @(
+     '@jinsiyu/dshcs-kerberos-linux-arm64','@jinsiyu/dshcs-kerberos-linux-x64',
+     '@jinsiyu/dshcs-vscode-deviceid-linux-arm64','@jinsiyu/dshcs-vscode-deviceid-linux-x64',
+     '@jinsiyu/dshcs-vscode-native-watchdog-linux-arm64','@jinsiyu/dshcs-vscode-native-watchdog-linux-x64',
+     '@jinsiyu/dshcs-vscode-spdlog-linux-arm64','@jinsiyu/dshcs-vscode-spdlog-linux-x64',
+     '@jinsiyu/dshcs-vscode-sqlite3-linux-arm64','@jinsiyu/dshcs-vscode-sqlite3-linux-x64')
+   foreach ($n in $names) {
+     npm trust github $n --file repacks.yml --repo jinsiyu/dsh-code-server-app --allow-publish -y
+   }
+   ```
+   加完就可以把仓库 Secrets 里的 **`NPM_TOKEN` 删掉** —— CI 之后走 OIDC,不会再撞
+   "token 没勾 bypass 2FA ⇒ EOTP" 那个坑(它只在首发新包名时才是必需的)。
+3. ✅ **依赖表已接线**:`scripts/repack-platforms.json` 的 `publishedTargets` 已含 `linux-*`;
+   `package.json` 的 `optionalDependencies` 现在是 **26 项**(16 win32 + 10 linux,由
+   「每模块白名单 ∩ 已发布目标」公式决定,`test-vendored-table.mjs` 会逐项校验);
+   `pnpm-lock.yaml` 已刷新(只新增 10 条,无其它改动);`pnpm-workspace.yaml` 的
+   `minimumReleaseAgeExclude` 也补了这 10 个 `@版本`(新发布的包会被供应链冷却期挡住)。
+
+   > 再下一步就是我们自己的发版流程:bump 插件版本 → `pnpm pack` → 本机 `dsh plugin --profile web add <tgz>`
+   > 确认 → 打 tag 走 `release.yml`。Linux 用户装到这个版本后,`lib/native.js` 会自动把
+   > `-linux-*` 子包按原名补成 junction(与 Windows 同一条路径)。
 
 **dist-tag 政策不变**:`release.yml` 只发 `next`,绝不碰 `latest`;`latest` 仍由 `pnpm run promote -- <version>`
 在重启 dsh web 确认无误后手动推进(README 上方「打包」一节)。

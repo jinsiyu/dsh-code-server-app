@@ -19,3 +19,15 @@ minimumReleaseAgeExclude:
   - '@jinsiyu/dsh-code-server-runtime-win32-x64@0.3.10'
   - '@jinsiyu/dshcs-kerberos-win32-arm64@2.1.1-dshcs.1'
   - '@jinsiyu/dshcs-kerberos-win32-x64@2.1.1-dshcs.1'
+  # Linux 目标首批 10 个子包(2026-09-17 首发):刚发布的版本会被供应链冷却期挡住,
+  # 和我们自己发的包一样列进排除表;以后每次首发新子包/新版本都要在这里补一行。
+  - '@jinsiyu/dshcs-kerberos-linux-arm64@2.1.1-dshcs.1'
+  - '@jinsiyu/dshcs-kerberos-linux-x64@2.1.1-dshcs.1'
+  - '@jinsiyu/dshcs-vscode-deviceid-linux-arm64@0.1.5'
+  - '@jinsiyu/dshcs-vscode-deviceid-linux-x64@0.1.5'
+  - '@jinsiyu/dshcs-vscode-native-watchdog-linux-arm64@1.4.6'
+  - '@jinsiyu/dshcs-vscode-native-watchdog-linux-x64@1.4.6'
+  - '@jinsiyu/dshcs-vscode-spdlog-linux-arm64@0.15.8'
+  - '@jinsiyu/dshcs-vscode-spdlog-linux-x64@0.15.8'
+  - '@jinsiyu/dshcs-vscode-sqlite3-linux-arm64@5.1.12-vscode'
+  - '@jinsiyu/dshcs-vscode-sqlite3-linux-x64@5.1.12-vscode'

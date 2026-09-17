@@ -25,14 +25,17 @@
   "_publishedTargetsNote": [
     "publishedTargets = 子包**已经发布到 npm** 的目标,只有它们能写进插件 package.json 的",
     "optionalDependencies(写进去而包不存在 ⇒ pnpm install 直接解析失败)。",
-    "bootstrap 顺序:先用 repacks.yml 的构建腿产出 linux 子包 → 由维护者带 2FA 首发(新包名没法",
-    "预先建 Trusted Publisher)→ 把 linux-x64 / linux-arm64 加进这里 → 重跑 vendor-repacks.mjs",
-    "→ pnpm install 刷新 pnpm-lock.yaml。此前 lib/vendored.json 已经带上 linux 目标,运行时只是",
-    "把它们报成「本平台缺包」(Linux 本来就还没支持),不会影响 Windows。"
+    "四个目标现在都已发布:win32-* 是 0.3.45 起的历史;linux-* 于 2026-09-17 由维护者本机带 2FA 首发",
+    "(新包名没法预先建 Trusted Publisher,所以首发只能人工)—— 10 个包 = 5 个模块 × x64/arm64,",
+    "windows-* 三个模块仍然只有 win32 目标。",
+    "以后新增目标时的顺序:先用 repacks.yml 的构建腿产出子包 → 维护者带 2FA 首发 → 把该目标加进这里",
+    "→ 重跑 vendor-repacks.mjs → pnpm install 刷新 pnpm-lock.yaml。"
   ],
   "publishedTargets": [
     "win32-x64",
-    "win32-arm64"
+    "win32-arm64",
+    "linux-x64",
+    "linux-arm64"
   ],
   "modules": {
     "@vscode/windows-ca-certs": { "platform": true, "targets": ["win32-x64", "win32-arm64"] },

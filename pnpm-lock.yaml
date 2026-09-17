@@ -226,30 +226,60 @@ importers:
         specifier: 4.3.1
         version: 4.3.1
     optionalDependencies:
+      '@jinsiyu/dshcs-kerberos-linux-arm64':
+        specifier: 2.1.1-dshcs.1
+        version: 2.1.1-dshcs.1
+      '@jinsiyu/dshcs-kerberos-linux-x64':
+        specifier: 2.1.1-dshcs.1
+        version: 2.1.1-dshcs.1
       '@jinsiyu/dshcs-kerberos-win32-arm64':
         specifier: 2.1.1-dshcs.1
         version: 2.1.1-dshcs.1
       '@jinsiyu/dshcs-kerberos-win32-x64':
         specifier: 2.1.1-dshcs.1
         version: 2.1.1-dshcs.1
+      '@jinsiyu/dshcs-vscode-deviceid-linux-arm64':
+        specifier: 0.1.5
+        version: 0.1.5
+      '@jinsiyu/dshcs-vscode-deviceid-linux-x64':
+        specifier: 0.1.5
+        version: 0.1.5
       '@jinsiyu/dshcs-vscode-deviceid-win32-arm64':
         specifier: 0.1.5
         version: 0.1.5
       '@jinsiyu/dshcs-vscode-deviceid-win32-x64':
         specifier: 0.1.5
         version: 0.1.5
+      '@jinsiyu/dshcs-vscode-native-watchdog-linux-arm64':
+        specifier: 1.4.6
+        version: 1.4.6
+      '@jinsiyu/dshcs-vscode-native-watchdog-linux-x64':
+        specifier: 1.4.6
+        version: 1.4.6
       '@jinsiyu/dshcs-vscode-native-watchdog-win32-arm64':
         specifier: 1.4.6
         version: 1.4.6
       '@jinsiyu/dshcs-vscode-native-watchdog-win32-x64':
         specifier: 1.4.6
         version: 1.4.6
+      '@jinsiyu/dshcs-vscode-spdlog-linux-arm64':
+        specifier: 0.15.8
+        version: 0.15.8
+      '@jinsiyu/dshcs-vscode-spdlog-linux-x64':
+        specifier: 0.15.8
+        version: 0.15.8
       '@jinsiyu/dshcs-vscode-spdlog-win32-arm64':
         specifier: 0.15.8
         version: 0.15.8
       '@jinsiyu/dshcs-vscode-spdlog-win32-x64':
         specifier: 0.15.8
         version: 0.15.8
+      '@jinsiyu/dshcs-vscode-sqlite3-linux-arm64':
+        specifier: 5.1.12-vscode
+        version: 5.1.12-vscode
+      '@jinsiyu/dshcs-vscode-sqlite3-linux-x64':
+        specifier: 5.1.12-vscode
+        version: 5.1.12-vscode
       '@jinsiyu/dshcs-vscode-sqlite3-win32-arm64':
         specifier: 5.1.12-vscode
         version: 5.1.12-vscode
@@ -484,6 +514,18 @@ packages:
     resolution: {integrity: sha512-mINmievgtq+3c6Qa7hlH/DU3a+pn6Nt5fV0ZN3JErvEBpMqQ3GPPYLEwiGvwp2h7xOER3moJEqfh5lguLieXzw==}
     engines: {node: '>=10.0.0'}
 
+  '@jinsiyu/dshcs-kerberos-linux-arm64@2.1.1-dshcs.1':
+    resolution: {integrity: sha512-hmUkHEShd74IWSgs6PX06U27cvkn6kQCxN/tTwBZCU4tUF8y3gG5cGy2D7HCx8+E1FyJTUiPCp5FbHm3VDhMYg==}
+    engines: {node: '>=12.9.0'}
+    cpu: [arm64]
+    os: [linux]
+
+  '@jinsiyu/dshcs-kerberos-linux-x64@2.1.1-dshcs.1':
+    resolution: {integrity: sha512-qGvYV/GryZ+45uNBVCSBNHAxONKddGGxaxSE+HkRViTi9BszY38ntCGiE3Fm4W0JXadUd+SwK10awSy0zlyN0A==}
+    engines: {node: '>=12.9.0'}
+    cpu: [x64]
+    os: [linux]
+
   '@jinsiyu/dshcs-kerberos-win32-arm64@2.1.1-dshcs.1':
     resolution: {integrity: sha512-s9K/O27SxzgnA/bqz/rY5ohLk7ihz4bPvv+892Ds+i0iDYAPT/r7op5CORv0++wUz9xsS59xbT3Ex/jRqHbPlg==}
     engines: {node: '>=12.9.0'}
@@ -514,6 +556,16 @@ packages:
     resolution: {integrity: sha512-yArgu9z30vy3J6ZLV841lgQvEyjqR+c3zU/Ly7Myv3d2PmOm2oiHvcUzq67K4isUpl4xVNVXf+NNHHX5dbwbQQ==}
     engines: {node: '>=10.16.0'}
 
+  '@jinsiyu/dshcs-vscode-deviceid-linux-arm64@0.1.5':
+    resolution: {integrity: sha512-ToGZlQv1ndT3MXcB2V/9Q9OJsLdwn/kXbGwomZPQ7/5B6imz83UU4kCJSRduQYpFObG6GVcxk8GU1mYVRsToPw==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@jinsiyu/dshcs-vscode-deviceid-linux-x64@0.1.5':
+    resolution: {integrity: sha512-kTBOlAAxGT7q6l1Oci64FEm5fCyv5d0NgqAfyVhEK/D/vFcxC6XIyFDbQCmTDH5NejoO5sFZKaRLlDytBi4ILA==}
+    cpu: [x64]
+    os: [linux]
+
   '@jinsiyu/dshcs-vscode-deviceid-win32-arm64@0.1.5':
     resolution: {integrity: sha512-F7NsecxT2++1M073YkBDbC2KyNo9E+UqpwSyVWY7im++WVEmXRmzY+EeO7TIW0YDtjBZ6KXGdwyE1WrSg0A6ww==}
     cpu: [arm64]
@@ -527,6 +579,16 @@ packages:
   '@jinsiyu/dshcs-vscode-fs-copyfile@2.0.0':
     resolution: {integrity: sha512-dNinUBW3pCH4F7Tte1v3VYcVyel6LYl+qk7W6AWLarngxf4FeI65wUBszy5cWIWPVsN1zz+UKxBw1uelydkd3A==}
     engines: {node: '>=22.6.0'}
+
+  '@jinsiyu/dshcs-vscode-native-watchdog-linux-arm64@1.4.6':
+    resolution: {integrity: sha512-hxL0DbJAwywgYx/cQ6DqDZUumwqRjGWzmztnFb/RCrZE9Yp35HK16nLJHVBctEwOxZi8JyfEN3t2leI69n1olg==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@jinsiyu/dshcs-vscode-native-watchdog-linux-x64@1.4.6':
+    resolution: {integrity: sha512-UzTYB5yvpZEcsTPicer7TIsFiQQWUyQDbslDFNSoPPSqBbNeJ08oFl53TScnmmVImI1tWujcENPeVQkHLSvqjQ==}
+    cpu: [x64]
+    os: [linux]
 
   '@jinsiyu/dshcs-vscode-native-watchdog-win32-arm64@1.4.6':
     resolution: {integrity: sha512-ZwZ3aDWF6i07i4zYuTEDvxlrDkMDr+xbmmezVxxXCNXbyLnvZ34hNhtwaM+J0WruAGtZg4mdfMdIsBgWHnZB2A==}
@@ -545,6 +607,16 @@ packages:
   '@jinsiyu/dshcs-vscode-server@4.137.0':
     resolution: {integrity: sha512-n0EbGfGZj45wQrrc+DT9nInuBgnIvGoIBwQ26FTC+uJpaRR1a0lm727PWonVCi/r24f6Y5Ptg8IrL/ODYprcJw==}
 
+  '@jinsiyu/dshcs-vscode-spdlog-linux-arm64@0.15.8':
+    resolution: {integrity: sha512-UE5kMgw5l7tDYHVPjg6RuQ13wnhT4Md5PdJPYYNMaH8sjNoGUEAThybg+KwHILGK6KpQRfZ/Fu5kqcG11/EC0g==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@jinsiyu/dshcs-vscode-spdlog-linux-x64@0.15.8':
+    resolution: {integrity: sha512-DNwz85zGHn/PkPvOJ81zlJ3JHOffv/Be0lKmjJm/6LfSpcTIYHrBtMxkOyI8E0Uqp+YO2dTtEdTBa2WUJbelIA==}
+    cpu: [x64]
+    os: [linux]
+
   '@jinsiyu/dshcs-vscode-spdlog-win32-arm64@0.15.8':
     resolution: {integrity: sha512-n83iOsHr/2y7EfXIrVemw02Ow1vF+nklWCF6TM6es2/ZCs2uLfwFvKOrfcfEN4TRKtLg10G2yzX/dccd7PvAJA==}
     cpu: [arm64]
@@ -554,6 +626,16 @@ packages:
     resolution: {integrity: sha512-fpqcminrcZG3fELMsxnt8bq5r7zaO4WUYl/ZJbz5YekfnhCx+CyuPdekrcUb6cReTtNuMYIoZN3GQuBW0+u04A==}
     cpu: [x64]
     os: [win32]
+
+  '@jinsiyu/dshcs-vscode-sqlite3-linux-arm64@5.1.12-vscode':
+    resolution: {integrity: sha512-6paSuZB0JOG3xMhJox0kjh0xf1e0AtHYanMd8gnIXokJzWsUdAJzU99Uj4Ep+KzZe2KTfqrx/hrVBfyW7w+1dA==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@jinsiyu/dshcs-vscode-sqlite3-linux-x64@5.1.12-vscode':
+    resolution: {integrity: sha512-6grVwmPCtPI/t3om9PrjdjSUFbhoFWkVdy+TIqnmZ/YzJgGiPpxqOOBhuShpG9pQnsTVIKi5jhhvAHQ+m8XsYA==}
+    cpu: [x64]
+    os: [linux]
 
   '@jinsiyu/dshcs-vscode-sqlite3-win32-arm64@5.1.12-vscode':
     resolution: {integrity: sha512-FB8cwD1d3a8RMDTxcMly7GVqqFsyemaMU3+jQ4HC+SS+SHrSvldfZmvC4iigqzzJDqG8zJEkz2YPgWRYnpiqTQ==}
@@ -1588,6 +1670,18 @@ snapshots:
       buildcheck: 0.0.7
       nan: 2.28.0
 
+  '@jinsiyu/dshcs-kerberos-linux-arm64@2.1.1-dshcs.1':
+    dependencies:
+      bindings: 1.5.0
+      node-addon-api: 6.1.0
+    optional: true
+
+  '@jinsiyu/dshcs-kerberos-linux-x64@2.1.1-dshcs.1':
+    dependencies:
+      bindings: 1.5.0
+      node-addon-api: 6.1.0
+    optional: true
+
   '@jinsiyu/dshcs-kerberos-win32-arm64@2.1.1-dshcs.1':
     dependencies:
       bindings: 1.5.0
@@ -1656,6 +1750,18 @@ snapshots:
       cpu-features: '@jinsiyu/dshcs-cpu-features@0.0.10'
       nan: 2.28.0
 
+  '@jinsiyu/dshcs-vscode-deviceid-linux-arm64@0.1.5':
+    dependencies:
+      fs-extra: 11.4.0
+      uuid: 14.0.2
+    optional: true
+
+  '@jinsiyu/dshcs-vscode-deviceid-linux-x64@0.1.5':
+    dependencies:
+      fs-extra: 11.4.0
+      uuid: 14.0.2
+    optional: true
+
   '@jinsiyu/dshcs-vscode-deviceid-win32-arm64@0.1.5':
     dependencies:
       fs-extra: 11.4.0
@@ -1671,6 +1777,12 @@ snapshots:
   '@jinsiyu/dshcs-vscode-fs-copyfile@2.0.0':
     dependencies:
       node-addon-api: 7.1.1
+
+  '@jinsiyu/dshcs-vscode-native-watchdog-linux-arm64@1.4.6':
+    optional: true
+
+  '@jinsiyu/dshcs-vscode-native-watchdog-linux-x64@1.4.6':
+    optional: true
 
   '@jinsiyu/dshcs-vscode-native-watchdog-win32-arm64@1.4.6':
     optional: true
@@ -1694,6 +1806,20 @@ snapshots:
 
   '@jinsiyu/dshcs-vscode-server@4.137.0': {}
 
+  '@jinsiyu/dshcs-vscode-spdlog-linux-arm64@0.15.8':
+    dependencies:
+      bindings: 1.5.0
+      mkdirp: 1.0.4
+      node-addon-api: 7.1.0
+    optional: true
+
+  '@jinsiyu/dshcs-vscode-spdlog-linux-x64@0.15.8':
+    dependencies:
+      bindings: 1.5.0
+      mkdirp: 1.0.4
+      node-addon-api: 7.1.0
+    optional: true
+
   '@jinsiyu/dshcs-vscode-spdlog-win32-arm64@0.15.8':
     dependencies:
       bindings: 1.5.0
@@ -1706,6 +1832,18 @@ snapshots:
       bindings: 1.5.0
       mkdirp: 1.0.4
       node-addon-api: 7.1.0
+    optional: true
+
+  '@jinsiyu/dshcs-vscode-sqlite3-linux-arm64@5.1.12-vscode':
+    dependencies:
+      node-addon-api: 8.9.2
+      tar: 7.5.22
+    optional: true
+
+  '@jinsiyu/dshcs-vscode-sqlite3-linux-x64@5.1.12-vscode':
+    dependencies:
+      node-addon-api: 8.9.2
+      tar: 7.5.22
     optional: true
 
   '@jinsiyu/dshcs-vscode-sqlite3-win32-arm64@5.1.12-vscode':

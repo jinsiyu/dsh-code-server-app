@@ -520,24 +520,40 @@ Supporting Linux is not mainly about "compiling a few more packages" — it is a
   legs, and its per-module notices hit GitHub's ~20-annotations-per-check-run cap, so only the tail was
   readable.
 
-**To actually install native modules on Linux, three steps remain (one 2FA-authenticated sitting)**:
+**Linux go-live status (updated 2026-09-17)**:
 
-1. **First publish of the Linux sub-packages** — new package names cannot have a Trusted Publisher in
-   advance (a trust entry requires the package to exist), so the first publish must be done by the
-   maintainer: Actions → repacks → Run workflow with `publish` checked (all four legs, or only
-   `build_linux_x64` / `build_linux_arm64` + `publish`). Already-published sub-packages publish via OIDC;
-   the new names need an `NPM_TOKEN` with publish rights (or a local `npm publish`).
-2. Add one trust entry per new package
-   (`npm trust github <package> --file repacks.yml --repo jinsiyu/dsh-code-server-app --allow-publish -y`),
-   after which `NPM_TOKEN` can be deleted again.
-3. Add `linux-x64` / `linux-arm64` to `publishedTargets` in `scripts/repack-platforms.json` → re-run
-   `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64` (this is what writes the 10
-   Linux sub-packages into `optionalDependencies`) → `pnpm install` to refresh `pnpm-lock.yaml` → normal
-   release flow.
-   > Until step 3 is done, the plugin dependency table deliberately contains **no** Linux sub-packages
-   > (writing them in earlier would make pnpm resolve a package that does not exist yet, i.e. the install
-   > would simply fail). `lib/vendored.json` already carries the Linux targets: that changes nothing on
-   > Windows, and on Linux it only reports the native modules as missing, which is the truth today.
+1. ✅ **The 10 Linux sub-packages are published** (5 modules × x64/arm64). A trust entry cannot exist before
+   the package does, so the maintainer did the first publish locally with 2FA (`npm login --auth-type=web`,
+   then one `npm publish <tgz>` per package). Versions match `lib/vendored.json` exactly, and
+   `os=linux` / `cpu=x64|arm64` were verified against the registry.
+2. ⏳ **Add one trust entry per new package name** (one command each; browser confirmation is enough,
+   **no OTP needed**):
+
+   ```powershell
+   $env:npm_config_auth_type = 'web'; npm login     # skip if already logged in
+   $names = @(
+     '@jinsiyu/dshcs-kerberos-linux-arm64','@jinsiyu/dshcs-kerberos-linux-x64',
+     '@jinsiyu/dshcs-vscode-deviceid-linux-arm64','@jinsiyu/dshcs-vscode-deviceid-linux-x64',
+     '@jinsiyu/dshcs-vscode-native-watchdog-linux-arm64','@jinsiyu/dshcs-vscode-native-watchdog-linux-x64',
+     '@jinsiyu/dshcs-vscode-spdlog-linux-arm64','@jinsiyu/dshcs-vscode-spdlog-linux-x64',
+     '@jinsiyu/dshcs-vscode-sqlite3-linux-arm64','@jinsiyu/dshcs-vscode-sqlite3-linux-x64')
+   foreach ($n in $names) {
+     npm trust github $n --file repacks.yml --repo jinsiyu/dsh-code-server-app --allow-publish -y
+   }
+   ```
+   Afterwards you can **delete `NPM_TOKEN`** from the repository secrets — CI then uses OIDC and will no
+   longer hit the "token without bypass 2FA ⇒ EOTP" trap (which only mattered for first-publishing a name).
+3. ✅ **The dependency table is wired up**: `publishedTargets` in `scripts/repack-platforms.json` now includes
+   `linux-*`; `package.json` has **26** `optionalDependencies` (16 win32 + 10 linux, derived from
+   "per-module whitelist ∩ published targets", verified item by item by `test-vendored-table.mjs`);
+   `pnpm-lock.yaml` was refreshed (10 additions, nothing else changed); and the 10 `@version` pairs were
+   added to `minimumReleaseAgeExclude` in `pnpm-workspace.yaml` (freshly published packages are held back
+   by the supply-chain cooldown otherwise).
+
+   > What remains is our own release flow: bump the plugin version → `pnpm pack` → install once locally via
+   > `dsh plugin --profile web add <tgz>` → tag it and let `release.yml` publish. On Linux, `lib/native.js`
+   > then links the `-linux-*` sub-packages back to their original names through the same junction path
+   > Windows already uses.
 
 The regression suite (also the single list CI uses) is:
 
