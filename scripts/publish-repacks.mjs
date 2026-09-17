@@ -9,6 +9,7 @@
 //   node scripts/publish-repacks.mjs --dry-run          # 只打印将要发布的包
 //   node scripts/publish-repacks.mjs                    # 发布全部(默认 dist-tag = next)
 //   node scripts/publish-repacks.mjs --only node-pty    # 只发布名字包含该子串的包
+//   node scripts/publish-repacks.mjs --only-independent # 只发平台无关层(独立那条腿用;与 --only 互斥)
 //   node scripts/publish-repacks.mjs --tag latest       # 明确推到 latest(仅确认无误后)
 //   node scripts/publish-repacks.mjs --otp 123456       # 账号开启 2FA 时传一次性口令
 //   node scripts/publish-repacks.mjs --limit 5 --otp …  # 一批最多 5 个(口令约 30 秒过期,可重跑续发)
@@ -30,6 +31,8 @@ const npmCache = join(pkgRoot, '.npm-cache');
 const argv = process.argv.slice(2);
 const DRY_RUN = argv.includes('--dry-run');
 const SKIP_PUBLISHED = !argv.includes('--no-skip-published');
+// 只发「平台无关层」:平台专属包的清单里有 os/cpu(即 item.platform !== null),平台无关的没有。
+const ONLY_INDEPENDENT = argv.includes('--only-independent');
 const ONLY = (() => {
   const i = argv.indexOf('--only');
   return i >= 0 && argv[i + 1] !== undefined ? argv[i + 1] : null;
@@ -140,6 +143,12 @@ async function main() {
   }
   let items = collect();
   if (ONLY !== null) items = items.filter((i) => i.name.includes(ONLY));
+  // --only-independent:只发平台无关层(没有目标后缀的那批)。平台无关层由单独一条腿先跑先发,
+  // 平台专属腿各自带 `--only <目标>` ⇒ 两条集合不相交,谁都不会重复发同一个包名。
+  if (ONLY_INDEPENDENT) {
+    if (ONLY !== null) throw new Error('--only-independent 与 --only 不能同时给');
+    items = items.filter((i) => i.platform === null && !i.aggregator);
+  }
   if (items.length === 0) throw new Error('没有匹配的包可发布');
 
   // 预检:平台专属包必须带二进制

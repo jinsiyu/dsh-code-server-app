@@ -47,10 +47,17 @@ const DO_PACK = process.argv.includes('--pack');
 //          VS Code 树包、平台聚合包与插件 package.json。
 //          适用于「原生包没变、只调整打包结构」的场景(本机已无可分析的完整源树时也用它)。
 const REUSE = process.argv.includes('--reuse');
-// --skip-independent:不重建「平台无关」的重打包包。平台无关的包**只由 win32-x64 那条腿产出并发布**
-// (四个目标内容一致,不能四边都发同一个版本号),其它腿重建它们纯属浪费,而且会把一份"在别的宿主上
+// --skip-independent:不重建「平台无关」的重打包包。平台无关的包由**单独一条腿**产出并发布
+// (四个目标内容一致,不能四边都发同一个版本号),平台专属腿重建它们纯属浪费,而且会把一份"在别的宿主上
 // 打出来的同名包"塞进 artifact —— 谁要是从 artifact 手工发布,发出去的就是错的内容。
 const SKIP_INDEPENDENT = process.argv.includes('--skip-independent');
+// --only-independent:只产「平台无关」的重打包包 + VS Code 树包,**完全不碰平台专属包**。
+//   独立那条腿用的就是它:平台无关层是所有平台共用的同一份产物,先于平台专属腿执行、只发一次;
+//   平台专属腿各自带 --skip-independent。两者互为反面,同时给直接报错。
+const ONLY_INDEPENDENT = process.argv.includes('--only-independent');
+if (SKIP_INDEPENDENT && ONLY_INDEPENDENT) {
+  throw new Error('--skip-independent 与 --only-independent 不能同时给(一个是不产平台无关包,一个是只产它)');
+}
 const TARGETS = argValues('--target');
 // Copilot 整树排除:620MB、依赖链里还有带脚本的包,且 code-server 里用不到。
 const EXCLUDE = [/^@github\//, /^@vscode\/copilot-api$/];
@@ -899,7 +906,7 @@ function main() {
   const builtByTarget = new Map(buildTargets.map((t) => [t, []]));
   const gradedSpecific = new Map(buildTargets.map((t) => [t, []]));
   const skipped = { policy: [], noBinary: [], missing: [] };
-  if (!REUSE) for (const target of buildTargets) {
+  if (!REUSE && !ONLY_INDEPENDENT) for (const target of buildTargets) {
     const map = byTarget.get(target);
     const eligible = modules.filter((m) => m.platform === true
       && (m.targets ?? allTargets).includes(target) && repack.has(m.alias));
@@ -956,6 +963,12 @@ function main() {
     const line = `[repack] --reuse:复用 ${platformDirs.length} 个平台专属目录(不重新构建,故不做白名单/二进制过滤)`;
     console.log(line);
     if (process.env.GITHUB_ACTIONS === 'true') console.log(`::notice::${line}`);
+  } else if (ONLY_INDEPENDENT) {
+    const indep = modules.filter((m) => !m.platform);
+    const line = `[repack] --only-independent:产出 ${indep.length} 个平台无关包(${indep.map((m) => m.alias).join(', ')})`
+      + ` + VS Code 树包;平台专属包一律不产(那条腿不跑平台专属循环)`;
+    console.log(line);
+    if (process.env.GITHUB_ACTIONS === 'true') console.log(`::notice::${line}`);
   } else for (const target of buildTargets) {
     const built = builtByTarget.get(target) ?? [];
     const graded = gradedSpecific.get(target) ?? [];
@@ -986,7 +999,18 @@ function main() {
   // 而依赖表里照旧写着「每目标一份」—— 发出去的就是一套装不起来的东西,而 CI 仍然是绿的。
   // 2026-09-16 维护者问「为什么 CI 输出里有 npm error 仍然通过了」时暴露:Linux 腿上
   // @vscode/spdlog / sqlite3 / kerberos 都 npm error,5 个承诺的包只产出 2 个,run 却是绿的。
-  {
+  if (ONLY_INDEPENDENT) {
+    // 这条腿只产平台无关层 ⇒ 闸门也只管这一层:声明里(或源树里)的平台无关模块必须都产出。
+    const missing = modules
+      .filter((m) => !m.platform && repack.has(m.alias))
+      .filter((m) => !plan.some((item) => basename(String(item.dir ?? '')) === flat(m.alias)));
+    if (missing.length > 0) {
+      const detail = `--only-independent:这些平台无关重打包包没产出:${missing.map((m) => m.alias).join(', ')}`;
+      console.error(`[repack] ✗ ${detail}`);
+      if (process.env.GITHUB_ACTIONS === 'true') console.log(`::error::${detail}`);
+      throw new Error(`${detail} —— 检查源树是否完整(npm install 失败?)和日志里的 npm error`);
+    }
+  } else {
     const missing = [];
     for (const target of buildTargets) {
       const produced = packedByTarget.get(target) ?? new Set();

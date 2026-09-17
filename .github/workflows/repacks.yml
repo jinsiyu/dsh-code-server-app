@@ -14,15 +14,15 @@
 #   linux-arm64 → ubuntu-24.04-arm
 #   若某个标签在你的仓库不可用,job 会一直排队 —— 取消它,然后用对应的 build_*=false 只跑其它的。
 #
-# 产物归属(**避免并发发布撞车**):平台无关的 8 个包(xterm/koffi/node-pty/ssh2/…)四个目标都会产出,
-# 内容一致 ⇒ 约定**只由 win32-x64 那条腿发布**(其余三条腿用 `--only <自己的目标>` 只发平台专属包),
-# 这样集合不相交、可以并发:
-#   · win32-x64    :不带 --only ⇒ 发布「平台无关 + win32-x64 专用」(树包已存在会被自动跳过);
-#   · win32-arm64  :`--only win32-arm64`;
-#   · linux-x64    :`--only linux-x64`(构建时再加 `--skip-independent`,见下);
-#   · linux-arm64  :`--only linux-arm64`(同上)。
-# 三条非 x64 的腿都加 `--skip-independent`:平台无关包只由 win32-x64 腿**产出**,其它腿重打它们纯属浪费,
-#   而且会把「在别的宿主上打出来的同名包」塞进 artifact —— 谁从 artifact 手工发布,发出去的就是错内容。
+# 产物归属与顺序(五条腿,集合不相交):
+#   · `independent`(**先跑**,windows-latest):VS Code 树包 + 8 个平台无关重打包包(node-pty / koffi /
+#     ssh2 / cpu-features / @parcel/watcher / @vscode/fs-copyfile / @vscode/proxy-agent / @microsoft/mxc-sdk)。
+#     它们在四个目标上用的是**同一份产物** ⇒ 只发一次、不带目标后缀;四条平台腿都 `needs: independent`
+#     ⇒ 基础层出问题时后面不会发出"半套"子包,发布顺序也是"基础层先落地"。
+#   · `win32-x64` / `win32-arm64` / `linux-x64` / `linux-arm64`(**四条平台专属腿**):各自只发自己那一份
+#     (`--only <目标>`),构建时一律 `--skip-independent`(不重打基础层;artifact 里也不放,
+#      免得谁从 artifact 手工发布时把"在别的宿主上打出来的同名包"发出去)。
+#   树包/子包已存在的版本发布时会被自动跳过 ⇒ 重复跑安全。
 # 哪些模块在 Linux 上有子包,由 scripts/repack-platforms.json 的每模块白名单决定
 #   (上游不写 os/cpu,只能人工声明);某目标上编不出 .node 的会被自动跳过并打一行结论。
 #
@@ -113,8 +113,134 @@ permissions:
   id-token: write # 子包走 OIDC(per-package trusted publishing)时需要
 
 jobs:
+  # ── 平台无关层(先跑;下面四条平台腿都 `needs` 它)──────────────────────────────────────
+  # 这 8 个包(node-pty / koffi / ssh2 / cpu-features / @parcel/watcher / @vscode/fs-copyfile /
+  # @vscode/proxy-agent / @microsoft/mxc-sdk)在四个目标上用的是**同一份产物**,所以单独打包、单独发布、
+  # 不带目标后缀;平台专属腿一律带 `--skip-independent`(不重打,artifact 里也不放它们),只发自己那一份
+  # ⇒ 两个集合不相交,谁都不会重复发同一个包名。
+  # 为什么必须**先**跑:① 基础层出问题时后面四条腿直接不启动(needs 拦住),不会发出"半套"子包;
+  #   ② 依赖顺序上也是这样读的:先有全平台共用的基础层,再有各平台的专属层。
+  independent:
+    name: repacks 平台无关包(先跑)
+    if: >-
+      github.event_name == 'push' || inputs.build_x64 || inputs.build_arm64
+      || inputs.build_linux_x64 || inputs.build_linux_arm64
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      TARGET: win32-x64
+      DIST_TAG: ${{ inputs.dist_tag }}
+    steps:
+      - name: 检出
+        uses: actions/checkout@v7
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: 复制仓库到 $RUNNER_TEMP(不弄脏检出)
+        shell: pwsh
+        run: |
+          $dst = Join-Path $env:RUNNER_TEMP 'repacks'
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          git archive HEAD | tar -x -C $dst
+          Write-Host "副本:$dst"
+
+      - name: 钉版本准备 vendor/vscode(与 dependencies 里钉的树版本一致)
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/repacks
+        run: |
+          # 路径必须在 Node 里拼(process.env.GITHUB_WORKSPACE):把它直接插进 JS 的**单引号字符串**里,
+          # Windows 路径的反斜杠会被 JS 当转义吃掉(D:\a\dsh-… ⇒ D:adsh-…),require 找不到 ⇒ $V 变空串。
+          # 更糟的是 PowerShell 不把原生命令的非零退出当终止错误 ⇒ 整步照样"成功",而 --version 收到空值后
+          # 悄悄退化成"自己推导版本"(2026-09-17 由维护者贴出的日志暴露,当时整条链还是绿的)。
+          $V = node -e "const p=require(process.env.GITHUB_WORKSPACE.replace(/\\/g,'/')+'/package.json');const k=Object.keys(p.dependencies).filter(n=>/\/dshcs-vscode-server$/.test(n));if(k.length!==1){console.error('树包应恰好一个:',k);process.exit(1)}process.stdout.write(p.dependencies[k[0]])"
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($V)) { throw "解析树包版本失败(exit $LASTEXITCODE,V='$V')" }
+          Write-Host "内置树版本(code-server):$V"
+          node scripts/vendor-vscode-server.mjs --version $V
+          if (-not (Test-Path vendor\vscode\lib\vscode\out\server-main.js)) { throw 'vendor/vscode 不完整' }
+
+      # 只产「平台无关层 + 树包」:平台专属循环整段不跑(所以也不做那些原生包的编译与 ELF/PE 校验)。
+      - name: 重打打包(--only-independent)
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/repacks
+        run: |
+          $ErrorActionPreference = 'Continue'
+          node scripts/vendor-repacks.mjs --target $env:TARGET --pack --only-independent 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\repack.log"
+          $code = $LASTEXITCODE
+          Write-Host "repack 退出码 $code"
+          if ($code -ne 0) {
+            Write-Host "::error::repack 失败(exit $code);下面把报错行与日志尾部转成 annotation"
+            Select-String -Path "$env:RUNNER_TEMP\repack.log" -Pattern 'Error|error:|✗|失败|未生成|throw|ENOENT|EACCES' |
+              Select-Object -Last 10 | ForEach-Object { Write-Host "::error:: $($_.Line)" }
+            Get-Content "$env:RUNNER_TEMP\repack.log" -Tail 8 | ForEach-Object { Write-Host "::error:: $_" }
+            exit $code
+          }
+
+      - name: 结论(产物清单:树包 + 8 个平台无关包,公开可读)
+        shell: pwsh
+        run: |
+          $tgz = Join-Path $env:RUNNER_TEMP 'repacks\repack\tgz'
+          $files = if (Test-Path $tgz) { Get-ChildItem $tgz -Filter *.tgz | Sort-Object Name } else { @() }
+          Write-Host "::notice::平台无关层产出 $($files.Count) 个 tgz(树包 1 + 平台无关 8)"
+          foreach ($f in $files) { Write-Host "::notice::  $($f.Name) $([math]::Round($f.Length/1KB,1))KB" }
+          $extra = @($files | Where-Object { $_.Name -match '-(win32|linux)-(x64|arm64)-' })
+          if ($extra.Count -gt 0) {
+            Write-Host "::error::平台无关层里混进了带目标后缀的包:$($extra.Name -join ', ')"
+            exit 1
+          }
+
+      - name: 上传 tgz
+        uses: actions/upload-artifact@v7
+        with:
+          name: repacks-independent
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/repacks/repack/tgz/*.tgz
+
+      # 只发平台无关层(`--only-independent` 按清单有没有 os/cpu 判定,不靠名字子串)。
+      - name: 发布到 npm(只发平台无关层)
+        if: inputs.publish
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/repacks
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if ($env:NPM_TOKEN) {
+            "//registry.npmjs.org/:_authToken=$env:NPM_TOKEN" | Out-File -FilePath .npmrc -Encoding ascii -NoNewline
+            Write-Host "认证:NPM_TOKEN(已写入 .npmrc,publish-repacks.mjs 会 --userconfig 指向它)"
+          } else {
+            Write-Host "认证:OIDC trusted publishing(没配 NPM_TOKEN)⇒ 每个子包都需要一条 Trusted Publisher,workflow 名 repacks.yml"
+          }
+          $ErrorActionPreference = 'Continue'
+          node scripts/publish-repacks.mjs --tag $env:DIST_TAG --only-independent 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\publish.log"
+          $code = $LASTEXITCODE
+          Remove-Item .npmrc -Force -ErrorAction SilentlyContinue
+          if ($code -ne 0) {
+            Write-Host "::error::发布失败(exit $code)"
+            Select-String -Path "$env:RUNNER_TEMP\publish.log" -Pattern 'npm error|npm ERR|403|404|409|E402|EPUBLISH|ENEEDAUTH|EOTP|forbidden|trusted|token 体检|whoami' |
+              Select-Object -Last 10 | ForEach-Object { Write-Host "::error:: $($_.Line)" }
+            exit $code
+          }
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "### repacks / 平台无关层(先跑)"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| runner | \`windows-latest\` |"
+            echo "| 内容 | VS Code 树包 + 8 个平台无关重打包包 |"
+            echo "| 发布 | \`${{ inputs.publish }}\`(--only-independent) |"
+            echo "| 触发 | \`${{ github.event_name }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   win32-x64:
-    name: repacks win32-x64 (+ 平台无关包)
+    name: repacks win32-x64(平台专属)
+    needs: independent
     if: github.event_name == 'push' || inputs.build_x64
     runs-on: windows-latest
     timeout-minutes: 120
@@ -160,7 +286,7 @@ jobs:
         working-directory: ${{ runner.temp }}/repacks
         run: |
           $ErrorActionPreference = 'Continue'
-          node scripts/vendor-repacks.mjs --target $env:TARGET --pack 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\repack.log"
+          node scripts/vendor-repacks.mjs --target $env:TARGET --pack --skip-independent 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\repack.log"
           $code = $LASTEXITCODE
           Write-Host "repack 退出码 $code"
           if ($code -ne 0) {
@@ -190,8 +316,8 @@ jobs:
           retention-days: 30
           path: ${{ runner.temp }}/repacks/repack/tgz/*.tgz
 
-      # 发布:平台无关的 8 个包 + 本目标的平台专属包(arm64 那条腿用 --only 只发自己的,见文件头)。
-      - name: 发布到 npm(不含平台无关以外的包;已存在的版本自动跳过)
+      # 发布:只发**本目标**的平台专属包 —— 平台无关层由 independent 腿先跑先发(见文件头)。
+      - name: 发布到 npm(只发 win32-x64 专用;平台无关层已由 independent 腿先发)
         if: inputs.publish
         shell: pwsh
         working-directory: ${{ runner.temp }}/repacks
@@ -205,7 +331,7 @@ jobs:
             Write-Host "认证:OIDC trusted publishing(没配 NPM_TOKEN)⇒ 每个子包都需要一条 Trusted Publisher,workflow 名 repacks.yml"
           }
           $ErrorActionPreference = 'Continue'
-          node scripts/publish-repacks.mjs --tag $env:DIST_TAG 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\publish.log"
+          node scripts/publish-repacks.mjs --tag $env:DIST_TAG --only $env:TARGET 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\publish.log"
           $code = $LASTEXITCODE
           Remove-Item .npmrc -Force -ErrorAction SilentlyContinue
           if ($code -ne 0) {
@@ -230,7 +356,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   win32-arm64:
-    name: repacks win32-arm64
+    name: repacks win32-arm64(平台专属)
+    needs: independent
     if: github.event_name == 'push' || inputs.build_arm64
     runs-on: windows-11-arm
     timeout-minutes: 120
@@ -352,7 +479,8 @@ jobs:
   # 哪些模块在 Linux 上有子包:白名单里给 linux-* 的模块;某目标上编不出 .node 的自动跳过,
   # 每个目标一行结论(`[repack] linux-x64: 平台专属产出 N 个(…)`)会同时以 notice 发出来。
   linux-x64:
-    name: repacks linux-x64
+    name: repacks linux-x64(平台专属)
+    needs: independent
     if: github.event_name == 'push' || inputs.build_linux_x64
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -514,7 +642,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   linux-arm64:
-    name: repacks linux-arm64
+    name: repacks linux-arm64(平台专属)
+    needs: independent
     if: github.event_name == 'push' || inputs.build_linux_arm64
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
