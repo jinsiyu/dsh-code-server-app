@@ -364,11 +364,17 @@ function elfMachine(file) {
   } catch { return null; }
 }
 
-/** ① VS Code 树(平台无关):vendor/vscode → repack/build/vscode/vscode/。
+/** ① VS Code 树(**必须平台无关**):vendor/vscode → repack/build/vscode/vscode/。
  *  排除 VS Code 的「内部依赖目录」(lib/vscode/node_modules、lib/vscode/extensions/node_modules)
- *  —— 它们由包管理器安装 + 平台聚合包按架构提供,树里只留 lib/vscode 本体与静态资源。
- *  不含 code-server 的 out/node 与服务层依赖(已由 lib/launcher.mjs 取代)。 */
-function buildVscodeServerPackage() {
+ *  —— 核心原生模块(node-pty / @vscode/sqlite3 / spdlog / kerberos / deviceid / native-watchdog /
+ *  windows-* / @parcel/watcher …)全在那两个目录里,一律由 `@jinsiyu/dshcs-*-<目标>` 按平台供给;
+ *  树里只留 lib/vscode 本体与静态资源(browser 资源、语法/主题、字体、.wasm ⇒ 都跨平台)。
+ *  为什么树包不按 OS 区分(与上游 VS Code 相反):上游每个平台发一份 server 包,是因为它把
+ *  **node 运行时 + 原生模块**塞在里面;本产品把这两件事分别交给宿主 DSH 的 node 与平台专属子包
+ *  (0.1.37 的 `dshcs-code-server-<平台>-<架构>` 全量树就是这么被取代的,见 docs/desktop-first-install-root-cause.md)。
+ *  体积与下载账:一份 52MB / 解包 197MB 供所有平台复用,而不是 4 × 52MB。
+ *  @param moduleNames - 本次重打包模块的原始名(用于校验核心原生模块没有泄漏进树里) */
+function buildVscodeServerPackage(moduleNames = []) {
   const vendorTree = join(pkgRoot, 'vendor', 'vscode');
   if (!existsSync(join(vendorTree, 'lib', 'vscode', 'out', 'server-main.js'))) {
     throw new Error('缺少 vendor/vscode;先运行 `node scripts/vendor-vscode-server.mjs`');
@@ -394,6 +400,38 @@ function buildVscodeServerPackage() {
     },
   });
   const name = `${SCOPE}/dshcs-vscode-server`;
+  // 不变式校验:核心原生模块**不许**出现在树里 —— 一旦泄漏,树就变成平台相关(在 win32 腿上打出来的
+  // tgz 会被 Linux 用户装上),而它只发布一次、不按 OS 区分 ⇒ 这种错必须在打包期就炸,不能悄悄发出去。
+  // 顺带把树里**其它**平台二进制列出来留痕:那些是可选扩展自带的(js-debug 的 win32 预编译、
+  // microsoft-authentication 的 msal 运行时、终端 PSReadLine 的 dll),不参与核心运行。
+  const leaked = [];
+  const others = [];
+  const aliasHints = moduleNames.map((n) => String(n).split('/').pop()).filter(Boolean);
+  const scan = (cur) => {
+    let entries; try { entries = readdirSync(cur, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const full = join(cur, e.name);
+      if (e.isDirectory()) {
+        if (e.name === 'node_modules') continue; // 已被排除,不该出现在这里
+        scan(full);
+        continue;
+      }
+      if (!/\.(node|so|dll|dylib|exe)$/i.test(e.name)) continue;
+      const rel = relative(dir, full).replaceAll('\\', '/');
+      if (aliasHints.some((h) => e.name.includes(h))) leaked.push(rel);
+      else others.push(rel);
+    }
+  };
+  scan(join(dir, 'vscode'));
+  if (leaked.length > 0) {
+    throw new Error(`${name}: 树里出现了核心原生模块的二进制,树包就不再平台无关了:${leaked.join(', ')}`
+      + ' —— 它们必须留在「内部依赖目录」(lib/vscode/node_modules 或 extensions/node_modules)里,'
+      + '由平台专属子包按目标供给;请检查 vendor/vscode 的结构变化与 buildVscodeServerPackage 的排除规则');
+  }
+  if (others.length > 0) {
+    console.log(`[repack] 树里另有 ${others.length} 个可选扩展自带的平台二进制(不参与核心运行,不影响"一份树包供所有平台"):`);
+    for (const o of others) console.log(`  · ${o}`);
+  }
   writeFileSync(join(dir, 'package.json'), JSON.stringify({
     name,
     version,
@@ -836,7 +874,7 @@ function main() {
   // 0) 已打包的原生包(--reuse 模式)
   for (const item of reusedItems) plan.push(item);
   // 1) VS Code 树(平台无关,1 个包)
-  const vscodePkg = buildVscodeServerPackage();
+  const vscodePkg = buildVscodeServerPackage(modules.map((m) => m.alias));
   plan.push({ dir: vscodePkg.dir, file: vscodePkg.file });
   // 2) 全平台重打包包(从 host 树;--reuse 时用已打包目录)
   //    「要不要按平台分包」一律以**声明**为准(applyPlatformPolicy 已把结论钉到 modules 上),
