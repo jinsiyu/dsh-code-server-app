@@ -145,7 +145,12 @@ jobs:
         shell: pwsh
         working-directory: ${{ runner.temp }}/repacks
         run: |
-          $V = node -e "const p=require('$env:GITHUB_WORKSPACE/package.json');const k=Object.keys(p.dependencies).filter(n=>/\/dshcs-vscode-server$/.test(n));if(k.length!==1){console.error('树包应恰好一个:',k);process.exit(1)}process.stdout.write(p.dependencies[k[0]])"
+          # 路径必须在 Node 里拼(process.env.GITHUB_WORKSPACE):把它直接插进 JS 的**单引号字符串**里,
+          # Windows 路径的反斜杠会被 JS 当转义吃掉(D:\a\dsh-… ⇒ D:adsh-…),require 找不到 ⇒ $V 变空串。
+          # 更糟的是 PowerShell 不把原生命令的非零退出当终止错误 ⇒ 整步照样"成功",而 --version 收到空值后
+          # 悄悄退化成"自己推导版本"(2026-09-17 由维护者贴出的日志暴露,当时整条链还是绿的)。
+          $V = node -e "const p=require(process.env.GITHUB_WORKSPACE.replace(/\\/g,'/')+'/package.json');const k=Object.keys(p.dependencies).filter(n=>/\/dshcs-vscode-server$/.test(n));if(k.length!==1){console.error('树包应恰好一个:',k);process.exit(1)}process.stdout.write(p.dependencies[k[0]])"
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($V)) { throw "解析树包版本失败(exit $LASTEXITCODE,V='$V')" }
           Write-Host "内置树版本(code-server):$V"
           node scripts/vendor-vscode-server.mjs --version $V
           if (-not (Test-Path vendor\vscode\lib\vscode\out\server-main.js)) { throw 'vendor/vscode 不完整' }
@@ -253,7 +258,12 @@ jobs:
         shell: pwsh
         working-directory: ${{ runner.temp }}/repacks
         run: |
-          $V = node -e "const p=require('$env:GITHUB_WORKSPACE/package.json');const k=Object.keys(p.dependencies).filter(n=>/\/dshcs-vscode-server$/.test(n));if(k.length!==1){console.error('树包应恰好一个:',k);process.exit(1)}process.stdout.write(p.dependencies[k[0]])"
+          # 路径必须在 Node 里拼(process.env.GITHUB_WORKSPACE):把它直接插进 JS 的**单引号字符串**里,
+          # Windows 路径的反斜杠会被 JS 当转义吃掉(D:\a\dsh-… ⇒ D:adsh-…),require 找不到 ⇒ $V 变空串。
+          # 更糟的是 PowerShell 不把原生命令的非零退出当终止错误 ⇒ 整步照样"成功",而 --version 收到空值后
+          # 悄悄退化成"自己推导版本"(2026-09-17 由维护者贴出的日志暴露,当时整条链还是绿的)。
+          $V = node -e "const p=require(process.env.GITHUB_WORKSPACE.replace(/\\/g,'/')+'/package.json');const k=Object.keys(p.dependencies).filter(n=>/\/dshcs-vscode-server$/.test(n));if(k.length!==1){console.error('树包应恰好一个:',k);process.exit(1)}process.stdout.write(p.dependencies[k[0]])"
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($V)) { throw "解析树包版本失败(exit $LASTEXITCODE,V='$V')" }
           Write-Host "内置树版本(code-server):$V"
           node scripts/vendor-vscode-server.mjs --version $V
           if (-not (Test-Path vendor\vscode\lib\vscode\out\server-main.js)) { throw 'vendor/vscode 不完整' }
