@@ -614,6 +614,18 @@ one itself (with no `NPM_TOKEN` it uses OIDC):
   ⚠️ Per npm's announcements: since 2026-07-31 bypass-2FA tokens can no longer perform account/package
   management, and **from January 2027 they lose direct publish** (only reading private packages plus staging
   a publish, which a maintainer approves with 2FA) — so plan to move to B.
+  - **How to read a failed publish** (`publish-repacks.mjs` first runs a token health check: it prints only
+    the token's length and shape, never its content, then uses `npm whoami` to prove it authenticates):
+    · `E401` / `ENEEDAUTH` ⇒ **the token value is wrong**: surrounding quotes or a trailing newline, a
+    truncated paste, or a revoked token ⇒ generate a fresh one and paste it again (a granular token looks
+    like `npm_…` followed by a long random string; a classic one is a 36-character UUID);
+    · `npm whoami` succeeds but publishing returns **`EOTP` (This operation requires a one-time password)**
+    ⇒ **the value is fine**, what is missing is a permission attribute: the token does not have step 4's
+    **"Bypass two-factor authentication (2FA)"** ticked. npm also requires 2FA for the **first publish of a
+    new package name**, and a trust entry cannot exist before the package does ⇒ the first publish has to be
+    done locally with `npm publish <tgz> --access public --tag next` and an OTP (publish only that target's
+    own `-<target>` packages; do not re-publish the already-published tree package), after which one trust
+    entry per new name switches those packages to OIDC.
 - **B. per-package trusted publishing (the durable route)**: npm trust entries are **per package**
   (since 2026-09 a package may have several, but there is **no scope-level** entry), so these 25 packages
   need 25 entries. Generate the commands, then run them one by one after a single browser authorization:

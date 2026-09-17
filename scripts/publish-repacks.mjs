@@ -158,6 +158,39 @@ async function main() {
 
   console.log(`[publish] 待发布 ${items.length} 个包${DRY_RUN ? ' | DRY-RUN' : ''}${NPMRC_ARGS.length > 0 ? ` | 凭据 ${relative(pkgRoot, WORKSPACE_NPMRC)}` : ' | 未找到工作区 .npmrc(用默认登录态)'}`);
 
+  // ── token 体检(只在真有 token 时跑;不打印任何秘密内容)──────────────────────────────
+  // 为什么:"token 值填错(带引号/换行、被截断、被撤销)"报的是 401/ENEEDAUTH,而"值对但发布要
+  // 一次性口令"报的是 **EOTP** —— 两者在 CI 日志里看着都像"发布失败",不查清楚就只能猜。
+  // 这里只报长度与形状 + 用 `npm whoami` 验证能不能认证(输出用户名,不输出 token)。
+  if (NPMRC_ARGS.length > 0 && !DRY_RUN) {
+    let token = null;
+    try {
+      const hit = /_authToken\s*=\s*(\S+)/.exec(readFileSync(WORKSPACE_NPMRC, 'utf8'));
+      if (hit !== null) token = hit[1];
+    } catch { /* 读不到就按"没有 token"处理 */ }
+    if (token === null) {
+      console.log(`[publish] token 体检:${relative(pkgRoot, WORKSPACE_NPMRC)} 里没有 _authToken 行`);
+    } else {
+      const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token);
+      const shape = token.startsWith('npm_')
+        ? 'npm_ 开头的 granular access token'
+        : uuid ? 'UUID 形状的 classic token' : '⚠ 既不是 npm_ 开头、也不是 UUID 形状';
+      console.log(`[publish] token 体检:长度 ${token.length},形状 = ${shape}(内容不打印)`);
+      if (/^["']|["']$/.test(token)) {
+        console.warn('[publish] ⚠ token 首尾带引号 ⇒ 多半复制时把引号也带上了,认证会失败');
+      }
+      const who = npm(['whoami'], pkgRoot);
+      if (who.status === 0) {
+        console.log('[publish] token 体检:✓ 认证通过(身份见上一行)。若随后发布仍失败,基本就是 EOTP:'
+          + '① 该 token 没勾 "Bypass two-factor authentication (2FA)";'
+          + '② 或这是这些包名的**首次发布**(npm 对首次发布本身要求 2FA)');
+      } else {
+        console.error(`[publish] token 体检:✗ npm whoami 失败(exit ${who.status})⇒ token 值不对/被撤销/`
+          + '带引号或换行;请重新生成并粘贴(不要引号、不要末尾换行)');
+      }
+    }
+  }
+
   let published = 0;
   let skipped = 0;
   let failed = 0;
@@ -199,7 +232,16 @@ async function main() {
     }
   }
   console.log(`[publish] 完成:发布 ${published} 个,跳过 ${skipped} 个,失败 ${failed} 个${LIMIT !== null ? `(本批上限 ${LIMIT})` : ''}`);
-  if (failed > 0) process.exitCode = 1;
+  if (failed > 0) {
+    process.exitCode = 1;
+    if (published === 0 && NPMRC_ARGS.length > 0) {
+      console.error('[publish] 一个都没发成功、而且用的是 NPM_TOKEN ⇒ 最可能两条:'
+        + '① token 没勾 "Bypass two-factor authentication (2FA)"(CI 里没人能输 OTP);'
+        + '② 这些包名是**首次发布**,npm 对首次发布要求 2FA。'
+        + '解法:本机 `npm publish <tgz> --access public --tag next` 带 OTP 首发一次(只发 5 个 -linux-* 的,'
+        + '别重发已经存在的树包),然后给这些包名各加一条 Trusted Publisher,之后 CI 就能走 OIDC。');
+    }
+  }
   console.log('[publish] 提示:发布后 bump 插件版本并 `pnpm pack`,再 `dsh plugin --profile web add <tgz>`');
 }
 

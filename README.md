@@ -583,6 +583,15 @@ pnpm run promote -- 0.3.47                 # 4) 确认无误后推 latest(手动
        名字**必须**是 `NPM_TOKEN`(workflow 里读的就是它),值粘贴令牌。
     ⚠️ npm 官方已公告:2026-07-31 起 bypass-2FA 令牌**不能再做账号/包管理类操作**,并且
     **2027-01 起将失去直接发布**(只剩读取私有包 + 暂存发布,要维护者用 2FA 批准)⇒ 长期请迁到 B。
+    - **发布失败怎么读**(`publish-repacks.mjs` 会先做一次 token 体检:只打印长度与形状、绝不打印内容,
+      再用 `npm whoami` 确认能不能认证):
+      · `E401` / `ENEEDAUTH` ⇒ **token 值不对**:带了引号或末尾换行、复制被截断、或已被撤销 ⇒ 重新生成再粘贴
+      (Granular token 形如 `npm_…`,长随机串;classic token 是 36 位 UUID);
+      · `npm whoami` 通过、但发布报 **`EOTP`(This operation requires a one-time password)** ⇒ **值是对的**,
+      缺的是权限属性:该 token 没勾第 4 步的 **"Bypass two-factor authentication (2FA)"**;
+      另外 npm 对**首次发布一个新包名**本身就要求 2FA,而新包名没法预先建 Trusted Publisher
+      ⇒ 首发只能本机 `npm publish <tgz> --access public --tag next` 带 OTP 走一次(只发该目标自己的
+      `-<目标>` 包,别重发已存在的树包),之后给这些包名各加一条信任关系即可转 OIDC。
   - **B. per-package trusted publishing(长期方案)**:npm 的信任关系是**按包**配的(2026-09 起一个包
     可以配多条,但**没有作用域级**),有多少个子包就要多少条(win32 阶段是 25 条;Linux 上线后按
     `lib/vendored.json` 里每模块的 `targets` 增加)。先生成命令,再在浏览器授权一次后逐条执行:
