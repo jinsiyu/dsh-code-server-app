@@ -706,6 +706,13 @@ Things you must know:
   tests throw `schemastery not found`. It never ships to users (devDependencies are not installed for a
   dependency). A CI job that actually deploys DSH is possible (`@deepseek-ai/dsh` is public on npm), but it
   pulls the whole harness (~1.3GB profile), so it belongs in a slower job, not on every push.
+- The reverse case — an **installed copy** (not a repo checkout) has no repo `node_modules` — is why the
+  deployment-layout table in `lib/dsh-resolve.mjs` must cover every real layout: since 0.3.49 it knows the
+  running deployment (`argv[1]`/`execPath` resolution), `%APPDATA%\npm`, `npm --prefix` (`~/.npm-global`),
+  pnpm global, nvm, system `/usr/local|/usr`, and the `$DSH_HOME` profile level. The 0.3.48 Linux install-smoke
+  leg (CLI installed into `~/.npm-global`) failed precisely because that table was too narrow (the smoke threw
+  `schemastery not found` and `publish` was skipped); regression: `scripts/test-dsh-resolve.mjs` builds each
+  layout in a temp directory, since a developer machine never hits them by accident.
 - The first release must use a **version that has never been published** (npm versions are immutable).
   `release.yml` supports a `workflow_dispatch` **rehearsal** (full pipeline, nothing published) — run it once
   before pushing a real tag.

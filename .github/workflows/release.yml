@@ -155,7 +155,7 @@ jobs:
           fi
           echo "ui_version_check=ok($HAVE)" >> "$GITHUB_ENV"
 
-      - name: 打包(pnpm pack;prepack 对树是 no-op,会重跑 build:webview)
+      - name: 打包(pnpm pack;prepack 对树是 no-op,会重跑 build:client + build:webview)
         run: |
           set -euo pipefail
           pnpm pack

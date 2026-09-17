@@ -466,6 +466,7 @@ pnpm test:workspace-cwd      # "当前工作区目录"解析:DSH 0.1.6-alpha.2(s
 pnpm test:client-cwd         # 同一件事但直接对**构建产物** lib/client.js 验(注册出来的 body 真发不发 cwd、URL 带不带 folder;先跑 build:client)
 pnpm test:fullscreen         # 打开标签即全屏
 pnpm test:vendored           # 重打包表 ↔ 插件依赖表一致(无 npm: 别名 / 无聚合包 / vendored.json 进了 files)
+pnpm test:dsh-resolve        # 部署位置表:各平台全局装布局(npm --prefix / nvm / pnpm global / %APPDATA%)都能找到 DSH 部署
 pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**做断言(默认 <DSH_HOME>/profiles/web)
                              # files 白名单每条都在 / 重打包包在当前平台齐全 / 原生模块无缺失 /
                              # 已安装副本能 import / 树在位 —— 仓库回归看不出这一类
@@ -479,6 +480,12 @@ pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**�
 > 从 DSH 部署里取它(生产里就是 profile 中 hoist 的那一份),而干净 clone / CI runner 上没有 DSH,
 > 不钉一份的话 `apply` 类测试会直接抛 `schemastery not found`。它不进发布物(devDependencies
 > 不会给使用者安装)。
+> **反过来在"已安装副本"里就取不到了**(那不是仓库目录):`lib/dsh-resolve.mjs` 的部署位置表
+> 得把用户真实布局都覆盖上 —— 0.3.49 起包括"正在跑的部署(`argv[1]`/`execPath` 向上解析)、
+> `%APPDATA%\npm`、`npm --prefix`(`~/.npm-global`)、pnpm global、nvm、系统 `/usr/local|/usr`、
+> 以及 `$DSH_HOME` 的 profile 层"。0.3.48 的 Linux 安装冒烟腿(CLI 装到 `~/.npm-global`)就是
+> 栽在这张表太窄上(冒烟 ④ 抛 `schemastery not found`,publish 被 skip);回归见
+> `scripts/test-dsh-resolve.mjs`(造一整套临时布局逐个验,本机不会自然碰到那些布局)。
 
 ## GitHub Actions(CI + 打 tag 发布)
 

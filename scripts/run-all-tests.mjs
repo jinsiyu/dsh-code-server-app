@@ -39,6 +39,7 @@ const SUITE = [
   'test-sidebar-fullscreen.mjs',
   'test-workspace-cwd.mjs',
   'test-workspace-switch.mjs',
+  'test-dsh-resolve.mjs',
   'test-bridge-routes.mjs',
   'test-bridge-extension.mjs',
   'test-vendored-table.mjs',
