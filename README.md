@@ -343,13 +343,24 @@ host 反向请求不到它。所以编辑器状态只能在扩展主动发起的
 ## code-server 服务目录与进程生命周期
 
 - code-server 服务目录**跟随活动工作区/会话**:打开期间切换 DSH 会话/工作区,code-server 自动切到新目录
-  (解析优先级:当前会话 cwd → 会话所属 workspace.path → recentWorkspace.path → 首个 workspace.path);
+  (解析优先级:当前会话 cwd → 会话所属 `workspace.path` → 最近活跃会话所属 workspace → 首个 workspace.path;
+  **"当前会话"的信源随 DSH 版本而变**:≥ 0.1.6-alpha.2 读会话作用域标准 prop `sessionId`,
+  ≤ 0.1.6-alpha.1 退回会话列表快照上的 `current` —— 详见下面 0.3.48 那条;纯逻辑在 `src/workspace.js`,
+  两版形状的契约由 `scripts/test-client-bundle-cwd.mjs` 直接对构建产物钉住);
   打开目录显示在 code-server 页面内(`?folder=<cwd>`,跟随切换时页面自动重新加载);
   实现要点:iframe src 必须带 `?folder=<cwd>`——code-server 前端会记住“最近工作区”并自行恢复,
   仅用裸根 URL 只会显示上一次打开的目录、不会跟随切换(本机实测确认)。
   **Windows 路径格式(实测)**:folder 参数必须以 `/` 开头且全部正斜杠,形如 `/C:/Users/User/Desktop/biss`;
   裸 Windows 路径(`C:\...`)会被前端当 URI scheme 而剥掉盘符(页面显示 `\Users\User\...` 且文件树为空),
   `file:///C:/...` 形式则报 “Workspace does not exist”。
+- **0.3.48 修的是"打开 Code Server 不打开对应工作区"**:DSH **0.1.6-alpha.2** 把 `current` 从 `SessionListState`
+  移出了会话列表 store(refactor 原话:view selection remains outside the Controller),而 0.3.46 及更早版本
+  正是从 `useSessions(s => s).current` 里取"当前会话" ⇒ cwd 恒为 undefined ⇒ 客户端**不再向宿主发 cwd**
+  ⇒ IDE 以**空工作区**启动(本机实测:`$DSH_HOME/code-server/pid.json` 里 `cwd`/`launchCwd` 双空,
+  UI 上看不出任何报错)。0.3.48 起改读会话作用域标准 prop `sessionId`(与官方右侧栏标签
+  `ui-deliverables` 的 ReviewTab 同一信源:`useSessions(s => s.byId[sessionId]?.cwd)`),旧的 `current`
+  作为向后兼容兜底保留;两条信源都拿不到时**不猜目录**(不发 cwd,workbench 保持当前目录),
+  并在控制台留一条 `[code-server] 未能解析当前工作区目录…` 警告 —— 这个坑当初就是"静默"才难查。
 - **切换是"轻量"的(0.2.12 起)**:运行中切工作区**不重启 IDE 进程**,host 只把 `state.cwd` 改成新目录,
   由 workbench 拿新的 `?folder=` 重新导航(工作区目录本来就由客户端 URL 决定,进程 cwd 只影响它自己
   spawn 时的相对路径解析)。因此切换**不再丢**扩展宿主/后台任务/服务端状态,也快得多。
@@ -451,6 +462,8 @@ pnpm test:bridge-extension   # 编辑器桥扩展侧纯逻辑:未保存缓冲区
 pnpm test:webview            # 面板 webview 产物:官方渲染器与令牌打包、版本一致、/approve 的四条约束(先跑 build:webview)
 pnpm test:launcher-routes    # launcher 的 HTTP 面(起真进程,较慢)
 pnpm test:workspace-switch   # 切工作区不重启进程
+pnpm test:workspace-cwd      # "当前工作区目录"解析:DSH 0.1.6-alpha.2(sessionId)与旧版(current)两套形状
+pnpm test:client-cwd         # 同一件事但直接对**构建产物** lib/client.js 验(注册出来的 body 真发不发 cwd、URL 带不带 folder;先跑 build:client)
 pnpm test:fullscreen         # 打开标签即全屏
 pnpm test:vendored           # 重打包表 ↔ 插件依赖表一致(无 npm: 别名 / 无聚合包 / vendored.json 进了 files)
 pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**做断言(默认 <DSH_HOME>/profiles/web)

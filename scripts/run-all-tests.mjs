@@ -37,11 +37,13 @@ const SUITE = [
   'test-plugin-apply.mjs',
   'test-claim-types.mjs',
   'test-sidebar-fullscreen.mjs',
+  'test-workspace-cwd.mjs',
   'test-workspace-switch.mjs',
   'test-bridge-routes.mjs',
   'test-bridge-extension.mjs',
   'test-vendored-table.mjs',
   'test-webview-bundle.mjs',
+  'test-client-bundle-cwd.mjs',
   'test-launcher-routes.mjs',
 ];
 

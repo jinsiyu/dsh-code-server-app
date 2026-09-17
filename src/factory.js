@@ -28,6 +28,7 @@ import {
   parseClaimPolicy,
 } from '../lib/claim-types.js';
 import { requestFullscreenPanel } from './sidebar-mode.js';
+import { pickWorkspaceCwd } from './workspace.js';
 import {
   dockInto,
   ensureSurface,
@@ -81,37 +82,20 @@ let React = require('react')
       return data !== null ? data : { ok: false, error: 'invalid JSON response' }
     }
 
-    // 解析当前活动工作区目录,优先级:
-    //   1. 当前会话的 cwd(useSessions.byId[current].cwd)
-    //   2. 当前会话所属 workspace 的 path(workspace.sessionIds 含 current)
-    //   3. recentWorkspaceId 对应 workspace 的 path
-    //   4. 第一个 workspace 的 path
-    // 均缺失时返回 undefined(调用方不传 cwd,由 host 保留当前目录)。
-    function activeWorkspaceCwd(useSessions, useWorkspaces) {
-      try {
-        var list = useSessions(function (s) { return s })
-        var wsList = useWorkspaces === null ? null : (typeof useWorkspaces === 'function' ? useWorkspaces(function (s) { return s }) : null)
-        var current = list != null ? list.current : undefined
-        if (current !== undefined && list != null && list.byId != null) {
-          var cur = list.byId[current]
-          if (cur != null && typeof cur.cwd === 'string' && cur.cwd !== '') return cur.cwd
-        }
-        var items = wsList != null && Array.isArray(wsList.items) ? wsList.items : []
-        if (current !== undefined) {
-          for (var i = 0; i < items.length; i++) {
-            var w = items[i]
-            if (w.sessionIds != null && w.sessionIds.indexOf(current) !== -1 && typeof w.path === 'string' && w.path !== '') return w.path
-          }
-        }
-        var recentId = wsList != null ? wsList.recentWorkspaceId : undefined
-        if (recentId !== undefined) {
-          for (var j = 0; j < items.length; j++) {
-            if (items[j].workspaceId === recentId && typeof items[j].path === 'string' && items[j].path !== '') return items[j].path
-          }
-        }
-        if (items.length > 0 && typeof items[0].path === 'string' && items[0].path !== '') return items[0].path
-      } catch (e) { /* props 未提供时静默 */ }
-      return undefined
+    // ---------- 标准 prop 里的会话/工作区快照 ----------
+    // 取哪条路、退到哪条路**全在 src/workspace.js**(纯函数,可离线单测):DSH ≤ 0.1.6-alpha.1 的
+    // `SessionListState.current` 在 0.1.6-alpha.2 被移出列表 store,会话作用域插槽改用标准 prop
+    // `sessionId` 标识当前会话 —— 只认旧形状会让 cwd 静默变成 undefined(IDE 以空工作区启动)。
+    /** 服务缺失时的占位选择器:**hook 调用次数必须恒定**(React 按位置对账),
+     *  否则"服务晚到"的那一次渲染会抛 "Rendered more hooks than during the previous render"。 */
+    function noopSelector() { return undefined }
+    function workspaceSnapshots(props) {
+      var useSessions = typeof props.useSessions === 'function' ? props.useSessions : noopSelector
+      var useWorkspaces = typeof props.useWorkspaces === 'function' ? props.useWorkspaces : noopSelector
+      return {
+        sessions: useSessions(function (s) { return s }),
+        workspaces: useWorkspaces(function (s) { return s }),
+      }
     }
 
     /** 构建 code-server 页面 URL(base + 实例标记 + ?folder=<cwd>,Windows 路径须为 /C:/ 形式)。
@@ -207,7 +191,10 @@ let React = require('react')
       var status = store.status
       var running = status != null && status.ok === true && status.running === true
       var keep = status != null && status.keepResident === true
-      var cwd = activeWorkspaceCwd(props && props.useSessions, props && props.useWorkspaces)
+      // 根作用域没有 sessionId:由 workspace.js 退到"最近活跃会话所属工作区"(拿不到就不带 folder,
+      // 打开面板时 body 会带着正确 `?folder=` 重新导航)。
+      var snapshots = workspaceSnapshots(props != null ? props : {})
+      var cwd = pickWorkspaceCwd({ sessions: snapshots.sessions, workspaces: snapshots.workspaces })
       var url = running ? buildPageUrl(status, cwd) : null
       React.useEffect(function () {
         if (!keep || !running || url === null) return
@@ -270,18 +257,6 @@ let React = require('react')
       return parseClaimPolicy(status.claimExtensions)
     }
 
-    /** 会话 cwd 查询(同步;把地址里的相对路径变成绝对路径要用)。 */
-    function sessionCwd(useSessions, sessionId) {
-      try {
-        var list = useSessions(function (s) { return s })
-        if (list != null && sessionId != null && list.byId != null) {
-          var entry = list.byId[sessionId]
-          if (entry != null && typeof entry.cwd === 'string' && entry.cwd !== '') return entry.cwd
-        }
-      } catch (e) { /* 服务缺失时退回 undefined */ }
-      return undefined
-    }
-
     /** 右侧栏 tab 的 body:面板里铺满常驻 IDE 面(iframe 由 surface.js 持有)。
      *  走共享 store 与 CodeServerSurface;挂载即让实例跟随当前会话工作区。
      *  文件 tab(navigation.address = `dsh-resource://file/…`)会让 workbench 定位到该文件;
@@ -294,11 +269,19 @@ let React = require('react')
       var status = store.status
       var navigation = tab.navigation
       var revision = navigation != null && typeof navigation.revision === 'number' ? navigation.revision : 0
-      // 地址:文件 tab 可能来自会话树里的别的会话,故优先用地址里的 sessionId 对齐工作区
+      // 地址:文件 tab 可能来自会话树里的别的会话,故优先用地址里的 sessionId 对齐工作区;
+      // 页面 tab 用**会话作用域标准 prop** `sessionId`(DSH ≥ 0.1.6-alpha.2 的当前会话信源,
+      // 老版的 `useSessions().current` 已被上游移除 —— 详见 src/workspace.js)。
       var address = navigation != null && typeof navigation.address === 'string' ? navigation.address : ''
       var parsed = isPageAddress(address) ? null : parseFileAddress(address)
-      var addressedCwd = sessionCwd(props.useSessions, parsed != null ? parsed.sessionId : undefined)
-      var cwd = addressedCwd !== undefined ? addressedCwd : activeWorkspaceCwd(props.useSessions, null)
+      var snapshots = workspaceSnapshots(props)
+      var addressedSession = parsed != null && typeof parsed.sessionId === 'string' ? parsed.sessionId : undefined
+      var cwd = pickWorkspaceCwd({
+        sessions: snapshots.sessions,
+        workspaces: snapshots.workspaces,
+        sessionId: addressedSession !== undefined ? addressedSession : props.sessionId,
+      })
+      var cwdWarnedRef = React.useRef(false)
       var targetFile = resolveFilePath(parsed, cwd)
       var line = navigation != null && navigation.params != null && typeof navigation.params.line === 'number'
         ? navigation.params.line : null
@@ -340,6 +323,16 @@ let React = require('react')
           if (changed && s != null && s.ok === true && s.running === true) setTick(function (t) { return t + 1 })
         }).catch(function () { /* 由状态轮询兜底 */ })
         return function () { cancelled = true }
+      }, [cwd])
+
+      // 解析不出工作区时**必须留痕**:这正是 0.3.46 在 DSH 0.1.6-alpha.2 上踩的坑 ——
+      // 客户端悄悄不发 cwd,IDE 以空工作区打开,界面与日志里都没有任何线索。每次挂载只报一次。
+      React.useEffect(function () {
+        if (typeof cwd === 'string' && cwd !== '') return
+        if (cwdWarnedRef.current) return
+        cwdWarnedRef.current = true
+        console.warn('[code-server] 未能解析当前工作区目录(会话无 cwd / 标准 prop 无 sessionId /'
+          + ' 工作区表也没匹配上):本次不向宿主发送 cwd,IDE 会以空工作区打开')
       }, [cwd])
 
       // 标签挂载期间保持状态新鲜(切走即停;回来时先 GET 一次再挂 iframe)

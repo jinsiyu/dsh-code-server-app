@@ -364,13 +364,25 @@ Diagnostics: `GET /api/code-server/status` exposes
 ## code-server workspace and process lifecycle
 
 - code-server's workspace **follows the active DSH session/workspace**: switching sessions/workspaces while the IDE is open moves code-server to the new directory
-  (resolution order: current session cwd → session's workspace.path → recentWorkspace.path → first workspace.path);
+  (resolution order: current session cwd → session's `workspace.path` → workspace of the most recently active session → first workspace.path;
+  **where "the current session" comes from depends on the DSH version**: ≥ 0.1.6-alpha.2 reads the session-scoped standard prop `sessionId`,
+  ≤ 0.1.6-alpha.1 falls back to `current` on the session-list snapshot — see the 0.3.48 bullet below; the logic lives in `src/workspace.js`
+  and the contract for both shapes is pinned by `scripts/test-client-bundle-cwd.mjs` directly against the built bundle);
   the opened directory is shown inside code-server (`?folder=<cwd>`, the page reloads when following a switch);
   implementation note: the iframe `src` must carry `?folder=<cwd>` — code-server's front-end remembers the "last workspace" and restores it by itself;
   a bare root URL only shows the previously opened directory and does not follow switches (verified locally).
   **Windows path format (verified)**: the `folder` parameter must start with `/` and use forward slashes only, e.g. `/C:/Users/User/Desktop/biss`;
   a bare Windows path (`C:\...`) is parsed as a URI scheme and the drive letter is stripped (page shows `\Users\User\...` with an empty file tree),
   while `file:///C:/...` reports "Workspace does not exist".
+- **0.3.48 fixes "opening Code Server no longer opens the matching workspace"**: DSH **0.1.6-alpha.2** removed `current`
+  from `SessionListState` (upstream refactor: view selection remains outside the Controller), while 0.3.46 and earlier read
+  the current session from `useSessions(s => s).current` — so the cwd was always undefined, the client **stopped sending `cwd`**
+  to the host, and the IDE started with an **empty workspace** (measured locally: `cwd`/`launchCwd` both empty in
+  `$DSH_HOME/code-server/pid.json`, with nothing visible in the UI). Since 0.3.48 it reads the session-scoped standard prop
+  `sessionId` (the same source DSH's own right-sidebar tab uses — `ui-deliverables`' ReviewTab does
+  `useSessions(s => s.byId[sessionId]?.cwd)`), keeping the old `current` as a backward-compatible fallback; when neither
+  source resolves, it **does not guess a directory** (no cwd is sent, the workbench keeps its current one) and logs a
+  `[code-server] 未能解析当前工作区目录…` warning — the silence is exactly what made this bug hard to find.
 - **The switch is lightweight (since 0.2.12)**: a running instance is **not restarted** when the workspace changes — the host
   only updates `state.cwd` and the workbench re-navigates with the new `?folder=` (the workspace directory was always the
   client URL's business; the process cwd only affects the server's own relative-path resolution at spawn time). The switch is
