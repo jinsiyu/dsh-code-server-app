@@ -162,7 +162,8 @@ async function main() {
   // 为什么:"token 值填错(带引号/换行、被截断、被撤销)"报的是 401/ENEEDAUTH,而"值对但发布要
   // 一次性口令"报的是 **EOTP** —— 两者在 CI 日志里看着都像"发布失败",不查清楚就只能猜。
   // 这里只报长度与形状 + 用 `npm whoami` 验证能不能认证(输出用户名,不输出 token)。
-  if (NPMRC_ARGS.length > 0 && !DRY_RUN) {
+  // dry-run 也跑:这样维护者能在**真发布之前**先确认工作区 .npmrc 里那份凭据是对的。
+  if (NPMRC_ARGS.length > 0) {
     let token = null;
     try {
       const hit = /_authToken\s*=\s*(\S+)/.exec(readFileSync(WORKSPACE_NPMRC, 'utf8'));
