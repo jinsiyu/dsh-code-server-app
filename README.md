@@ -474,7 +474,7 @@ pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**�
 | 工作流 | 触发 | 做什么 |
 |---|---|---|
 | `ci.yml` | push `main` / PR / 手动 | `ubuntu-latest` + `windows-latest` 双平台:`pnpm install --frozen-lockfile` → `build:client` → `build:webview` → `pnpm test`(全套回归)→ `vendor:check` 只报告版本差 → 上传 `lib/client.js` 与面板产物 |
-| `release.yml` | 推 `v<version>` 标签 / 手动(演练,不发布) | 按 `dependencies` 钉的版本准备 `vendor/vscode` → 构建 → 全套回归 → `pnpm pack` → 校验 tarball 清单 → **真装一遍**(在 runner 上部署真 DSH,`dsh plugin --profile web add <tgz>`,再跑 `test:installed` + `dump-config` 断言)→ 发 npm **`next`** → 建 GitHub Release(附 tgz) |
+| `release.yml` | 推 `v<version>` 标签 / 手动(演练,不发布) | 按 `dependencies` 钉的版本准备 `vendor/vscode` → 构建 → 全套回归 → `pnpm pack` → 校验 tarball 清单 → **真装两遍**(windows-latest 验 win32 的 16 个子包、ubuntu-latest 验 Linux 的 10 个:各部署一份真 DSH,走官方路径 `dsh plugin --profile web add <tgz>`,再跑 `test:installed` + `dump-config` 断言;两条腿都过才允许发布)→ 发 npm **`next`** → 建 GitHub Release(附 tgz) |
 | `repacks.yml` | 手动(`publish` / `probe_oidc` 默认 **false**,四条腿的 `build_*` 默认 **true**)/ push 本文件 / push `.github/oidc-probe.enabled` | **平台专属子包(`@jinsiyu/dshcs-*`)的构建与发布**:同架构宿主 runner 各打一条(`win32-x64` → `windows-latest`、`win32-arm64` → `windows-11-arm`、`linux-x64` → `ubuntu-latest`、`linux-arm64` → `ubuntu-24.04-arm`),默认只构建 + 传 `repack/tgz/*.tgz`(**不发布**,所以它同时就是 Linux 可行性验证的正式位置);勾上 `publish` 才发 npm(默认 `next`)。发布归属:win32-x64 那条腿发「平台无关 + win32-x64 专用」,其余三条腿只发 `--only <自己的目标>` ⇒ 集合不相交、并发不撞车。**认证**:没配 `NPM_TOKEN` 就走 OIDC(per-package Trusted Publisher,workflow 都填 `repacks.yml`,见下)。Linux 腿还会顺带校验「Linux 上生成的 `lib/vendored.json` / `package.json` 与仓库里的一致」(平台政策应当宿主无关)。额外有一个 `probe-oidc` job:对几个真实子包名做**只暂存、不发正式版**的巡检,用来证明这条 OIDC 通道真的可用 |
 
 ### Linux 适配(x64 / arm64):改了什么、还差什么

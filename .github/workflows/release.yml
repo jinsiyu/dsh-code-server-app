@@ -1,17 +1,20 @@
 # release.yml —— 推 `v<version>` 标签即:重建 tarball → 全量回归 → **在真 DSH 里真装一遍** →
 # 发 npm `next` → 建 GitHub Release(附 tgz)。
 #
-# 三个 job 的分工(为什么拆开):
+# 四个 job 的分工(为什么拆开):
 #   · `build`(ubuntu):门禁 + 构建 + 打包 + 传 tarball 产物。tarball 是平台无关的
 #     (VENDOR.json 里的 platform 字段只是元数据),所以在哪个平台打都一样。
 #   · `install-smoke`(**windows**):拿刚打出来的 tgz,部署真 DSH、走官方安装路径装进 profile,
-#     再断言"装完真的能用"。**必须在 windows 上跑**:本产品目前只发 win32 原生子包
-#     (16 个平台专属重打包包 = 8 模块 × win32-arm64/x64,子包自带 os/cpu),在 Linux 上 pnpm 会
-#     按 os 字段跳过它们 ⇒ Linux 上的安装冒烟根本验不到 0.3.45 那类"optional 子树被丢包 /
-#     requires missing bindings"的问题。第一次跑(0.3.47)就是因为把它放在 ubuntu 上而被门禁拦住 ——
-#     拦得对,但平台得换。
-#   · `publish`(ubuntu):**needs: [build, install-smoke]** ⇒ 前两步全过才会发 npm。
-#     非 tag 触发(workflow_dispatch 演练)时这一步整段跳过:演练会真跑构建与安装冒烟,但绝不发布。
+#     再断言"装完真的能用"。验的是 **win32 那 16 个**平台专属子包(8 模块 × win32-arm64/x64)。
+#     为什么必须在 windows 上跑:子包自带 os/cpu,Linux 上 pnpm 会按 os 字段跳过它们 ⇒
+#     在 Linux 上根本验不到 0.3.45 那类"optional 子树被丢包 / requires missing bindings"的问题
+#     (0.3.47 第一次跑就是把它放在 ubuntu 上而被门禁拦住 —— 拦得对,但平台得换)。
+#   · `install-smoke-linux`(**ubuntu**,2026-09-17 加):同一套断言,验的是 **Linux 那 10 个**
+#     平台专属子包(5 模块 × linux-x64/arm64)。test-installed.mjs 的 SHIPS_NATIVE 判定改成了
+#     「已安装插件的 optionalDependencies 里有没有本平台后缀」⇒ 这条腿不需要额外开关,
+#     Linux 子包漏装/装不上就会红,补上了"Linux 用户首次安装"这条回归空白。
+#   · `publish`(ubuntu):**needs: [build, install-smoke, install-smoke-linux]** ⇒ 前三个全过才发 npm。
+#     非 tag 触发(workflow_dispatch 演练)时这一步整段跳过:演练会真跑构建与**两条**安装冒烟,但绝不发布。
 #
 # 与 README「dist-tag 政策」的关系(不变):
 #   · 本工作流**只发 `next`**,绝不碰 `latest`;`latest` 仍由 `pnpm run promote -- <version>`
@@ -296,10 +299,105 @@ jobs:
             echo "| 结论 | 真 DSH 部署 + 官方路径安装 + test-installed 断言 + dump-config |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # Linux 安装冒烟:与上面那条 Windows 腿同构,多验的是**平台专属子包在 Linux 上真的装得上、解析得到**
+  #   —— 这条能力是 2026-09-17 才有的(5 个模块 × linux-x64/arm64 首发)。Windows 腿只能证明 win32 那 16 个。
+  # test-installed.mjs 的 SHIPS_NATIVE 判定改成「已安装插件的 optionalDependencies 里有没有本平台后缀」
+  #   自动生效 ⇒ 这条腿不需要任何额外开关:Linux 子包漏装/装不上,断言就会红。
+  install-smoke-linux:
+    name: install smoke (ubuntu-latest)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # 与 Windows 腿同一个开关:可选钉住冒烟用的 DSH CLI 版本(默认 latest,顺带当漂移探针)
+      DSH_CLI_VERSION: ${{ vars.DSH_CLI_VERSION }}
+    steps:
+      - name: 检出(拿 scripts/test-installed.mjs 与 package.json)
+        uses: actions/checkout@v7
+
+      # DSH CLI 的 plugin 子命令是把参数转发给 profile 里的 pnpm ⇒ 这份 pnpm 得在 PATH 上。
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: 取回本 run 打好的 tarball
+        uses: actions/download-artifact@v8
+        with:
+          name: tarball-${{ github.ref_name }}-${{ github.run_number }}
+          path: .
+
+      - name: 部署真 DSH(隔离的 DSH_HOME,不碰别的 profile)
+        shell: bash
+        run: |
+          dsh_home="$RUNNER_TEMP/dshhome"
+          mkdir -p "$dsh_home"
+          echo "DSH_HOME=$dsh_home" >> "$GITHUB_ENV"
+          ls -l ./*.tgz
+
+      # 为什么显式 `--prefix "$HOME/.npm-global"`:runner 上 setup-node 把 npm 的全局前缀指到 node 工具缓存,
+      # 而真实 Linux 用户(nvm / pnpm-global / 发行版 node)是装在用户目录下的;钉一个用户级前缀既复刻了
+      # 真实布局,也避免往 /opt 写。lib/dsh-resolve.mjs 的 dshRequire() 已覆盖这些布局(nvm / pnpm-global /
+      # 工具缓存),所以这里只要保证"和用户一致"即可 —— 与 Windows 腿那条 `%APPDATA%\npm` 同一个理由。
+      - name: 全局安装 DSH CLI(用户级前缀 ~/.npm-global)
+        shell: bash
+        run: |
+          cli="${DSH_CLI_VERSION:+@deepseek-ai/dsh@$DSH_CLI_VERSION}"
+          cli="${cli:-@deepseek-ai/dsh@latest}"
+          prefix="$HOME/.npm-global"
+          mkdir -p "$prefix"
+          echo "npm install -g --prefix $prefix $cli"
+          npm install -g --prefix "$prefix" "$cli"
+          dsh_exe="$prefix/bin/dsh"
+          test -x "$dsh_exe" || { echo "::error::全局装完没找到 $dsh_exe"; exit 1; }
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          echo "DSH_EXE=$dsh_exe" >> "$GITHUB_ENV"
+          echo "DSH CLI:$dsh_exe"
+          "$dsh_exe" --help | head -n 2
+
+      - name: 用官方路径把插件装进真 profile(dsh plugin --profile web add)
+        shell: bash
+        run: |
+          V=$(node -p "require('./package.json').version")
+          tgz="$PWD/dsh-code-server-app-$V.tgz"
+          test -f "$tgz" || { echo "::error::tarball 不在:$tgz"; exit 1; }
+          echo "dsh plugin --profile web add $tgz"
+          "$DSH_EXE" plugin --profile web add "$tgz"
+
+      - name: 合成配置里必须真的出现本插件(cordis.patch.yml 生效)
+        shell: bash
+        run: |
+          dump="$RUNNER_TEMP/dump.yml"
+          "$DSH_EXE" --profile web --dump-config > "$dump"
+          grep -q -- '- id: code-server' "$dump" \
+            || { echo "::error::dump-config 里没有 '- id: code-server' —— 插件的 cordis.patch.yml 没进合成树"; exit 1; }
+          echo "合成树里出现 - id: code-server ✓($(wc -l < "$dump") 行)"
+
+      - name: 安装冒烟断言(装完必须真的能用;Linux 原生子包由 test-installed 自动纳入)
+        shell: bash
+        run: |
+          V=$(node -p "require('./package.json').version")
+          node scripts/test-installed.mjs "$DSH_HOME/profiles/web" --version "$V"
+
+      - name: 汇总(install smoke / linux)
+        if: always()
+        run: |
+          {
+            echo "### release / install smoke(ubuntu-latest)"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 状态 | \`${{ job.status }}\` |"
+            echo "| 结论 | 真 DSH 部署 + 官方路径安装 + test-installed 断言(含 5 个 Linux 原生子包)+ dump-config |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # ============================================================ 发布(仅 tag 触发)
   publish:
     name: publish to npm (next) + GitHub Release
-    needs: [build, install-smoke]
+    needs: [build, install-smoke, install-smoke-linux]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
