@@ -464,6 +464,7 @@ pnpm test:launcher-routes    # launcher 的 HTTP 面(起真进程,较慢)
 pnpm test:workspace-switch   # 切工作区不重启进程
 pnpm test:workspace-cwd      # "当前工作区目录"解析:DSH 0.1.6-alpha.2(sessionId)与旧版(current)两套形状
 pnpm test:client-cwd         # 同一件事但直接对**构建产物** lib/client.js 验(注册出来的 body 真发不发 cwd、URL 带不带 folder;先跑 build:client)
+pnpm test:client-seat        # 设置卡住哪个座位:插件页 plugins.bundle.config(DSH ≥ 0.1.6-alpha.2)vs settings.plugin.item(≤ alpha.1;新版已退役)
 pnpm test:fullscreen         # 打开标签即全屏
 pnpm test:vendored           # 重打包表 ↔ 插件依赖表一致(无 npm: 别名 / 无聚合包 / vendored.json 进了 files)
 pnpm test:dsh-resolve        # 部署位置表:各平台全局装布局(npm --prefix / nvm / pnpm global / %APPDATA%)都能找到 DSH 部署
@@ -864,9 +865,19 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 插件包内 `vendor/vscode` > 插件包内 `vendor/code-server`(开发期)。旧安装根
 `<profile>\.code-server-app` 只在启动日志里提示可删除,不再被使用。
 
-## 设置卡片(设置 → 插件 → Code Server)
+## 设置卡片(0.3.50 起:插件页;更早:设置 → 插件 → Code Server)
 
-参照 dsh-auto-open-web 的自绘卡片模式,注册在 `settings.plugin.item` 插槽,
+**位置随 DSH 版本而变**(两条腿都注册,谁被声明谁生效,不会出现两份):
+
+| DSH | 座位 | 长什么样 |
+|---|---|---|
+| **≥ 0.1.6-alpha.2** | `plugins.bundle.config`,**键 = 包名** `dsh-code-server-app` | 插件页 → 找到 `dsh-code-server-app` → 打开该插件页面,设置区在**描述与各行之间**(页面自己画标题/图标/面包屑,我们只出表单 + 保存控件) |
+| ≤ 0.1.6-alpha.1 | `settings.plugin.item`(key `code-server`) | 设置 → 插件 → Code Server 的自绘可折叠卡片(该插槽在新版**已退役**) |
+
+> 为什么必须跟着搬:上游 agent note《插件页上的插件配置》把配置从设置页搬到插件页,并**删掉了
+> `settings.plugin.item`**;插件页只在 `ledger.bundles.has(包名)` 时才渲染那块区域 —— 键写错或还用旧座位,
+> 表现是**设置卡静默消失**(无报错、无日志)。回归:`pnpm test:client-seat`(对构建产物验两个座位与两种视图)。
+
 数据经官方 settings 域(`settingsScope`,命名空间 `code-server`)持久化到官方 settings 文档:
 
 | 键 | 默认 | 说明 |

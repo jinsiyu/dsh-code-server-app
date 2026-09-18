@@ -45,6 +45,7 @@ const SUITE = [
   'test-vendored-table.mjs',
   'test-webview-bundle.mjs',
   'test-client-bundle-cwd.mjs',
+  'test-client-settings-seat.mjs',
   'test-launcher-routes.mjs',
 ];
 

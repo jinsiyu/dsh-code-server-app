@@ -230,6 +230,13 @@ let React = require('react')
     // 服务始终不就绪(旧版 DSH)→ 判定 legacy:只留设置页提示(见 internalApply)。
     var CS_KIND = 'code-server'
     var CS_TAB_ID = 'dsh-code-server-app'
+    /** 本插件的**包名**,同时是客户端 bundle 的 loader id(banner 里 `load({id})` 那一个)。
+     *  插件页按包名派发配置区(`renderSlot('plugins.bundle.config', …, { entryKey: pkg.name })`),
+     *  所以这个键必须与安装进来的包名逐字相同 —— 0.3.50 起设置卡搬去插件页就是靠它认领。 */
+    var PKG_NAME = 'dsh-code-server-app'
+    /** 插件页配置区的 `summary` 视图(插件页只用得到 `page`;留着一句简介以防上游改用 summary)。 */
+    var CS_CONFIG_SUMMARY = '在右侧栏标签里运行 VS Code 网页版,跟随当前会话工作区;'
+      + '认领类型、打开即全屏、后台常驻都在这里设。'
     /** 旧版判定等待窗口:服务可能晚于本插件就绪,超过这个时间仍无服务即认定旧版 DSH。 */
     var LEGACY_NOTICE_MS = 2500
     /** 更久的宽限:到这里仍无服务才通知 host 停止预启动/回收实例(避免误杀慢启动的宿主)。 */
@@ -430,9 +437,12 @@ let React = require('react')
       return true
     }
 
-    // ---------- 设置卡片(参照 auto-open-web 的自绘卡片模式) ----------
-    // 数据通道:settingsScope(官方 settings 域,命名空间 code-server);
-    // 插槽:settings.plugin.item(keyed 注册,卡片自绘,观感对齐官方设计令牌)。
+    // ---------- 设置(参照 auto-open-web 的自绘卡片模式) ----------
+    // 数据通道:settingsScope(官方 settings 域,命名空间 code-server)—— 两个座位共用。
+    // 座位(0.3.50 起两条腿都注册,谁被声明谁生效):
+    //   · `plugins.bundle.config`(DSH ≥ 0.1.6-alpha.2):插件页按**包名**派发的配置区,页面自带
+    //     标题/面包屑,我们只出表单 + 保存控件(seat='bundle-config');
+    //   · `settings.plugin.item`(DSH ≤ 0.1.6-alpha.1):设置页里自绘的可折叠卡片(已在新版退役)。
     var CARD_CSS =
       '.dshcs-card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}' +
       '.dshcs-card:hover{border-color:var(--dsw-alias-label-dimmed,var(--dsw-alias-border-l2))}' +
@@ -473,7 +483,10 @@ let React = require('react')
       '.dshcs-badge{white-space:nowrap;background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-secondary);border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}' +
       '.dshcs-reset{font:inherit;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;padding:0;font-size:12px;line-height:1.5}' +
       '.dshcs-reset:hover:not(:disabled){color:var(--dsw-alias-label-primary)}' +
-      '.dshcs-reset:disabled{cursor:default}'
+      '.dshcs-reset:disabled{cursor:default}' +
+      // 插件页配置区(0.3.50;页面自带标题/面包屑,这里只排表单与保存控件)
+      '.dshcs-cfgpage{display:flex;flex-direction:column;gap:0}' +
+      '.dshcs-cfgfoot{justify-content:flex-end;align-items:center;gap:8px;padding:12px 0 4px;display:flex}'
     var CARD_TAG = 'dsh-code-server/Card.module.css'
     function injectCss(tagId, css) {
       if (typeof document === 'undefined') return
@@ -684,16 +697,8 @@ let React = require('react')
         }
         setSaving(false)
       }
-      return React.createElement(csCard, {
-        title: 'Code Server',
-        description: '入口:右侧栏标签(DSH ≥ 0.1.5-alpha.1);认领类型决定哪些文件交给 Code Server 打开',
-        state: state,
-        unsavedLabel: '未保存', readOnlyLabel: '本部署的设置为只读。',
-        saveFailedLabel: '本部署没有接受这些值，已保留供你修改。',
-        discardLabel: '放弃修改', saveLabel: '保存', savingLabel: '保存中…',
-        onSave: doSave, onDiscard: function () { setDraft(null); setFailed(false) },
-      },
-        // 卡片三个设置(0.2.11 起):认领类型 + 打开即全屏 + 后台常驻。入口/依赖安装/环境检测三行已移除
+      var fields = [
+        // 三个设置(0.2.11 起):认领类型 + 打开即全屏 + 后台常驻。入口/依赖安装/环境检测三行已移除
         // (入口在右侧栏「开始」页的 guide 入口框;诊断看 host 日志里的 [code-server] 输出)。
         React.createElement('div', { className: 'dshcs-field' },
           React.createElement('div', { className: 'dshcs-fieldHead' },
@@ -764,7 +769,41 @@ let React = require('react')
                 + (surfaceState.degraded ? ' · 本次发生过降级重载' : '')
               : '当前浏览器不支持 Element.moveBefore(Chromium <133)→ 常驻不可用,切标签仍会整页重载(升级浏览器后自动生效)')
         )
-      )
+      ]
+      // ---- 插件页的配置区(DSH ≥ 0.1.6-alpha.2)----
+      // 上游把插件设置从"设置 → 插件"搬到**插件页**:页面自己画标题/图标/面包屑,把
+      // `plugins.bundle.config`(按包名为键)渲染在描述与行之间,只问 `view: 'page'`。
+      // 所以这里不再套可折叠卡片(标题会与页面标题重复),只出表单 + 自己的保存控件
+      // (契约原文:the form with its own save control)。
+      if (props.seat === 'bundle-config') {
+        return React.createElement('div', { className: 'dshcs-cfgpage', 'data-code-server-config': 'page' },
+          snapshot.writable !== true
+            ? React.createElement('p', { className: 'dshcs-cardReadOnly', role: 'status' }, '本部署的设置为只读。')
+            : null,
+          ...fields,
+          failed === true
+            ? React.createElement('p', { className: 'dshcs-cardFailed', role: 'status' }, '本部署没有接受这些值，已保留供你修改。')
+            : null,
+          React.createElement('div', { className: 'dshcs-cfgfoot' },
+            React.createElement(csBtn, {
+              disabled: !dirty || saving,
+              onClick: function () { setDraft(null); setFailed(false) },
+            }, '放弃修改'),
+            React.createElement(csBtn, {
+              variant: 'primary', disabled: saveDisabled, onClick: function () { doSave() },
+            }, saving === true ? '保存中…' : '保存')
+          )
+        )
+      }
+      return React.createElement(csCard, {
+        title: 'Code Server',
+        description: '入口:右侧栏标签(DSH ≥ 0.1.5-alpha.1);认领类型决定哪些文件交给 Code Server 打开',
+        state: state,
+        unsavedLabel: '未保存', readOnlyLabel: '本部署的设置为只读。',
+        saveFailedLabel: '本部署没有接受这些值，已保留供你修改。',
+        discardLabel: '放弃修改', saveLabel: '保存', savingLabel: '保存中…',
+        onSave: doSave, onDiscard: function () { setDraft(null); setFailed(false) },
+      }, ...fields)
       } catch (e) {
         // 渲染异常:记日志不打断;官方插槽对异常有边界,卡片留空即可
         console.error('[code-server] card render error:', e !== null && e !== undefined && e.message !== undefined ? e.message : String(e))
@@ -772,8 +811,16 @@ let React = require('react')
       }
     }
 
-    // ---------- 「问 DSH」对话框(0.3.24)----------
-    // 对话**不在编辑器的侧栏/tab 里**,而是作为一个浮在 DSH 页面上的对话框(用户的原话:
+    /** 插件页配置区的入口组件(0.3.50)。
+     *  上游契约:同一个 entry 会被要两种视图 —— `summary`(标题下的一句话)与 `page`(表单,
+     *  自带保存控件)。插件页对 `plugins.bundle.config` 只用 `page`,但两种都答得起才算合格。
+     *  本组件自身不调 hook(两个分支都不调),真正的设置表单在 csSettingsPage 里(独立组件边界)。 */
+    function BundleConfigEntry(props) {
+      if (props != null && props.view === 'summary') return CS_CONFIG_SUMMARY
+      return React.createElement(csSettingsPage, Object.assign({}, props, { seat: 'bundle-config' }))
+    }
+
+    // ---------- 「问 DSH」对话框(0.3.24)----------    // 对话**不在编辑器的侧栏/tab 里**,而是作为一个浮在 DSH 页面上的对话框(用户的原话:
     // "对话不要用侧边栏,还是改成对话框形式")。这里就是那个对话框的壳:
     //   - 定时问 host `/ask/state?rev=N`,没变就只回一个数字(不重传对话流);
     //   - 打开时懒加载面板产物(`/ask/bundle` → thread.js / thread.css 文本)并注入:
@@ -1046,7 +1093,16 @@ let React = require('react')
         setState({ status: s })
       }).catch(function () { /* 首次失败由后续轮询补救 */ })
 
-      // ---- 设置卡片:任何 DSH 版本都注册(旧版 DSH 里它是唯一的提示出口) ----
+      // ---- 设置:两条腿都注册,谁被声明谁生效(两次注册不会同时出现) ----
+      // ① 插件页的配置区(DSH ≥ 0.1.6-alpha.2):`settings.plugin.item` 退役,上游把插件配置搬到
+      //    插件页 —— 键是**包名**(页面按 `pkg.name` 派发),只问 `view: 'page'`。插件页只在
+      //    `ledger.bundles.has(包名)` 时才渲染那一块,所以键写错就等于"设置又不见了"。
+      slots.inject('plugins.bundle.config', () => slots.register(
+        { name: 'plugins.bundle.config', key: PKG_NAME, inject: function () { return { scope: scope } } },
+        BundleConfigEntry
+      ))
+      // ② 设置页里的插件卡片(DSH ≤ 0.1.6-alpha.1;也是极旧 DSH 里唯一的提示出口)。
+      //    `slots.inject` 只在插槽真被声明时才回调 ⇒ 新 DSH 上这一条自然不生效。
       slots.inject('settings.plugin.item', () => slots.register(
         { name: 'settings.plugin.item', key: 'code-server', label: 'Code Server', inject: function () { return { scope: scope } } },
         csSettingsPage
