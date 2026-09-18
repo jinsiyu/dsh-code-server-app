@@ -17,7 +17,8 @@
 //
 // 用法:node scripts/build-client.mjs && node scripts/test-client-settings-seat.mjs
 import assert from 'node:assert/strict';
-import { bundleStaleness, classNamesOf, loadClientBundle, textOf } from './client-bundle-harness.mjs';
+import { DEFAULT_CLAIM_EXTENSIONS, normalizeClaimExtensions } from '../lib/claim-types.js';
+import { bundleStaleness, classNamesOf, elementTypesOf, findElement, loadClientBundle, textOf } from './client-bundle-harness.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -97,6 +98,39 @@ await test('alpha.2:summary 视图也答得起(契约要求同一 entry 两种�
   const summary = alpha2.render(reg.component, { view: 'summary', scope: reg.desc.inject().scope });
   assert.equal(typeof summary, 'string', `summary 应是一句话,实际是 ${typeof summary}`);
   assert.ok(summary.includes('工作区'));
+});
+
+// ---------- 表单细节(0.3.52:输入框与它下面的提示都改成多行) ----------
+await test('alpha.2:认领类型渲染成多行文本域,并按内容自动长高(不再是单行 input)', async () => {
+  const reg = newEntries[0];
+  const tree = alpha2.render(reg.component, { view: 'page', scope: reg.desc.inject().scope });
+  const types = elementTypesOf(tree);
+  assert.ok(types.includes('textarea'), '认领类型应是 textarea(默认值 98 条排除项,单行框看不到也改不动)');
+  assert.equal(types.filter((t) => t === 'input').length, 2, '剩下的单行 input 只该是两个复选框(打开即全屏 / 后台常驻)');
+  const area = findElement(tree, 'textarea');
+  const rows = Number(area.props.rows);
+  assert.ok(rows >= 8 && rows <= 12, `默认值(~700 字符)应自动长到 8-12 行,实际 rows=${rows}`);
+  assert.equal(area.props.value, DEFAULT_CLAIM_EXTENSIONS, '文本域里应是当前生效值');
+  assert.match(String(area.props.placeholder), /留空/, '占位文案改短:默认值另有提示块展示');
+});
+
+await test('alpha.2:下面的提示是多行(默认值按三组折行,不再一整行撑破卡片)', async () => {
+  const reg = newEntries[0];
+  const tree = alpha2.render(reg.component, { view: 'page', scope: reg.desc.inject().scope });
+  const text = textOf(tree);
+  assert.ok(text.includes('实际规则:'), '「实际规则」一行要在');
+  assert.ok(text.includes('默认值(可整段复制'), '默认值提示块要在');
+  const code = findElement(tree, 'code');
+  assert.ok(code !== null, '默认值应以代码块展示');
+  assert.equal(code.props['data-claim-default'], 'lines');
+  const lines = String(code.props.children).split('\n').filter((line) => line !== '');
+  assert.ok(lines.length >= 4, `默认值应折成多行(* + 三组),实际 ${lines.length} 行`);
+  assert.equal(lines[0], '*');
+  for (const marker of ['!md', '!exe', '!docx']) {
+    assert.ok(lines.some((line) => line.includes(marker)), `默认值里应有 ${marker}`);
+  }
+  // 折行后的文本当策略解析,必须与官方默认值**逐字相同**(解析器把换行与分号一视同仁)
+  assert.equal(normalizeClaimExtensions(String(code.props.children)), DEFAULT_CLAIM_EXTENSIONS);
 });
 
 // ---------- DSH ≤ 0.1.6-alpha.1:继续用设置页的卡片 ----------

@@ -169,20 +169,21 @@ export function loadClientBundle(options = {}) {
   };
   mod.apply(ctx);
 
-  /** 渲染一次(重置 hook 记账;effect 立即执行);沿"函数子组件"下钻,直到没有为止。 */
+  /** 渲染一次:重置 hook 记账,再把**整棵树的函数组件都调用掉**(深度上限 8),
+   *  直到剩下宿主元素与字符串 —— 断言才看得到真正的控件(如 textarea)与全部文案。
+   *  effect 立即执行(app 里真正的请求/iframe src 就发生在 effect 里)。 */
+  function renderTree(node, depth) {
+    if (node === null || node === undefined || depth > 8) return node;
+    if (typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map((child) => renderTree(child, depth));
+    if (typeof node.type === 'function') return renderTree(node.type(node.props !== undefined ? node.props : {}), depth + 1);
+    const props = node.props === undefined ? {} : node.props;
+    if (props.children === undefined) return node;
+    return { type: node.type, props: { ...props, children: renderTree(props.children, depth + 1) } };
+  }
   function render(component, props) {
     fake.reset();
-    let tree = component(props);
-    if (tree != null && typeof tree.type === 'function') tree = tree.type(tree.props !== undefined ? tree.props : props);
-    let node = tree;
-    for (let depth = 0; depth < 4 && node != null; depth += 1) {
-      const kids = node.props !== undefined ? node.props.children : undefined;
-      const list = Array.isArray(kids) ? kids : (kids === undefined || kids === null ? [] : [kids]);
-      const child = list.find((k) => k != null && typeof k.type === 'function');
-      if (child === undefined) break;
-      node = child.type(child.props !== undefined ? child.props : {});
-    }
-    return tree;
+    return renderTree(component(props), 0);
   }
 
   return {
@@ -224,4 +225,27 @@ export function classNamesOf(tree, out = []) {
   if (typeof cls === 'string') out.push(cls);
   if (tree.props !== undefined) classNamesOf(tree.props.children, out);
   return out;
+}
+
+/** 元素树里出现过的宿主元素类型(如 'div' / 'textarea' / 'input'),按出现顺序。 */
+export function elementTypesOf(tree, out = []) {
+  if (tree === null || tree === undefined || typeof tree !== 'object') return out;
+  if (Array.isArray(tree)) { tree.forEach((t) => elementTypesOf(t, out)); return out }
+  if (typeof tree.type === 'string') out.push(tree.type);
+  if (tree.props !== undefined) elementTypesOf(tree.props.children, out);
+  return out;
+}
+
+/** 找到第一个指定类型的宿主元素(找不到返回 null)。 */
+export function findElement(tree, type) {
+  if (tree === null || tree === undefined || typeof tree !== 'object') return null;
+  if (Array.isArray(tree)) {
+    for (const item of tree) {
+      const hit = findElement(item, type);
+      if (hit !== null) return hit;
+    }
+    return null;
+  }
+  if (tree.type === type) return tree;
+  return tree.props === undefined ? null : findElement(tree.props.children, type);
 }

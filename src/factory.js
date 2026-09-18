@@ -22,6 +22,9 @@ import {
 } from './address.js';
 import {
   DEFAULT_CLAIM_EXTENSIONS,
+  EXECUTABLE_EXTENSIONS,
+  OFFICE_EXTENSIONS,
+  PREVIEW_FRIENDLY_EXTENSIONS,
   claimsAddress,
   describeClaimPolicy,
   normalizeClaimExtensions,
@@ -264,6 +267,20 @@ let React = require('react')
       return parseClaimPolicy(status.claimExtensions)
     }
 
+    /** 默认认领策略的**分行展示文本**(设置卡提示块用,0.3.52)。
+     *  与 `DEFAULT_CLAIM_EXTENSIONS` 同源(都是 lib/claim-types.js 的三组常量),只是把 `;` 换成按组的换行,
+     *  便于阅读;解析器把换行与分号一视同仁,所以整段复制回输入框得到的策略与默认值逐字相同。 */
+    function claimDefaultLines() {
+      var lines = ['*']
+      var groups = [PREVIEW_FRIENDLY_EXTENSIONS, EXECUTABLE_EXTENSIONS, OFFICE_EXTENSIONS]
+      for (var i = 0; i < groups.length; i += 1) {
+        var tokens = []
+        for (var j = 0; j < groups[i].length; j += 1) tokens.push('!' + groups[i][j])
+        lines.push(tokens.join(';'))
+      }
+      return lines.join('\n')
+    }
+
     /** 右侧栏 tab 的 body:面板里铺满常驻 IDE 面(iframe 由 surface.js 持有)。
      *  走共享 store 与 CodeServerSurface;挂载即让实例跟随当前会话工作区。
      *  文件 tab(navigation.address = `dsh-resource://file/…`)会让 workbench 定位到该文件;
@@ -476,9 +493,13 @@ let React = require('react')
       '.dshcs-check input{accent-color:var(--dsw-alias-brand-primary);width:15px;height:15px;margin:0;flex:none}' +
       '.dshcs-check input:disabled{cursor:default}' +
       '.dshcs-text{display:flex}' +
-      '.dshcs-text input{font:12px/1.5 ui-monospace,Consolas,monospace;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-3,transparent);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:5px 8px;width:100%;min-width:0}' +
-      '.dshcs-text input:disabled{opacity:.5;cursor:default}' +
-      '.dshcs-text input:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-1px}' +
+      '.dshcs-text input,.dshcs-text textarea{font:12px/1.5 ui-monospace,Consolas,monospace;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-3,transparent);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:5px 8px;width:100%;min-width:0}' +
+      // 多行输入(0.3.52):等宽 + 软换行 + 只允许纵向拉伸;`overflow-wrap` 保证没有空格的 `!ext;!ext;…` 也能断行
+      '.dshcs-text textarea{display:block;box-sizing:border-box;resize:vertical;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}' +
+      '.dshcs-text input:disabled,.dshcs-text textarea:disabled{opacity:.5;cursor:default}' +
+      '.dshcs-text input:focus-visible,.dshcs-text textarea:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-1px}' +
+      // 提示里的"默认值"代码块(0.3.52):保留换行、随便哪里都能断,不再把卡片撑破
+      '.dshcs-code{display:block;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:11.5px/1.55 ui-monospace,Consolas,monospace;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2,transparent);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 8px;margin:4px 0 0;max-width:100%}' +
       '.dshcs-badges{align-items:center;gap:8px;display:inline-flex}' +
       '.dshcs-badge{white-space:nowrap;background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-secondary);border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}' +
       '.dshcs-reset{font:inherit;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;padding:0;font-size:12px;line-height:1.5}' +
@@ -525,12 +546,17 @@ let React = require('react')
         React.createElement('span', { className: 'dshcs-hint' }, props.children)
       )
     }
-    /** 单行文本输入(用于"认领类型"这类清单);观感与 csSelect 一致,宽度铺满字段行。 */
-    function csText(props) {
+    /** 多行文本输入(0.3.52 起,用于"认领类型"这类清单)。
+     *  为什么不是单行 input:0.3.51 之后默认值有 98 条排除项(≈700 字符),单行框只能看到开头,
+     *  剩下全靠横向滚动 —— 既看不全也改不动。这里改用 textarea,并**按内容自动长高**(上限 12 行),
+     *  保证默认值打开就能一眼看全;`resize: vertical` 允许手动再拉。 */
+    function csTextarea(props) {
+      var text = typeof props.value === 'string' ? props.value : ''
+      var rows = Math.min(12, Math.max(3, Math.ceil(text.length / 64)))
       return React.createElement('label', { className: 'dshcs-text' },
-        React.createElement('input', {
-          type: 'text', value: props.value, disabled: props.disabled === true,
-          spellCheck: false, autoComplete: 'off', placeholder: props.placeholder,
+        React.createElement('textarea', {
+          value: props.value, disabled: props.disabled === true, rows: rows,
+          spellCheck: false, autoComplete: 'off', wrap: 'soft', placeholder: props.placeholder,
           onChange: function (event) { props.onChange(event.target.value) },
         })
       )
@@ -711,24 +737,33 @@ let React = require('react')
                 })
               : null
           ),
-          React.createElement(csText, {
+          React.createElement(csTextarea, {
             value: draft !== null ? draft.claimExtensions : loaded.claimExtensions,
             disabled: snapshot.writable !== true,
-            placeholder: DEFAULT_CLAIM_EXTENSIONS,
+            placeholder: '例如 py;ts;!md(留空 = 不认领任何文件)',
             onChange: function (v) { setDraft(function (prev) { return Object.assign({}, prev !== null ? prev : loaded, { claimExtensions: v }) }); setFailed(false) },
           }),
           React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 4 } },
             '写扩展名(不带点,大小写随意);`*` = 其余类型也认领;`!ext` = 不认领(排除优先)。'
             + '不再区分会话内/绝对路径 —— 所有 `dsh-resource://file/**` 一视同仁,未认领的落回 DSH 自带预览。'),
-          React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 2 } },
-            '默认排除三类:DSH 预览渲染得好的 markdown/html/图片/PDF、**可执行文件与二进制产物**'
-            + '(exe/dll/msi/jar/so…)、**Office 与版式文档**(docx/xlsx/pptx/vsdx…)。'
-            + '文本形态的脚本(bat/cmd/ps1/sh/py)与 csv/tsv 仍进 IDE。'),
-          React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 2 } },
+          React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 4 } },
             '实际规则:' + describeClaimPolicy(draft !== null ? draft.claimExtensions : loaded.claimExtensions)
             + (normalizeClaimExtensions(draft !== null ? draft.claimExtensions : loaded.claimExtensions)
-              !== (draft !== null ? draft.claimExtensions : loaded.claimExtensions) ? '(保存后归一化)' : '')
-            + ' · 默认 ' + DEFAULT_CLAIM_EXTENSIONS)
+              !== (draft !== null ? draft.claimExtensions : loaded.claimExtensions) ? '(保存后归一化)' : '')),
+          // 提示块(0.3.52):分三行写清楚 + 默认值**折成多行**显示。
+          // 以前这里是一整行"… · 默认 <700 字符>" —— `;` 在 CSS 里不是断行点,那串既不折行也复制不全,
+          // 直接把卡片撑破。现在:三组各自成行(与 lib/claim-types.js 的常量同源),换行与分号等价,
+          // 所以整段连换行一起复制回输入框,解析结果与官方默认值逐字相同。
+          React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 6 } },
+            '默认排除三类:① DSH 预览渲染得好的 markdown/html/图片/PDF;'
+            + '② 可执行文件与二进制产物(exe/dll/msi/jar/so…);'
+            + '③ Office 与版式文档(docx/xlsx/pptx/vsdx…)。'
+            + '文本脚本(bat/cmd/ps1/sh/py)与 csv/tsv 仍进 IDE。'
+            + '想整组放开,把下面这段换成 `*;!md;!html;!png;!jpg;!pdf` 之类的短清单即可。'),
+          React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 4 } },
+            '默认值(可整段复制;换行与分号等价):',
+            React.createElement('code', { className: 'dshcs-code', 'data-claim-default': 'lines' }, claimDefaultLines())
+          )
         ),
         React.createElement('div', { className: 'dshcs-field' },
           React.createElement('div', { className: 'dshcs-fieldHead' },
