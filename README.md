@@ -482,6 +482,7 @@ pnpm test:fullscreen         # 打开标签即全屏
 pnpm test:vendored           # 重打包表 ↔ 插件依赖表一致(无 npm: 别名 / 无聚合包 / vendored.json 进了 files)
 pnpm test:dsh-resolve        # 部署位置表:各平台全局装布局(npm --prefix / nvm / pnpm global / %APPDATA%)都能找到 DSH 部署
 pnpm test:child-node         # Electron 宿主(桌面版)下给 IDE 子进程挑真 Node:候选顺序 / 剥离 ELECTRON_RUN_AS_NODE / 找不到时如实退回
+pnpm test:package-files      # 发布物白名单守卫:files 里的模块**递归**import 到的本地文件也必须在 files 里(0.3.53 漏 lib/child-node.mjs 的事故)
 pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**做断言(默认 <DSH_HOME>/profiles/web)
                              # files 白名单每条都在 / 重打包包在当前平台齐全 / 原生模块无缺失 /
                              # 已安装副本能 import / 树在位 —— 仓库回归看不出这一类
