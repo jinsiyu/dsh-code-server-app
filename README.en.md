@@ -85,10 +85,20 @@ This plugin registers:
   - `*` — claim every other type too (catch-all);
   - `py` — claim `.py`;
   - `!md` — do **not** claim `.md` (**exclusion wins** over both an explicit claim and `*`);
-  - **default** `*;!md;!markdown;!html;!htm;!png;!jpg;!jpeg;!gif;!webp;!bmp;!ico;!svg;!pdf`
-    — the four categories DSH's own preview renders well (markdown / html / images / PDF) stay with it, everything
-    else (code, json/yaml, txt, logs, extension-less files such as `Makefile`, unknown extensions) goes to the IDE;
+  - **default (since 0.3.51)** excludes three groups:
+    ① the four categories DSH's own preview renders well — `md markdown html htm png jpg jpeg gif webp bmp ico svg pdf`;
+    ② **executables and binary artifacts** — `exe com msi msix msixbundle appx appxbundle dll sys scr cpl ocx drv efi mui`,
+    `obj o a lib pdb class jar pyc pyo wasm node`, `so dylib ko elf bin out`, `apk ipa deb rpm dmg iso img cab`;
+    ③ **Office and layout documents** — `doc docx docm dot dotx dotm docb rtf odt`, `xls xlsx xlsm xlsb xlt xltx xltm xla xlam ods`,
+    `ppt pptx pptm pot potx potm pps ppsx ppam odp`, `vsd vsdx vssx vstx vsdm vssm vstm one onetoc2 mpt mpp pub msg xps oxps odg`.
+    Everything else (code, json/yaml, txt, logs, extension-less files such as `Makefile`, unknown extensions) goes to the IDE;
     an empty box claims no files at all (page tabs only).
+    - **The test is "does an editor make sense here", not "can it be executed"**: text-shaped scripts
+      (`bat` `cmd` `ps1` `sh` `py` `js`…) and `csv` / `tsv` **still go to the IDE**.
+    - **To re-enable a group**: put the short whitelist `*;!md;!markdown;!html;!htm;!png;!jpg;!jpeg;!gif;!webp;!bmp;!ico;!svg;!pdf`
+      back into the box (Office and executables return to the IDE, the preview-friendly ones stay with DSH).
+    - The three lists are exported constants (`PREVIEW_FRIENDLY_EXTENSIONS` / `EXECUTABLE_EXTENSIONS` / `OFFICE_EXTENSIONS`);
+      the default is their union, and the card's "actual rule" summary names "executables, Office documents".
   - Three practical shapes: a plain whitelist (`py;ts`, no `*` → nothing else is claimed), catch-all (`*`),
     and catch-all plus exclusions (the default).
   - Grammar, default and parsing all live in `lib/claim-types.js` (the host's `Config` default and the client's
@@ -884,7 +894,7 @@ persisted via the official settings domain (`settingsScope`, namespace `code-ser
 
 | Key | Default | Description |
 |---|---|---|
-| `claimExtensions` | `*;!md;!markdown;!html;!htm;!png;!jpg;!jpeg;!gif;!webp;!bmp;!ico;!svg;!pdf` | **Claim types** (0.2.11, replaces 0.2.5's `fileOpenScope`): decides by extension which files go to VS Code, semicolon-separated; `*` claims every other type, `!ext` excludes (exclusion wins). The default leaves the four categories DSH's preview renders well (markdown/html/images/PDF) to DSH and sends everything else to the IDE; an empty value claims nothing. **Scope (session vs absolute) is no longer distinguished** |
+| `claimExtensions` | `*` + three exclusion groups (preview-friendly / executables / Office; full lists in the "Claim types" section) | **Claim types** (0.2.11, replaces 0.2.5's `fileOpenScope`): decides by extension which files go to VS Code, semicolon-separated; `*` claims every other type, `!ext` excludes (exclusion wins). The default leaves the four categories DSH's preview renders well (markdown/html/images/PDF) to DSH and sends everything else to the IDE; an empty value claims nothing. **Scope (session vs absolute) is no longer distinguished** |
 | `fullscreenOnOpen` | `true` | **Fullscreen on open** (0.2.9): opening the Code Server tab (including clicking a file) switches the right sidebar to fullscreen (fills the window); off keeps DSH's default push mode (side by side with the conversation). Only the moment of opening is affected — a manual "Exit fullscreen" is never fought back |
 | `keepResident` | `true` | **Resident in background**: on, the host preloads the IDE into a parked surface right after start — switching tabs or collapsing the sidebar never reloads it and the first open needs no cold start; off loads it only when the panel is opened (saves memory) |
 

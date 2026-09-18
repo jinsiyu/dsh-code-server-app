@@ -721,6 +721,10 @@ let React = require('react')
             '写扩展名(不带点,大小写随意);`*` = 其余类型也认领;`!ext` = 不认领(排除优先)。'
             + '不再区分会话内/绝对路径 —— 所有 `dsh-resource://file/**` 一视同仁,未认领的落回 DSH 自带预览。'),
           React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 2 } },
+            '默认排除三类:DSH 预览渲染得好的 markdown/html/图片/PDF、**可执行文件与二进制产物**'
+            + '(exe/dll/msi/jar/so…)、**Office 与版式文档**(docx/xlsx/pptx/vsdx…)。'
+            + '文本形态的脚本(bat/cmd/ps1/sh/py)与 csv/tsv 仍进 IDE。'),
+          React.createElement('div', { className: 'dshcs-hint', style: { marginTop: 2 } },
             '实际规则:' + describeClaimPolicy(draft !== null ? draft.claimExtensions : loaded.claimExtensions)
             + (normalizeClaimExtensions(draft !== null ? draft.claimExtensions : loaded.claimExtensions)
               !== (draft !== null ? draft.claimExtensions : loaded.claimExtensions) ? '(保存后归一化)' : '')

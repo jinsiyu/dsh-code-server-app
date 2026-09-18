@@ -96,9 +96,19 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
   - `*` = 其余类型也认领(兜底);
   - `py` = 认领 `.py`;
   - `!md` = 不认领 `.md`(**排除优先**于认领与 `*`);
-  - **默认** `*;!md;!markdown;!html;!htm;!png;!jpg;!jpeg;!gif;!webp;!bmp;!ico;!svg;!pdf`
-    = DSH 自带预览渲染得好的四类(markdown / html / 图片 / PDF)留给它,其余(代码、json/yaml、txt、日志、
-    无扩展名如 `Makefile`、未知扩展名)都进 IDE;清空文本框 = 不认领任何文件(只保留页面 tab)。
+  - **默认(0.3.51 起)** 排除三组:
+    ① DSH 预览渲染得好的四类 —— `md markdown html htm png jpg jpeg gif webp bmp ico svg pdf`;
+    ② **可执行文件与二进制产物** —— `exe com msi msix msixbundle appx appxbundle dll sys scr cpl ocx drv efi mui`、
+    `obj o a lib pdb class jar pyc pyo wasm node`、`so dylib ko elf bin out`、`apk ipa deb rpm dmg iso img cab`;
+    ③ **Office 与版式文档** —— `doc docx docm dot dotx dotm docb rtf odt`、`xls xlsx xlsm xlsb xlt xltx xltm xla xlam ods`、
+    `ppt pptx pptm pot potx potm pps ppsx ppam odp`、`vsd vsdx vssx vstx vsdm vssm vstm one onetoc2 mpt mpp pub msg xps oxps odg`。
+    其余(代码、json/yaml、txt、日志、无扩展名如 `Makefile`、未知扩展名)都进 IDE;清空文本框 = 不认领任何文件(只保留页面 tab)。
+    - **判据是"进编辑器有没有意义",不是"能不能被执行"**:文本形态的脚本(`bat` `cmd` `ps1` `sh` `py` `js`…)
+      与 `csv` / `tsv` **仍然进 IDE** —— 它们是可编辑的文本。
+    - **想放开某一组**:把文本框换回短白名单 `*;!md;!markdown;!html;!htm;!png;!jpg;!jpeg;!gif;!webp;!bmp;!ico;!svg;!pdf`
+      即可(Office 与可执行文件重新进 IDE,预览友好那几类仍留给 DSH)。
+    - 三组清单是导出的常量(`PREVIEW_FRIENDLY_EXTENSIONS` / `EXECUTABLE_EXTENSIONS` / `OFFICE_EXTENSIONS`),
+      默认值就是它们的并集;设置卡里的「实际规则」摘要会点名"含可执行文件、Office 文档"。
   - 三种实际形态:纯白名单(`py;ts`,无 `*` → 其余不认领)、兜底(`*`)、兜底加排除(默认)。
   - 语法、默认值与解析都在 `lib/claim-types.js`(host 的 `Config` 默认值与客户端 `canOpen` 共用同一份,
     随包发布,不会两边漂移);单测 `scripts/test-claim-types.mjs`。
@@ -882,7 +892,7 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `claimExtensions` | `*;!md;!markdown;!html;!htm;!png;!jpg;!jpeg;!gif;!webp;!bmp;!ico;!svg;!pdf` | **认领类型**(0.2.11,取代 0.2.5 的 `fileOpenScope`):按扩展名决定哪些文件交给 VS Code,分号分隔;`*` = 其余类型也认领,`!ext` = 不认领(排除优先)。默认把 DSH 预览渲染得好的四类(markdown/html/图片/PDF)留给它,其余全进 IDE;清空 = 不认领任何文件。**不再区分 session/absolute 作用域** |
+| `claimExtensions` | `*` + 三组排除(预览友好 / 可执行文件 / Office 文档;完整清单见「认领类型」一节) | **认领类型**(0.2.11,取代 0.2.5 的 `fileOpenScope`):按扩展名决定哪些文件交给 VS Code,分号分隔;`*` = 其余类型也认领,`!ext` = 不认领(排除优先)。默认把 DSH 预览渲染得好的四类(markdown/html/图片/PDF)**以及可执行文件(0.3.51)与 Office 文档(0.3.51)**留给 DSH,其余全进 IDE;清空 = 不认领任何文件。**不再区分 session/absolute 作用域** |
 | `fullscreenOnOpen` | `true` | **打开即全屏**(0.2.9):打开 Code Server 标签(含点开文件)时自动把右侧栏切到全屏(铺满窗口);关闭则保持 DSH 默认的 push(与对话并排)。只影响打开那一刻,用户点「退出全屏」不会被抢回去 |
 | `keepResident` | `true` | **后台常驻**:开启后宿主启动即把 IDE 预加载到"停放区",切标签/收起侧栏不重载、首次打开免等待;关闭则只在打开面板时加载(省内存) |
 

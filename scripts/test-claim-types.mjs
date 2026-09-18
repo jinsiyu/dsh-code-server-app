@@ -8,6 +8,9 @@
 import assert from 'node:assert/strict';
 import {
   DEFAULT_CLAIM_EXTENSIONS,
+  EXECUTABLE_EXTENSIONS,
+  OFFICE_EXTENSIONS,
+  PREVIEW_FRIENDLY_EXTENSIONS,
   claimsAddress,
   claimsPath,
   describeClaimPolicy,
@@ -41,6 +44,41 @@ await test('默认值:DSH 预览渲染得好的 4 类留给它,其余全部认�
   for (const p of ['main.py', 'a.ts', 'a.json', 'a.yaml', 'a.toml', 'a.sh', 'a.ps1', 'a.txt', 'a.log', 'Makefile', 'README', '.gitignore', 'a.zig', 'a.vue', 'a.unknown-ext']) {
     assert.equal(claimsPath(p, DEF), true, `${p} 应进 IDE`);
   }
+});
+
+await test('默认值:可执行文件与二进制产物不认领(0.3.51 用户要求)', async () => {
+  const execs = [
+    'app.exe', 'setup.msi', 'pkg.msix', 'a.dll', 'a.sys', 'a.scr', 'a.cpl', 'a.ocx', 'a.drv', 'a.efi', 'a.mui',
+    'a.obj', 'a.o', 'a.a', 'a.lib', 'a.pdb', 'A.CLASS', 'a.jar', 'a.pyc', 'a.wasm', 'a.node',
+    'libfoo.so', 'libfoo.dylib', 'a.ko', 'a.elf', 'fw.bin', 'a.out',
+    'app.apk', 'app.ipa', 'a.deb', 'a.rpm', 'a.dmg', 'a.iso', 'a.img', 'a.cab',
+  ];
+  for (const p of execs) assert.equal(claimsPath(p, DEF), false, `${p} 是可执行/二进制产物,不该进 IDE`);
+  // 文本形态的脚本**继续认领**(判据是"进编辑器有没有意义",不是"能不能被执行")
+  for (const p of ['run.bat', 'run.cmd', 'deploy.ps1', 'a.sh', 'a.py', 'a.js']) {
+    assert.equal(claimsPath(p, DEF), true, `${p} 是可编辑的文本脚本,应继续进 IDE`);
+  }
+});
+
+await test('默认值:Office / 版式文档不认领(0.3.51 用户要求)', async () => {
+  const office = [
+    'a.doc', 'a.docx', 'a.docm', 'a.dot', 'a.dotx', 'a.rtf', 'a.odt',
+    'a.xls', 'a.xlsx', 'a.xlsm', 'a.xlsb', 'a.xltx', 'a.ods',
+    'a.ppt', 'a.pptx', 'a.pptm', 'a.potx', 'a.ppsx', 'a.odp',
+    'a.vsdx', 'a.one', 'a.mpp', 'a.pub', 'a.msg', 'a.xps', 'a.odg',
+  ];
+  for (const p of office) assert.equal(claimsPath(p, DEF), false, `${p} 是 Office/版式文档,不该进 IDE`);
+  // 纯文本的表格文件**不排除**:进 IDE 反而有用(只是 Excel 也能开)
+  for (const p of ['data.csv', 'data.tsv']) {
+    assert.equal(claimsPath(p, DEF), true, `${p} 是纯文本,应继续进 IDE`);
+  }
+});
+
+await test('默认值:只想放开 Office(或某一组)时,换一段更短的白名单即可', async () => {
+  const lean = parseClaimPolicy('*;!md;!markdown;!html;!htm;!png;!jpg;!jpeg;!gif;!webp;!bmp;!ico;!svg;!pdf');
+  assert.equal(claimsPath('a.docx', lean), true, '换回旧默认后 Office 文档重新进 IDE');
+  assert.equal(claimsPath('a.exe', lean), true, '可执行文件同理');
+  assert.equal(claimsPath('a.md', lean), false, '预览友好那几类仍然留给 DSH');
 });
 
 await test('默认值本身是归一化形式(大小写/前缀/分隔符都规范)', async () => {
@@ -101,11 +139,16 @@ await test('claimsAddress:非 file 地址(null)一律不认领', async () => {
   assert.equal(claimsAddress({ scope: 'absolute', path: 'C:/x/a.py' }, DEF), true, '0.2.11 起绝对路径同样认领');
 });
 
-await test('describeClaimPolicy:摘要覆盖 4 种形态', async () => {
-  assert.match(describeClaimPolicy(DEFAULT_CLAIM_EXTENSIONS), /其余类型全部认领/);
-  assert.match(describeClaimPolicy(DEFAULT_CLAIM_EXTENSIONS), /排除 13 项/);
+await test('describeClaimPolicy:摘要覆盖各种形态(默认值要点出"含可执行文件、Office 文档")', async () => {
+  const summary = describeClaimPolicy(DEFAULT_CLAIM_EXTENSIONS);
+  assert.match(summary, /其余类型全部认领/);
+  assert.match(summary, /排除 \d+ 项\(含可执行文件、Office 文档\)/, `默认摘要应点名两组,实际:${summary}`);
+  assert.equal(DEF.deny.length, PREVIEW_FRIENDLY_EXTENSIONS.length + EXECUTABLE_EXTENSIONS.length + OFFICE_EXTENSIONS.length,
+    '排除项 = 三组之和(默认值就是这个并集)');
   assert.match(describeClaimPolicy('py;ts'), /指定认领 2 项/);
   assert.match(describeClaimPolicy('*'), /其余类型全部认领/);
+  assert.match(describeClaimPolicy('*;!md'), /排除 1 项(?!\()/, '只排除了预览类时不点名那两组');
+  assert.doesNotMatch(describeClaimPolicy('*;!md'), /可执行文件/);
 });
 
 console.log(`SUMMARY pass=${pass} fail=${fail}`);
