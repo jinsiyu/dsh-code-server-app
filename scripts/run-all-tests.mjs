@@ -40,6 +40,7 @@ const SUITE = [
   'test-workspace-cwd.mjs',
   'test-workspace-switch.mjs',
   'test-dsh-resolve.mjs',
+  'test-child-node.mjs',
   'test-bridge-routes.mjs',
   'test-bridge-extension.mjs',
   'test-vendored-table.mjs',

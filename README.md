@@ -481,6 +481,7 @@ pnpm test:client-seat        # 设置卡住哪个座位:插件页 plugins.bundle
 pnpm test:fullscreen         # 打开标签即全屏
 pnpm test:vendored           # 重打包表 ↔ 插件依赖表一致(无 npm: 别名 / 无聚合包 / vendored.json 进了 files)
 pnpm test:dsh-resolve        # 部署位置表:各平台全局装布局(npm --prefix / nvm / pnpm global / %APPDATA%)都能找到 DSH 部署
+pnpm test:child-node         # Electron 宿主(桌面版)下给 IDE 子进程挑真 Node:候选顺序 / 剥离 ELECTRON_RUN_AS_NODE / 找不到时如实退回
 pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**做断言(默认 <DSH_HOME>/profiles/web)
                              # files 白名单每条都在 / 重打包包在当前平台齐全 / 原生模块无缺失 /
                              # 已安装副本能 import / 树在位 —— 仓库回归看不出这一类
@@ -962,6 +963,21 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
 
 ## DSH Desktop(无 webServer)
 
+- **IDE 子进程必须用真 Node 跑(0.3.53 起;桌面版特有的硬约束)**:DSH Desktop 的宿主进程是
+  **Electron 的 Node 模式**(`ELECTRON_RUN_AS_NODE=1`,`process.execPath` = Electron 二进制)。VS Code 的
+  `server-main.js` 会注册一段**只在 Electron / `ELECTRON_RUN_AS_NODE` 下生效**的 asar 解析钩子:凡是解析结果
+  落在"应用根"之外的包,它就去 `node_modules.asar` 里找,找不到直接抛
+  `Cannot find package 'X' within the application resources`。本插件的原生包都是**树外**的 pnpm 目录,
+  所以启动路径上的 `@vscode/spdlog` / `@vscode/deviceid` / `@vscode/windows-registry` 三个 ESM import 必被拒
+  ⇒ launcher 打 `FATAL 加载 VS Code server 失败` ⇒ 面板显示「**code-server 意外退出(exit 2)**」(界面上的
+  报错只有栈尾,首行被日志尾部截断,所以看不出是哪个包)。修法:`lib/child-node.mjs` 检测到 Electron 宿主时,
+  改用**应用自带的真 Node**(`resources/runtime/primary-runtime/dependencies/node/bin/node.exe`,实测 v24.21.0),
+  并把 `ELECTRON_RUN_AS_NODE` 从子进程环境里剥掉;web/CLI 的普通 node 宿主行为一字不变。
+  - 试过但不能用的兜底:`VSCODE_DEV=1`(绕过了钩子,却切到 dev 引导路径 → 报 `<树>/lib/vscode/out/bootstrap-import.js` 缺失);
+    往树里补 junction(Node 的 ESM 解析会 realpath,链接建在树里也仍被判为"应用根之外")。
+  - 回归:`pnpm test:child-node`(9 项)。
+  - **与端口冲突的区别**:端口冲突的签名是 `FATAL 监听失败({...}): listen EADDRINUSE`(发生在**加载成功之后**
+    绑端口阶段),而上面这个是加载阶段就死 —— 用随机端口(随机端口也会炸)即可区分。
 - host 半部 `inject = ['connection', 'settings']`(**不含 `webServer`**)——desktop profile 关掉了 webserver/web-runtime,
   本插件照常工作;`/api/*` 请求由 Electron `dsh-app://` 协议处理器 → IPC 帧管道 → `createSharedFetchHandler('/api')`。
 - 右侧栏标签、guide 入口框、文件地址认领、设置卡片在 desktop 下与 web 相同(code-server 仍是本机 `http://127.0.0.1:<port>` 的 iframe;
