@@ -714,7 +714,7 @@ await test('配置读写:原子写 / 读回 / 删掉 / 坏内容视为未配置(
   assert.equal(bridge.readBridgeConfig(extensionsDir), null);
 });
 
-await test('事件环形缓冲:有界、按游标取、take 后不重复', () => {
+await test('事件环形缓冲:有界、按游标取、取过不重复、reset 不回退 seq', () => {
   const ring = bridge.createEventRing(3);
   ring.push('agent-edit', { path: 'a.ts' });
   ring.push('agent-edit', { path: 'b.ts' });
@@ -723,13 +723,45 @@ await test('事件环形缓冲:有界、按游标取、take 后不重复', () =>
   assert.equal(ring.size(), 3, '环形缓冲必须封顶');
   const all = ring.since(0);
   assert.deepEqual(all.map((e) => e.path), ['b.ts', 'c.ts', 'd.ts'], '应丢最旧的');
+  assert.equal(ring.lastSeq(), 4, 'seq 是"已分配过的最大序号",封顶不影响它');
   ring.reset();
-  assert.deepEqual(ring.since(0), [], 'reset 后为空');
-  assert.equal(ring.lastSeq(), 0);
+  assert.deepEqual(ring.since(0), [], 'reset 后缓冲为空');
+  // **0.3.56 的回归点**:reset() 不许把 seq 归零。以前它归零,而 /sync 每趟都调用它 ⇒ 扩展的游标
+  // (单调递增)从此永远大于新 seq,`seq > since` 全被过滤 ⇒ 每个 IDE 会话只送达第一条事件。
+  assert.equal(ring.lastSeq(), 4, 'reset 不许回退 seq(回退 = 客户端游标永久超前 = 永久失聪)');
   const after = ring.push('agent-edit', { path: 'e.ts' });
-  assert.equal(after.seq, 1, 'reset 后 seq 从 1 重新开始(扩展用 since=0 重新对齐)');
+  assert.equal(after.seq, 5, 'seq 必须继续往前编号');
   assert.deepEqual(ring.since(0).map((e) => e.path), ['e.ts']);
-  assert.deepEqual(ring.since(1), [], '已取过的游标不应重复返回');
+  assert.deepEqual(ring.since(4).map((e) => e.path), ['e.ts'], '游标 4 能收到 seq 5');
+  assert.deepEqual(ring.since(5), [], '已取过的游标不应重复返回');
+});
+
+await test('事件投递协议回归:连续两次"推送→取→清空"必须两次都送达(0.3.9–0.3.55 只送达第一条)', () => {
+  // 这就是用户实测到的现象:每个 IDE 会话只看到一条 diff,而那条还是空 old(文件没打开时
+  // 唯一的 old 侧来源缺失)。用真实调用顺序复刻:/sync 每趟 since() 取完立刻 reset()。
+  const ring = bridge.createEventRing();
+  let cursor = 0;
+  ring.push('agent-edit', { path: 'first.txt' });
+  let got = ring.since(cursor);
+  for (const e of got) if (e.seq > cursor) cursor = e.seq;
+  ring.reset();
+  assert.deepEqual(got.map((e) => e.path), ['first.txt'], '第一条必须送达');
+  assert.equal(cursor, 1);
+  // 第二次(用户改第二个文件):旧实现里这条又是 seq=1 ⇒ since(1) 过滤掉 ⇒ 永远看不到
+  ring.push('agent-edit', { path: 'second.txt' });
+  got = ring.since(cursor);
+  for (const e of got) if (e.seq > cursor) cursor = e.seq;
+  ring.reset();
+  assert.deepEqual(got.map((e) => e.path), ['second.txt'], '第二条也必须送达(旧的归零语义会把它吞掉)');
+  // 第三次、第四次同样
+  for (const name of ['third.txt', 'fourth.txt']) {
+    ring.push('agent-edit', { path: name });
+    got = ring.since(cursor);
+    for (const e of got) if (e.seq > cursor) cursor = e.seq;
+    ring.reset();
+    assert.deepEqual(got.map((e) => e.path), [name], `${name} 也必须送达`);
+  }
+  assert.equal(cursor, 4, '游标随送达单调前进');
 });
 
 await test('上下文缓存:更新/陈旧判定/清空(host 反向请求不到扩展,状态靠这里缓存)', () => {

@@ -279,6 +279,12 @@ function createClient(options) {
         for (const event of events) {
           if (Number.isSafeInteger(event.seq) && event.seq > since) since = event.seq;
         }
+        // 自查:宿主报的 seq 高水位若**低于**我的游标,说明两边序号错位了(宿主重启过,或我手里这份
+        // 游标是上一任宿主留下的 —— adopt 场景里 IDE 的 pid 没变,restore() 就会把旧游标装回来)。
+        // 不对齐的话 `seq > since` 永远为假 ⇒ 事件永久收不到(0.3.55 及以前的宿主还每趟把 seq 归零,
+        // 症状就是"每个 IDE 会话只收到第一条 diff")。退回 0 重新对齐即可自愈。
+        const lastSeq = body !== null && Number.isSafeInteger(body.lastSeq) ? body.lastSeq : null;
+        if (lastSeq !== null && lastSeq < since) since = 0;
         // 0.2.3 起面板像 DSH 对话一样显示内容,数据走这三个字段(见 host 侧 lib/bridge-thread.mjs
         // 与 lib/bridge-approval.mjs):
         //   - thread:被面板观看的会话的**新内容**条目(旧版宿主没有这个字段 → 面板明确报错);

@@ -311,6 +311,17 @@ of passing stale data off as fresh).
 request/response round trip every 600 ms. Polling also buys two useful properties: it is idempotent (a dropped event
 only costs one notification — the data always lives in the editor) and the cached state is inherently fresh.
 
+**Event delivery contract (fixed in 0.3.56)**: `agent-edit` notifications live in a ring buffer and are fetched with
+`since=<cursor>`; **the sequence is monotonic for the lifetime of one bridge endpoint (host process)**, the client's
+cursor only moves forward, and a new endpoint (the pipe name carries the host pid) re-aligns with `since=0`.
+From 0.3.9 through 0.3.55 the host called `reset()` after **every** `/sync`, and that call rewound the sequence
+counter — so once the extension had seen `seq=1`, every later event was numbered 1 again and `seq > since` never
+held: **at most one event per IDE session was ever delivered** (exactly the "a diff rarely shows up, and when it does
+its old side is empty" the user reported). Now `reset()` only clears the buffer, `/sync` also returns `lastSeq` (the
+high-water mark), and the extension uses it to notice a cursor that ran ahead and re-align to 0 on its own.
+Regression: the "push → take → clear, twice" case in `scripts/test-bridge-routes.mjs`. This remains a
+**notification channel**, not a reliable queue: 64 entries, oldest dropped, a lost event costs one notification.
+
 ### Security model (five invariants; read before touching `lib/bridge.mjs`)
 
 The token lives in `<extensionsDir>/.dshcs-bridge/bridge.json`, **readable by any process of the same local

@@ -372,6 +372,36 @@ await test('客户端:oldText(key) 取写前原文;取不到时不抛(回退靠�
   rmSync(dir, { recursive: true, force: true });
 });
 
+await test('客户端:游标跑到宿主前面时自查并重新对齐(0.3.56 的事件送达回归)', async () => {
+  // 症状:每个 IDE 会话只收到一条 diff(而且那条还是空 old)。根因见 host 侧 lib/bridge.mjs 的注释:
+  // 老宿主每趟 /sync 都把 seq 归零,而扩展游标单调递增 ⇒ `seq > since` 永远为假 ⇒ 永久失聪。
+  // 宿主现在回 lastSeq(高水位),扩展据此自查"我是不是跑过头了",跑过头就退回 0 重新对齐。
+  const dir = mkdtempSync(join(tmpdir(), 'dshcs-ext-seq-'));
+  mkdirSync(join(dir, bridgeClient.BRIDGE_DIRNAME), { recursive: true });
+  writeFileSync(bridgeClient.bridgeFile(dir), JSON.stringify({ pipe: PIPE, token: 'g'.repeat(32), pid: 7 }), 'utf8');
+  const seen = [];
+  // 宿主刚重启过:高水位只有 3,而扩展手里攥着上一任宿主留下的游标 9
+  const client = bridgeClient.createClient({
+    extensionsDir: dir,
+    since: 9,
+    requestImpl: async (request) => {
+      seen.push(request.path);
+      if (request.path.endsWith('since=9')) return { status: 200, json: { ok: true, events: [], lastSeq: 3 } };
+      return { status: 200, json: { ok: true, events: [{ seq: 4, kind: 'agent-edit', path: `${WORKSPACE}${SEP}a.ts` }], lastSeq: 4 } };
+    },
+  });
+  const first = await client.sync({ context: { dirtyBuffers: [] }, diagnostics: [] });
+  if (first.code === 'EPERM') throw skipOnEperm(Object.assign(new Error('x'), { code: 'EPERM' }));
+  assert.equal(seen[0], `${bridgeClient.BRIDGE_BASE}/sync?since=9`, '先按手里的旧游标问一次');
+  assert.equal(first.events.length, 0);
+  assert.equal(client.cursor, 0, '宿主高水位(3)< 我的游标(9)⇒ 必须退回 0 重新对齐');
+  const second = await client.sync({ context: { dirtyBuffers: [] }, diagnostics: [] });
+  assert.equal(seen[1], `${bridgeClient.BRIDGE_BASE}/sync?since=0`, '对齐之后按 0 重新问');
+  assert.equal(second.events.length, 1, '重新对齐后事件必须真的收得到');
+  assert.equal(client.cursor, 4, '收到 seq=4 后游标前进');
+  rmSync(dir, { recursive: true, force: true });
+});
+
 await test('源码级:agent 改动走"先抓缓冲区 → 再取快照 → 选 old 侧 → 再读磁盘"的顺序(0.3.55)', () => {
   // handleAgentEdit 里有 vscode 依赖,单测跑不到它 ⇒ 顺序用源码钉住。
   // 为什么顺序重要:缓冲区那份必须在 await 之前同步抓到,否则"文件开着但宿主没给快照"这条路就废了
