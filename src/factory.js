@@ -281,11 +281,56 @@ let React = require('react')
       return lines.join('\n')
     }
 
+    /**
+     * DSH 侧**只保留一个** code-server 标签页(0.3.57,用户要求:"打开新文件不添加新的标签页")。
+     *
+     * 为什么需要插件自己收:官方的标签页身份就是**地址**本身 ——
+     * `SidebarRightTabClaim.contentId` 注释写着 "Stable identity of the content, which is the address
+     * itself. Two opens of the same address are the same tab"(同址幂等、异址必新开),
+     * 而 `replaceTab` 只有**发起方**(产品自己的 openFile / openResource)能传,插件拿不到那个机会。
+     * 所以插件在"新标签页的 body 挂载时"把同窗格里的旧标签页关掉 —— 结束时只剩一个,
+     * 用户看到的就是"这**一个** code-server 页面在换内容"。
+     *
+     * 为什么敢关:常驻 IDE 面是 **surface.js 持有的单例 iframe**(在停靠位/停放区之间 moveBefore),
+     * 标签页只是它的停靠宿主 —— 关掉旧标签不会重载、不会丢 IDE 状态(见 surface.js 文件头)。
+     *
+     * 两个刻意的边界:
+     *   · **只收同窗格的**:多窗格是用户主动切分的布局,官方自己也是"每窗格一份"的约定
+     *     (`SidebarRightTabDefinition.multiple` 的注释:"one page per kind in each pane")。
+     *   · **只有"首次可见"的那个收**:标签页恢复/激活顺序不可控,若每个可见的 body 都收别人,
+     *     关掉一个会让下一个变可见 → 互相收(乒乓)。用 ref 钉住"每个挂载只收一次"。
+     */
+    var csTabSeats = new Map()
+
+    /** 收掉同窗格里的其它本插件标签页(登记见 body 里的 layout effect)。 */
+    function closeSiblingTabs(selfId, paneId) {
+      var closed = 0
+      csTabSeats.forEach(function (seat, id) {
+        if (id === selfId) return
+        // 两边窗格都已知且不同 ⇒ 放过(多窗格是用户主动切的布局);
+        // 任一边窗格未知(老版 DSH 没给 panel)⇒ 按"同窗格"处理,宁可只留一个。
+        if (paneId !== null && seat.pane !== null && seat.pane !== paneId) return
+        try {
+          seat.close()
+          // 关成功就立刻注销座位:body 的 unmount cleanup 也会注销,但那是**稍后**(React 卸载时机),
+          // 这期间若再来一次合并就会对同一个已关闭的标签页重复调 close(会抛,且日志噪音)。
+          csTabSeats.delete(id)
+          closed += 1
+        } catch (error) {
+          // 关不掉只是"多一个标签页",绝不能因此让 body 渲染失败
+          console.warn('[code-server] 收起旧的 code-server 标签页失败:'
+            + (error != null && error.message != null ? error.message : error))
+        }
+      })
+      return closed
+    }
+
     /** 右侧栏 tab 的 body:面板里铺满常驻 IDE 面(iframe 由 surface.js 持有)。
      *  走共享 store 与 CodeServerSurface;挂载即让实例跟随当前会话工作区。
      *  文件 tab(navigation.address = `dsh-resource://file/…`)会让 workbench 定位到该文件;
      *  页面 tab(`sidebar://code-server`)只显示工作区 IDE。
-     *  0.2.2 起 ui-dockkit 的"切走即卸载 body"不再导致重载:卸载只把面停放到停放区。 */
+     *  0.2.2 起 ui-dockkit 的"切走即卸载 body"不再导致重载:卸载只把面停放到停放区。
+     *  0.3.57 起:新标签页挂载时会收掉同窗格里的旧 code-server 标签页(见 closeSiblingTabs)。 */
     function CodeServerBody(props) {
       var info = props.useTabInfo()
       var tab = info.tab
@@ -316,6 +361,22 @@ let React = require('react')
       var forcedFullscreenRef = React.useRef(false)
       var visible = info.tab != null && info.tab.visible === true
       var fullscreen = info.sidebar != null && info.sidebar.fullscreen === true
+      // 单标签页(0.3.57):登记自己的"座位"(能关掉自己的那个函数 + 所在窗格),
+      // 并在**首次可见**时把同窗格里的旧 code-server 标签页收掉 —— 见 closeSiblingTabs 的注释。
+      var paneId = info.panel != null && info.panel.id !== undefined ? info.panel.id : null
+      var actions = tab.actions != null ? tab.actions : null
+      var tabId = tab.id
+      var consolidatedRef = React.useRef(false)
+      React.useLayoutEffect(function () {
+        if (actions === null) return undefined
+        csTabSeats.set(tabId, { pane: paneId, close: actions.close })
+        return function () { csTabSeats.delete(tabId) }
+      }, [tabId, paneId, actions])
+      React.useLayoutEffect(function () {
+        if (consolidatedRef.current || visible !== true || actions === null) return
+        consolidatedRef.current = true
+        closeSiblingTabs(tabId, paneId)
+      }, [visible, tabId, paneId, actions])
       // status 未到达(host 尚未应答)时按"未知"处理 → 不抢跑;值到达后由依赖变化补一次。
       // 反过来(未知即当真)会在用户关掉设置、而 status 还在路上时误切一次全屏。
       var fullscreenOnOpen = status != null && status.fullscreenOnOpen !== false

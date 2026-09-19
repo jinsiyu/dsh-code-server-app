@@ -109,8 +109,20 @@ This plugin registers:
   session's cwd, and posts the absolute path (plus optional `line`) to the host's
   `/api/code-server/open-file`; the bundled extension (`dshcs-open-file`) then calls `showTextDocument`
   (positioned at the line when given).
-- **One address = one tab** (DSH semantics: `contentId` *is* the address): three files mean three chips, but they
-  share the single resident workbench — switching tabs just re-aims the workbench at the corresponding file.
+- **A single tab (since 0.3.57)**: DSH's own semantics are "one address = one tab" (`contentId` *is* the address —
+  same address is idempotent, a different one always opens a new tab), and `replaceTab` can only be passed by the
+  **opener** (the product's own `openFile`/`openResource`) — so the plugin instead closes the older code-server tab
+  in the same pane when a new tab's body mounts. Clicking a second file now changes the content of **the one tab**
+  (its chip title follows) instead of stacking tabs.
+  Two deliberate boundaries: (1) only **same-pane** tabs are closed — a split layout is the user's own doing, and
+  the product's convention is "one page per kind in each pane" (`SidebarRightTabDefinition.multiple`);
+  (2) only a tab that becomes visible for the first time consolidates — tab restoration/activation order is not
+  ours to control, and letting every visible tab close its siblings would ping-pong (a `ref` pins "once per mount").
+  These tabs always shared **one resident workbench** (the IDE is a single instance), so closing one never reloads
+  it: the resident iframe is owned by `src/surface.js`, and a tab is merely its docking host (`Element.moveBefore`).
+  Regression: `scripts/test-client-bundle-tabs.mjs` renders two tabs against the **built bundle** and asserts the
+  old one is closed, the new one stays, other panes/hidden tabs are untouched, and an old DSH without `actions`
+  does not throw (negative control: dropping the consolidation call makes it FAIL).
 - **Why the bundled extension stays**: VS Code Web has no official "open this file from outside" API (the only
   entry is `?folder=`, which picks the workspace), so aiming the workbench at a file has to be done by an
   extension inside the tree. The host writes a signal file, the extension polls it and calls

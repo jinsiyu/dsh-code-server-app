@@ -119,8 +119,18 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
   (`src/address.js`,与 DSH `parseFileAddress` 同语义),相对路径按该会话 cwd 展开成绝对路径,
   再把绝对路径 + 可选 `line` 交给 host 的 `/api/code-server/open-file`;内建扩展
   (`dshcs-open-file`)在 workbench 里 `showTextDocument`(带行号时定位到该行)。
-- **一个地址 = 一个 tab**(官方语义,`contentId` 就是地址):打开三个文件会有三个 chip,
-  但它们共用同一个常驻 workbench(我们的 IDE 是单实例),切换时只是让 workbench 定位到对应文件。
+- **只留一个 tab(0.3.57 起)**:官方语义本是"一个地址 = 一个 tab"(`contentId` 就是地址:同址幂等、
+  异址必新开),而 `replaceTab` 只有**发起方**(产品自己的 `openFile`/`openResource`)能传 ——
+  所以插件改成:新 tab 的 body 挂载时**把同窗格里旧的 code-server tab 关掉**。
+  于是连点两个文件时,你看到的是**同一个 tab 在换内容**(chip 标题跟着变),而不是越开越多。
+  两条刻意留的边界:① 只收**同窗格**的 —— 多窗格是用户主动切分的布局,官方自己也是"每窗格一份"
+  (`SidebarRightTabDefinition.multiple` 的注释:"one page per kind in each pane");
+  ② 只有"首次可见"的那个新 tab 负责收 —— 标签页恢复/激活顺序不可控,若每个可见的都收别人,
+  关掉一个会让下一个变可见,互相收成乒乓(用 ref 钉住"每次挂载只收一次")。
+  这些 tab 本来就共用**同一个常驻 workbench**(IDE 是单实例),关掉一个不会重载它:
+  常驻 iframe 由 `src/surface.js` 持有,tab 只是它的停靠宿主(`Element.moveBefore`)。
+  回归:`scripts/test-client-bundle-tabs.mjs` —— 对**构建产物**渲染两个 tab,断言旧的被关、新的还在、
+  跨窗格不动、不可见时不动、缺 `actions` 的老 DSH 也不崩(负向对照:摘掉合并调用 → 该用例 FAIL)。
 - **为什么还留着那个内建扩展**:VS Code Web 没有"从外部打开文件"的官方 API(唯一入口是
   `?folder=` 指定工作区),所以"让 workbench 定位到某个文件"只能由树内的扩展完成;
   host 写信号文件、扩展轮询并 `showTextDocument`,失败保留重试(实例尚未就绪时也不会丢)。
