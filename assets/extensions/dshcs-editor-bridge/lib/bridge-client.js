@@ -334,6 +334,26 @@ function createClient(options) {
         body: JSON.stringify({ id, outcome }),
       });
     },
+    /**
+     * 取一份"写前原文"快照(0.3.55):事件里带的是不透明 key,文本单独取。
+     *
+     * 为什么不让事件直接带文本:host 每 600ms 的 `/sync` 响应还驮着对话流与待决授权,
+     * 塞进 ~1MB 文本会把那一趟拖成超时(超时 ⇒ approvals 一起丢 ⇒ 授权卡片永远不出现)。
+     *
+     * 取不到(404 = 过期/被淘汰/宿主重启)时**返回 null 而不是抛**:调用方据此回退到缓冲区或缓存。
+     *
+     * @param {string} key 事件里的 oldKey
+     * @returns {Promise<string|null>} 写前原文;没有就给 null
+     */
+    async oldText(key) {
+      if (typeof key !== 'string' || key === '') return null;
+      try {
+        const body = await request(`${BRIDGE_BASE}/old?key=${encodeURIComponent(key)}`);
+        return body !== null && typeof body.text === 'string' ? body.text : null;
+      } catch {
+        return null;
+      }
+    },
     /** 把游标落盘(实例重启后不重复播报旧事件)。 */
     persist() {
       return writeState(extensionsDir, { since, pid: config === null ? null : config.pid });

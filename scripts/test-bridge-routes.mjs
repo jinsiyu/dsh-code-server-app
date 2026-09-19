@@ -187,7 +187,9 @@ function skipIfUnreachable(result, name) {
   return false;
 }
 
-const BRIDGE_SUFFIXES = ['/health', '/sync', '/ask', '/event', '/approve'];
+const BRIDGE_SUFFIXES = ['/health', '/sync', '/old', '/ask', '/event', '/approve'];
+/** 每个后缀的方法(GET 的必须是纯读;/old 只是读快照缓存,不消费、不写)。 */
+const BRIDGE_METHODS = { '/health': 'GET', '/sync': 'POST', '/old': 'GET', '/ask': 'POST', '/event': 'POST', '/approve': 'POST' };
 /** 命名空间里**唯一**非只读的路由:它只能回答既有授权请求(0.3.22,见 handleBridgeApprove)。 */
 const WRITE_SUFFIX = '/approve';
 /** 与 host 侧 lib/bridge.mjs 的 BRIDGE_TOKEN_HEADER 同名同值(扩展侧另有一份字面量)。 */
@@ -207,23 +209,39 @@ await test('桥走本机 IPC(命名管道 / unix socket),既不在 /api 下、�
   assert.equal(webRoutes.has(bridge.BRIDGE_BASE), false, '桥不该再挂到 webServer 上(desktop 没有它)');
 });
 
-await test('四条路由可达,未知后缀 404(绝不落到 VS Code 那边)', async () => {
+await test('六条路由可达,未知后缀 404(绝不落到 VS Code 那边)', async () => {
   const unknown = await callBridge('/code-server-bridge/nope');
-  if (skipIfUnreachable(unknown, '四条路由可达')) return;
+  if (skipIfUnreachable(unknown, '六条路由可达')) return;
   assert.equal(unknown.status, 404, `未知后缀应 404(实际 ${unknown.status})`);
   const suffixWithPost = await callBridge('/code-server-bridge/health', { method: 'POST' });
   assert.equal(suffixWithPost.status, 405, '方法不符应 405');
+  const readOnlyWithPost = await callBridge('/code-server-bridge/old', { method: 'POST' });
+  assert.equal(readOnlyWithPost.status, 405, '/old 是 GET(方法不符应 405)');
   for (const suffix of BRIDGE_SUFFIXES) {
-    const method = suffix === '/health' ? 'GET' : 'POST';
+    const method = BRIDGE_METHODS[suffix];
     const res = await callBridge(`/code-server-bridge${suffix}`, { method, body: method === 'POST' ? '{}' : null });
     assert.ok(res.status !== 404 && res.status !== 405, `${suffix} 应当可达(实际 ${res.status})`);
   }
 });
 
+await test('/old:只读、不消费、key 缺失 400、未启用 503(与 /sync 同口径)', async () => {
+  // 0.3.55:事件里只带不透明 key,写前原文走这条路由取。它是纯读的 —— 取不到(过期/淘汰/重启)
+  // 返回 404,扩展据此回退到缓冲区,不重试。
+  const noKey = await callBridge('/code-server-bridge/old');
+  if (skipIfUnreachable(noKey, '/old')) return;
+  assert.equal(noKey.status, 503, '桩 ctx 下桥未启用 ⇒ 503(与 /sync 同口径,不是 404)');
+  const withKey = await callBridge('/code-server-bridge/old?key=whatever');
+  assert.equal(withKey.status, 503, '鉴权/启用判定先于 key 解析');
+  const source = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
+  assert.match(source, /snapshotResponse\(bridgeSnapshots, key\)/, '/old 只能读快照缓存(纯逻辑在 lib/edit-snapshot.mjs)');
+  assert.equal(/bridgeSnapshots\.(take|delete|reset)\(/.test(source), false, '快照不能被这条路消费掉(重复轮询要拿到同一份)');
+  // 响应语义(400/404/200)由 lib/edit-snapshot.mjs 的 snapshotResponse 承担,单测在 test-edit-snapshot.mjs
+});
+
 await test('命名空间:只认这几条后缀,写/执行类一律 404;唯一非只读的只有 /approve', async () => {
   // 命名白名单:新增路由必须改这里 —— 逼着人重新想一遍"这是只读的吗"。
   for (const suffix of BRIDGE_SUFFIXES) {
-    assert.ok(/^\/(health|sync|ask|event|approve)$/.test(suffix), `未在白名单里的桥路由:${suffix}`);
+    assert.ok(/^\/(health|sync|old|ask|event|approve)$/.test(suffix), `未在白名单里的桥路由:${suffix}`);
   }
   // 唯一允许改状态的路由必须**只有** /approve,且它的语义是"回答既有问题"(见下一条用例)。
   assert.deepEqual(BRIDGE_SUFFIXES.filter((s) => s === WRITE_SUFFIX), [WRITE_SUFFIX]);

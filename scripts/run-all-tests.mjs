@@ -43,6 +43,7 @@ const SUITE = [
   'test-child-node.mjs',
   'test-package-files.mjs',
   'test-bridge-routes.mjs',
+  'test-edit-snapshot.mjs',
   'test-bridge-extension.mjs',
   'test-vendored-table.mjs',
   'test-webview-bundle.mjs',

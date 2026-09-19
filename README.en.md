@@ -215,7 +215,7 @@ only the editor knows, and lets editor gestures drive the current session.
 | editor → agent | **unsaved buffers** (disk ≠ what the user sees), active file and selection, **language-server diagnostics** with `file:line`, source and code | agent tools `editor_context` / `editor_diagnostics`; plus a notice attached before writing a dirty file |
 | editor → DSH | select code → context menu **"DSH: ask about selection"** → an **ask panel** opens (carrying `file:line` and the selection); the question enters the current session as **user input**, and that session's **new content** is rendered in the panel by DSH's own Markdown renderer | extension command `dsh-code-server.askAboutSelection` (one of the **top two** editor context-menu items) + a webview panel + `POST /ask` + the `thread` field of `/sync` |
 | DSH → editor (approval) | when the agent wants to **write outside the workspace or run a command**, the approval request shows up as a card in the panel (tool, reason, countdown); "allow once" / "reject" takes effect immediately | the `approvals` field of `/sync` + `POST /approve` (the bridge's **only** non-read-only route; constraints under "Security model") |
-| agent → editor | the agent changed a file → a **native diff** opens; if that buffer has unsaved changes you get a warning and **no overwrite** | host watches `tools/result`, the extension polls and opens the diff |
+| agent → editor | the agent changed a file → a **native diff** opens (left = the **full pre-write text**, right = what is on disk now); if that buffer has unsaved changes you get a warning and **no overwrite** | the host reads `result.value.before` (the complete pre-write text) in `tools/post-execute` into a bounded snapshot cache → the `tools/result` event carries an opaque key → the extension fetches the text and opens the diff |
 
 - The tools are only registered while the bridge is live (so the model never sees an unusable tool), and the
   system-prompt section renders only then too.
@@ -320,6 +320,10 @@ user**, so:
    edits documents, runs commands, or spawns processes. A leaked token is therefore bounded to "sees information
    that is in the editor" and **can never** become arbitrary file writes or command execution. A whitelist
    assertion in `scripts/test-bridge-routes.mjs` guards this.
+   `/old` (added in 0.3.55) lives under the same invariant: it only reads the bounded cache of "pre-write copies of
+   the last few agent writes" (≤8 entries, ≤1 MB each, ≤4 MB total, 5-minute TTL) by **opaque key**, 404s when it
+   is gone, takes no path argument (so it cannot read arbitrary files) and does not consume (repeat polls get the
+   same text).
 2. **The four constraints on `/approve`** (drop one and it becomes an arbitrary-command-execution back door):
    (a) it can only **answer** an approval request that already exists — the body is exactly `{id, outcome}`, with
    **no free text, paths, or command arguments**, so it can answer questions but never start an action;
@@ -334,7 +338,8 @@ user**, so:
    bridge would be a "did you guess the token right" oracle for a web page.
 4. **Paths are confined to the editor's current workspace folders.**
 5. **Everything is bounded**: 200 diagnostics, 500-char messages, 256 KB request bodies, a 64-entry event ring,
-   ≤120 thread entries per session (≤8000 chars each, ≤4 watched sessions) and ≤4 pending approvals.
+   ≤120 thread entries per session (≤8000 chars each, ≤4 watched sessions), ≤4 pending approvals and ≤8 pre-write
+   snapshots (≤1 MB each, ≤4 MB total, 5-minute TTL — see `/old`).
 
 This layer stops "another local app or a browser page that got hold of the file". A malicious program running as
 the same user could read your files and the token anyway — that is outside this plugin's threat model, exactly
@@ -583,8 +588,9 @@ The regression suite (also the single list CI uses) is:
 pnpm test                    # runs them all: scripts/run-all-tests.mjs
 pnpm test:apply              # apply() under a stub ctx
 pnpm test:claim-types        # claim-type syntax and defaults
-pnpm test:bridge-routes      # bridge route whitelist / Origin-vs-token order / token header agreement
-pnpm test:bridge-extension   # extension-side pure logic (dirty buffers, diagnostics, diff, delivery, panel state)
+pnpm test:bridge-routes      # bridge route whitelist (read-only + /approve + /old) / Origin-vs-token order / token header agreement
+pnpm test:edit-snapshot      # pre-write snapshots: value.before from tools/post-execute, session-cwd path resolution, triple-bounded cache, /old's 400-404-200
+pnpm test:bridge-extension   # extension-side pure logic (dirty buffers, diagnostics, diff old-side priority, delivery, panel state)
 pnpm test:webview            # panel bundle: official renderer + tokens, version match, the four /approve constraints
 pnpm test:launcher-routes    # launcher HTTP surface (spawns a real process; slow)
 pnpm test:workspace-switch   # switching workspaces does not restart the process
@@ -1061,6 +1067,13 @@ What remains on the plugin side:
   disk. What the bridge adds is a notice *before* writing a dirty file, a diff *after*, and a warning instead of
   an overwrite. It does not decide whether the user saves — that would mean changing the agent's read path,
   which is out of scope for this version.
+- **The diff's left side is the pre-write disk content (since 0.3.55).** It comes from `result.value.before` in
+  `tools/post-execute` (`write`/`edit` both hand over the whole file), so a **file that is not open in the editor
+  still gets a complete left side** — up to 0.3.54 the only sources were "the editor's live buffer" and "the
+  extension's own cache", and when neither hit you got an empty left pane titled "no pre-change content".
+  Two cases still come up empty and the tab title says so: tools whose output is a plain string
+  (`str_replace_editor` — no `value` at all) and pre-write content larger than 1 MB (not cached).
+  Note `value` is execution-local: it never reaches the session log, so a host restart cannot replay an old diff.
 
 - ~~No sub-path~~ **no longer true (corrected with measurements in 0.2.0)**: the workbench HTML VS Code renders references
   **only relative URLs** (9 references measured, 0 absolute; `serverBasePath="."`, `rootEndpoint="."`), and the client

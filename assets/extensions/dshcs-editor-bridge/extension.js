@@ -36,7 +36,7 @@ const {
   createClient,
 } = require('./lib/bridge-client.js');
 const { createProjector } = require('./lib/context-model.js');
-const { createDiffCache, describeChange } = require('./lib/diff-model.js');
+const { chooseOldSide, createDiffCache, describeChange } = require('./lib/diff-model.js');
 const {
   applySync,
   createPanelState,
@@ -222,8 +222,12 @@ function activeSnapshot() {
 /**
  * agent 改了一个文件:给出 old/new 两侧并开 diff。
  *
- * 时序很关键:事件到达时 VS Code 的磁盘 watcher 可能还没把新内容灌进缓冲区,
- * 所以**先同步取缓冲区文本**(= 改动前),再去读磁盘(= 改动后)。
+ * 时序很关键,别随手调换顺序:
+ *   ① **先同步取缓冲区文本**(此刻 VS Code 的磁盘 watcher 可能还没把新内容灌进缓冲区 ⇒
+ *      晚一步就取不到"改动前"了)与 isDirty;
+ *   ② 再去宿主取**写前原文快照**(事件里的 oldKey;宿主在写的那一刻抓的,唯一精确的来源);
+ *   ③ old 侧按 chooseOldSide 的优先级选,④ 最后才读磁盘作 new 侧。
+ * ②③ 都要 await,所以①必须在它们之前 —— 否则"文件开着但宿主没给快照"的那条路就废了。
  */
 async function handleAgentEdit(event) {
   const target = typeof event.path === 'string' && event.path !== '' ? event.path : null;
@@ -234,20 +238,40 @@ async function handleAgentEdit(event) {
   }
   const uri = vscode.Uri.file(target);
 
-  // 1) old 侧:优先"此刻的缓冲区"(还未被磁盘改动刷新);没有打开的文档就退回缓存。
-  let oldText = diffCache.recall(target);
+  // 1) 先无条件把"此刻的缓冲区"抓在手里(它只在拿不到快照时才被采用,但必须现在取)。
+  let bufferText = null;
   let dirty = false;
   const open = vscode.workspace.textDocuments.find((doc) => documentId(doc) === target);
   if (open !== undefined) {
     try {
-      oldText = open.getText();
+      bufferText = open.getText();
     } catch {
-      // 保留缓存值
+      bufferText = null;
     }
     dirty = open.isDirty === true;
   }
 
-  // 2) new 侧:磁盘内容。
+  // 2) 宿主侧的写前原文(0.3.55):文件没在编辑器里打开时,这是唯一的 old 侧来源。
+  let snapshotText = null;
+  if (typeof event.oldKey === 'string' && event.oldKey !== '' && client !== null && typeof client.oldText === 'function') {
+    try {
+      snapshotText = await client.oldText(event.oldKey);
+    } catch (error) {
+      log(`取写前原文失败(${target}):${error && error.message ? error.message : error}`);
+      snapshotText = null;
+    }
+  }
+
+  // 3) old 侧:新建 ⇒ 空;其次快照;再退缓冲区;再退上次见过的缓存。
+  const chosen = chooseOldSide({
+    snapshotText,
+    bufferText,
+    cachedText: diffCache.recall(target),
+    operation: typeof event.operation === 'string' ? event.operation : null,
+  });
+  const oldText = chosen.text;
+
+  // 4) new 侧:磁盘内容。
   let newText = null;
   try {
     const bytes = await vscode.workspace.fs.readFile(uri);
@@ -257,13 +281,17 @@ async function handleAgentEdit(event) {
   }
   diffCache.remember(target, newText === null ? '' : newText, Date.now());
 
-  const decision = describeChange(oldText, newText);
+  const decision = describeChange(oldText, newText, {
+    operation: typeof event.operation === 'string' ? event.operation : null,
+    oldSide: typeof event.oldSide === 'string' ? event.oldSide : null,
+  });
   if (decision.show === false) {
     log(`agent 改动 ${target}:${decision.reason} → 不打扰`);
     return;
   }
+  log(`agent 改动 ${target}:old=${chosen.source}(${oldText === null ? '无' : `${oldText.length} 字符`}) ${decision.reason}`);
 
-  // 3) 开 diff(**左 = 改动前的虚拟文档,右 = 真实的磁盘文件**)。
+  // 5) 开 diff(**左 = 改动前的虚拟文档,右 = 真实的磁盘文件**)。
   //    右栏刻意用 file: URI:这样用户在 diff 里按"撤销/编辑"落到的是真文件,VS Code 的
   //    常规编辑与撤销栈全部生效,我们不需要自己做任何写回。
   const docId = registerDiffText(oldText ?? '');
@@ -310,7 +338,7 @@ async function handleAgentEdit(event) {
     log(`打开 diff 失败(${target}):${error && error.message ? error.message : error}`);
   }
 
-  // 4) 脏缓冲区:只告警,绝不覆盖。
+  // 6) 脏缓冲区:只告警,绝不覆盖。
   if (dirty === true) {
     const choice = await vscode.window.showWarningMessage(
       `${path.basename(target)} 在编辑器里有未保存的改动,而 DSH 刚改了磁盘上的同名文件。`,

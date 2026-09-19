@@ -213,7 +213,7 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 | 编辑器 → agent | **未保存缓冲区**(磁盘内容 ≠ 用户所见)、活动文件与选区、**语言服务器诊断**(含 file:line、来源、code) | agent 工具 `editor_context` / `editor_diagnostics`;写脏文件前额外附一条提醒 |
 | 编辑器 → DSH | 选中代码 → 右键「DSH: 针对选中内容提问」→ 打开**提问面板**(带 `文件:行` 与选中内容);提问以**用户输入**进当前会话,该会话的**新内容**用 DSH 官方 markdown 渲染器显示在面板里 | 命令 `dsh-code-server.askAboutSelection`(编辑器右键菜单**最上面两条**之一)+ webview 面板 + `POST /ask` + `/sync` 的 `thread` 字段 |
 | DSH → 编辑器(授权) | agent 要**写工作区外的文件 / 执行命令**时的授权请求 → 面板里就地弹卡片(工具名 + 原因 + 倒计时),点「允许一次 / 拒绝」立刻生效 | `/sync` 的 `approvals` 字段 + `POST /approve`(桥里**唯一**的非只读路由,约束见「安全模型」) |
-| agent → 编辑器 | agent 改了哪个文件 → 开**原生 diff** 审阅;缓冲区有未保存改动时**告警而不覆盖** | host 观察 `tools/result`,扩展轮询后开 diff + 非模态告警 |
+| agent → 编辑器 | agent 改了哪个文件 → 开**原生 diff** 审阅(左 = **写前的完整原文**,右 = 磁盘现状);缓冲区有未保存改动时**告警而不覆盖** | host 在 `tools/post-execute` 取 `result.value.before`(完整写前全文)存入有界快照缓存 → `tools/result` 的事件带不透明 key → 扩展轮询后取回原文并开 diff + 非模态告警 |
 
 - 工具只在桥就绪时注册(IDE 没起来时模型看不到"有个用不了的工具");提示词段落也只在桥存活时渲染。
 - **提问面板**(扩展 0.2.0 起;0.2.3 起正文走官方渲染器;0.2.5 起是**浮在 DSH 界面上的对话框**):
@@ -303,6 +303,9 @@ host 反向请求不到它。所以编辑器状态只能在扩展主动发起的
 1. **`/code-server-bridge/*` 只读,只有 `/approve` 一个例外。** 没有写文件、改文档、执行命令、
    拉起进程的路由。令牌泄露的爆炸半径被封在"看到编辑器里的信息",**不会**变成任意文件写/任意命令执行。
    `scripts/test-bridge-routes.mjs` 里有一条白名单断言盯着这件事(未知后缀一律 404)。
+   `/old`(0.3.55 新增)也在这条不变量里:它只能按**不透明 key** 读"最近几次 agent 写操作的写前副本"
+   这一份有界缓存(条数 ≤8 / 单份 ≤1MB / 总量 ≤4MB / 5 分钟过期),取不到就 404;
+   它不接受路径参数,所以读不到任意文件,也不消费(重复轮询拿到同一份)。
 2. **`/approve` 的四条约束(缺一条就等于开了任意命令执行的后门,不许放宽)**:
    (a) 只能**回答**已经存在的授权请求,请求体只有 `{id, outcome}`,**不接受任何自由文本 / 路径 / 命令参数**
    —— 它只能"回答问题",不能"发起动作";(b) `id` 必须是本进程自己发起、且**仍未决**的请求(用后即废);
@@ -318,7 +321,8 @@ host 反向请求不到它。所以编辑器状态只能在扩展主动发起的
    会让这道 403 静默失效(测试里有这条实测记录)。
 4. **路径收敛在编辑器当前工作区**(`workspaceFolder` 之外的诊断直接丢弃)。
 5. **有界**:诊断默认 200 条 / 单条截断 500 字符 / 上报体上限 256KB / 事件环形缓冲 64 条 /
-   对话流每会话 ≤120 条(单条正文 ≤8000 字符、同时 watch ≤4 个会话)/ 待决授权 ≤4 条。
+   对话流每会话 ≤120 条(单条正文 ≤8000 字符、同时 watch ≤4 个会话)/ 待决授权 ≤4 条 /
+   写前原文快照 ≤8 份、单份 ≤1MB、总量 ≤4MB、5 分钟过期(见 `/old`)。
 
 这一层挡的是"本机其它应用或浏览器页面拿到那个文件后乱调桥";**同用户的本地恶意程序**
 本来就能直接读你的文件与令牌文件 —— 那不在本插件的威胁模型内(与「回环端口的安全模型」同一句话)。
@@ -470,8 +474,9 @@ pnpm test                    # 一次跑完下面全部(scripts/run-all-tests.mj
 # ↑ 是唯一清单:新增回归脚本只改 scripts/run-all-tests.mjs,CI/README 都跟着它走
 pnpm test:apply              # 桩 ctx 下跑通 apply(回归:apply 期的 ReferenceError)
 pnpm test:claim-types        # 认领类型语法与默认值
-pnpm test:bridge-routes      # 编辑器桥:路由表白名单(只读 + /approve)/ Origin 与令牌的判定顺序 / 令牌头三处一致
-pnpm test:bridge-extension   # 编辑器桥扩展侧纯逻辑:未保存缓冲区上报、诊断排序截断、diff 判据、投递降级、面板状态机
+pnpm test:bridge-routes      # 编辑器桥:路由表白名单(只读 + /approve + /old)/ Origin 与令牌的判定顺序 / 令牌头三处一致
+pnpm test:edit-snapshot      # 写前原文快照:从 tools/post-execute 的 value 取完整 before / 路径按会话 cwd 绝对化 / 缓存三重有界 / /old 的 400-404-200
+pnpm test:bridge-extension   # 编辑器桥扩展侧纯逻辑:未保存缓冲区上报、诊断排序截断、diff 判据(old 侧优先级)、投递降级、面板状态机
 pnpm test:webview            # 面板 webview 产物:官方渲染器与令牌打包、版本一致、/approve 的四条约束(先跑 build:webview)
 pnpm test:launcher-routes    # launcher 的 HTTP 面(起真进程,较慢)
 pnpm test:workspace-switch   # 切工作区不重启进程
@@ -1040,6 +1045,11 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
 - **未保存缓冲区是"上报"而不是"接管"**:agent 仍然通过它自己的 `fs` 工具按磁盘内容编辑。
   桥能做的是**在写之前提醒**、**写之后给 diff**、**冲突时告警而不覆盖** ——
   它不能替用户决定保存与否(那需要改动 agent 的读路径,不在本版本范围内)。
+- **diff 的左栏是"写前的磁盘内容"(0.3.55 起)**:值取自 `tools/post-execute` 的 `result.value.before`
+  (`write`/`edit` 都给整份文件文本),所以**文件没在编辑器里打开也能给出完整左栏** ——
+  0.3.54 及以前只有"编辑器缓冲区 / 扩展自己的缓存"两条来源,都没命中时左栏是空文本 + 标题写"没有改动前的内容"。
+  仍然拿不到的情形有两种,标题会如实说明:`str_replace_editor` 这类 output 是纯字符串的工具(没有 `value`),
+  以及写前内容 >1MB(不塞进缓存)。**注意** `value` 是 execution-local:它不进会话日志,宿主重启后旧的 diff 不会重放。
 - **提问面板只渲染"新内容"(0.3.22)**:订阅从面板建立那一刻开始,`follow` 开帧里的历史 `records` 被丢弃,
   面板里**没有"加载更早"**(历史分页 API `sessionController.page()` 在这个版本里刻意不调用)。
   想看更早的内容请回 DSH 界面。

@@ -169,6 +169,44 @@ await test('超长诊断 message 与选中文本都被截断(有界)', () => {
 
 // ---------------------------------------------------------------- diff 判据
 
+await test('agent 改动:old 侧优先级 = 新建 → 快照 → 缓冲区 → 缓存(0.3.55)', () => {
+  // 用户实测到的症状是"左侧空、右侧全文":文件没在编辑器里打开时,以前两条来源(缓冲区/缓存)都落空。
+  // 现在宿主会在写的那一刻把**完整写前原文**交过来(事件里的 oldKey),它必须排在最前面 ——
+  // 缓冲区是"用户此刻看到的东西",偏向哪一侧取决于磁盘 watcher 有没有抢在前面刷新。
+  const { chooseOldSide } = diffModel;
+  assert.deepEqual(chooseOldSide({ snapshotText: 'DISK-BEFORE', bufferText: 'BUFFER', cachedText: 'CACHE' }),
+    { text: 'DISK-BEFORE', source: 'snapshot' }, '有快照就用快照');
+  assert.deepEqual(chooseOldSide({ operation: 'create', snapshotText: 'x', bufferText: 'y' }),
+    { text: '', source: 'create' }, '新建:左栏就该是空文本(而不是"拿不到")');
+  assert.deepEqual(chooseOldSide({ bufferText: 'BUFFER', cachedText: 'CACHE' }), { text: 'BUFFER', source: 'buffer' });
+  assert.deepEqual(chooseOldSide({ cachedText: 'CACHE' }), { text: 'CACHE', source: 'cache' });
+  assert.deepEqual(chooseOldSide({}), { text: null, source: 'none' }, '都没有 ⇒ null(如实显示"拿不到",不假装原来是空的)');
+  assert.deepEqual(chooseOldSide(null), { text: null, source: 'none' });
+  // 空字符串是**有效**的 old 侧(文件原来是空的),不能被当成"没有"
+  assert.deepEqual(chooseOldSide({ snapshotText: '', bufferText: 'BUFFER' }), { text: '', source: 'snapshot' });
+});
+
+await test('agent 改动:新建文件报 +N 行(宿主明确说了 create,行数不是猜的)', () => {
+  const created = diffModel.describeChange('', 'a\nb\nc\n', { operation: 'create' });
+  assert.equal(created.show, true);
+  assert.equal(created.reason, '新建文件');
+  assert.equal(created.added, 3, '真·新建时全文都是新增,可以报数');
+  assert.equal(created.removed, 0);
+  assert.equal(diffModel.describeChange('', '', { operation: 'create' }).show, false, '空文件不值得打扰');
+  assert.equal(diffModel.describeChange(null, null, { operation: 'create' }).show, false);
+});
+
+await test('agent 改动:没有 old 侧时如实说明原因(拿不到 / 过大),行数仍不猜', () => {
+  const missing = diffModel.describeChange(null, 'a\nb\n', { operation: 'update' });
+  assert.equal(missing.show, true);
+  assert.match(missing.reason, /拿不到改动前的内容|没有改动前的内容/);
+  assert.equal(missing.added, null, '覆盖写没有 old 侧 ⇒ 不能猜行数');
+  assert.equal(missing.removed, null);
+  const tooLarge = diffModel.describeChange(null, 'a\nb\n', { oldSide: 'too-large' });
+  assert.match(tooLarge.reason, /过大/);
+  assert.equal(diffModel.describeChange(null, '', {}).show, false, '没有 old 侧且新内容为空 = 无意义');
+});
+
 await test('agent 改动:内容没变就不打扰', () => {
   assert.equal(diffModel.describeChange('abc\n', 'abc\n').show, false);
   assert.equal(diffModel.describeChange('', '').show, false);
@@ -306,6 +344,53 @@ await test('客户端:sync 走 socketPath(不是 HTTP),带令牌头、一趟取�
   rmSync(dir, { recursive: true, force: true });
 });
 
+await test('客户端:oldText(key) 取写前原文;取不到时不抛(回退靠调用方)', async () => {
+  // 0.3.55:事件里只带不透明 key,正文单独取 —— /sync 的响应驮着对话流与待决授权,塞不下 ~1MB 文本。
+  const dir = mkdtempSync(join(tmpdir(), 'dshcs-ext-old-'));
+  mkdirSync(join(dir, bridgeClient.BRIDGE_DIRNAME), { recursive: true });
+  writeFileSync(bridgeClient.bridgeFile(dir), JSON.stringify({ pipe: PIPE, token: 'f'.repeat(32), pid: 7 }), 'utf8');
+  const seen = [];
+  const client = bridgeClient.createClient({
+    extensionsDir: dir,
+    requestImpl: async (request) => {
+      seen.push(request);
+      if (seen.length === 2) return { status: 404, json: { ok: false, error: '快照已失效' } };
+      return { status: 200, json: { ok: true, path: `${WORKSPACE}${SEP}a.ts`, text: 'BEFORE-TEXT', bytes: 11 } };
+    },
+  });
+  assert.equal(await client.oldText('k1'), 'BEFORE-TEXT');
+  assert.equal(seen[0].path, `${bridgeClient.BRIDGE_BASE}/old?key=k1`);
+  assert.equal(seen[0].method, 'GET');
+  assert.equal(seen[0].headers[bridgeClient.TOKEN_HEADER], 'f'.repeat(32), '取正文也要带令牌');
+  assert.equal(await client.oldText('k2'), null, '404(过期/被淘汰/宿主重启)⇒ null,不抛');
+  assert.equal(await client.oldText(''), null, '空 key 不该发请求');
+  assert.equal(await client.oldText(null), null);
+  assert.equal(seen.length, 2, '空 key 不该产生请求');
+  // key 必须被编码(它是不透明随机串,别让它拼坏 URL)
+  await client.oldText('a b&c');
+  assert.equal(seen[2].path, `${bridgeClient.BRIDGE_BASE}/old?key=a%20b%26c`);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+await test('源码级:agent 改动走"先抓缓冲区 → 再取快照 → 选 old 侧 → 再读磁盘"的顺序(0.3.55)', () => {
+  // handleAgentEdit 里有 vscode 依赖,单测跑不到它 ⇒ 顺序用源码钉住。
+  // 为什么顺序重要:缓冲区那份必须在 await 之前同步抓到,否则"文件开着但宿主没给快照"这条路就废了
+  // (磁盘 watcher 一刷新,缓冲区里就只剩"改动后"的内容了)。
+  const source = readFileSync(new URL('../assets/extensions/dshcs-editor-bridge/extension.js', import.meta.url), 'utf8');
+  const bufferAt = source.indexOf('bufferText = open.getText()');
+  const snapshotAt = source.indexOf('await client.oldText(event.oldKey)');
+  const chooseAt = source.indexOf('chooseOldSide({');
+  const diskAt = source.indexOf('await vscode.workspace.fs.readFile(uri)');
+  assert.ok(bufferAt > 0 && snapshotAt > 0 && chooseAt > 0 && diskAt > 0, '四个关键步骤必须都在');
+  assert.ok(bufferAt < snapshotAt, '缓冲区必须**同步**先抓(它不能等 await)');
+  assert.ok(snapshotAt < chooseAt, '先取快照再选 old 侧');
+  assert.ok(chooseAt < diskAt, 'old 侧定下来之后才读磁盘');
+  assert.match(source, /chooseOldSide\(\{[\s\S]{0,220}cachedText: diffCache\.recall\(target\)/,
+    '缓存只作为最后一档兜底');
+  assert.match(source, /describeChange\(oldText, newText, \{[\s\S]{0,220}oldSide:/,
+    '宿主给的 oldSide 要传给判据(标题里说明"为什么没有 old 侧")');
+});
+
 await test('端到端:真实命名管道上跑一次 sync(host 监听口 ⇄ 扩展客户端)', async () => {
   // 这条是"传输真的通了"的证据:用 host 侧生产代码 startBridgeListener 起一个监听口,
   // 再用扩展侧生产代码(createClient 的默认传输 defaultRequest)去请求它。
@@ -344,6 +429,85 @@ await test('端到端:真实命名管道上跑一次 sync(host 监听口 ⇄ 扩
     const failed = await dead.sync({ context: {}, diagnostics: [] });
     assert.equal(failed.ok, false);
     assert.equal(failed.status, 0, '连不上宿主时 status=0(扩展据此休眠/重试)');
+    rmSync(dir, { recursive: true, force: true });
+  } catch (error) {
+    throw skipOnEperm(error);
+  } finally {
+    await listener.close().catch(() => {});
+  }
+});
+
+await test('端到端:真实命名管道上"写 → 事件 → 取写前原文"(真观察器 ⇄ 真路由逻辑 ⇄ 扩展客户端)', async () => {
+  // 串起三件真东西:host 侧的 registerBridgeObserver(桩 ctx)、/old 的**真**路由逻辑
+  // (snapshotResponse,index.js 里那 6 行只是过闸 + jsonResponse 的壳)、扩展侧的**真**客户端。
+  // 这是"diff 左侧不再是空的"那条链路的证据 —— 除了 VS Code 那一层,全都在跑。
+  const { startBridgeListener, bridgeEndpointPath } = await import('../lib/bridge-ipc.mjs');
+  const { registerBridgeObserver } = await import('../lib/bridge-observe.mjs');
+  const { createSnapshotStore, snapshotResponse } = await import('../lib/edit-snapshot.mjs');
+  const endpoint = bridgeEndpointPath(mkdtempSync(join(tmpdir(), 'dshcs-ipc-old-')), process.pid);
+  const token = 'e2e-old-'.padEnd(24, 'x');
+  const snapshots = createSnapshotStore();
+  const events = [];
+  const handlers = new Map();
+  const dispose = registerBridgeObserver({
+    on: (event, handler) => { handlers.set(event, handler); return () => handlers.delete(event); },
+  }, {
+    emit: (kind, fields) => events.push({ seq: events.length + 1, kind, ...fields }),
+    context: () => null,
+    isLive: () => false,
+    snapshots,
+  });
+  const listener = await startBridgeListener({
+    socketPath: endpoint,
+    handler: (req, res) => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      if (req.headers[bridgeClient.TOKEN_HEADER] !== token) {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+        return;
+      }
+      if (url.pathname === `${bridgeClient.BRIDGE_BASE}/old`) {
+        // 与 lib/index.js 的 handleBridgeOld 同款(它只是 bridgeRejection + 这个纯函数 + jsonResponse)
+        const { status, body } = snapshotResponse(snapshots, url.searchParams.get('key'));
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, events }));
+    },
+  });
+  try {
+    // ① 真观察器走一遍"agent 写了一个文件"(value 里有完整写前原文)
+    const before = '// 改动前全文\nconst a = 1;\n';
+    const call = {
+      name: 'edit',
+      arguments: { file_path: 'src/target.ts' },
+      agent: { session: { id: 'session-e2e', header: { cwd: WORKSPACE } } },
+    };
+    await handlers.get('tools/post-execute')(call, {
+      isError: false,
+      value: { path: 'src/target.ts', before, after: '// 改动后\nconst a = 2;\n' },
+    }, async () => ({ kind: 'accept' }));
+    handlers.get('tools/result')(call, { isError: false });
+
+    // ② 扩展客户端:一趟 sync 拿到事件,再用事件里的 key 取正文
+    const dir = mkdtempSync(join(tmpdir(), 'dshcs-old-e2e-'));
+    mkdirSync(join(dir, bridgeClient.BRIDGE_DIRNAME), { recursive: true });
+    writeFileSync(bridgeClient.bridgeFile(dir), JSON.stringify({ pipe: endpoint, token, pid: 3 }), 'utf8');
+    const client = bridgeClient.createClient({ extensionsDir: dir });
+    const sync = await client.sync({ context: { dirtyBuffers: [] }, diagnostics: [] });
+    if (sync.code === 'EPERM') throw skipOnEperm(Object.assign(new Error('x'), { code: 'EPERM' }));
+    assert.equal(sync.ok, true, `sync 应成功:${JSON.stringify(sync)}`);
+    assert.equal(sync.events.length, 1);
+    const event = sync.events[0];
+    assert.equal(event.kind, 'agent-edit');
+    assert.equal(event.path, `${WORKSPACE}${SEP}src${SEP}target.ts`, '相对路径必须按会话 cwd 展开后才交给编辑器');
+    assert.equal(event.oldSide, 'snapshot');
+    const text = await client.oldText(event.oldKey);
+    assert.equal(text, before, '扩展必须能取回**完整**写前原文(这就是左栏不再为空的原因)');
+    assert.equal(await client.oldText('不存在的-key'), null, '404 ⇒ null(回退到缓冲区/缓存,不抛)');
+    dispose();
     rmSync(dir, { recursive: true, force: true });
   } catch (error) {
     throw skipOnEperm(error);
