@@ -4,7 +4,8 @@
 // "Stable identity of the content, which is the address itself. Two opens of the same address are
 // the same tab"),所以点另一个文件必然新开一个标签页;而 `replaceTab` 只有发起方(产品自己的
 // openFile)能传 —— 插件唯一能做的是"新标签页挂载时收掉同窗格里的旧标签页"。
-// 这条规则写在 src/factory.js 的 CodeServerBody 里,只有把**构建产物**真渲染一遍才验得到。
+// 这条规则写在 lib/client.js 的 CodeServerBody 段里(0.3.58 起入口是手写源码,没有构建产物),
+// 只有把它真渲染一遍才验得到。
 //
 // 守四件事:
 //   T1 新标签页(可见)挂载 ⇒ 同窗格里旧的被收掉(收掉的是**旧的**,新的一直在);
@@ -12,12 +13,12 @@
 //   T3 新标签页还**不可见**时不收任何人(标签页恢复顺序不可控,免得乒乓);
 //   T4 没有 actions / panel 的老形状不至于把 body 弄挂(缺服务时退化成"多一个标签页"而不是崩)。
 //
-// **每个用例都重新 loadClientBundle()**:标签页"座位"登记在产物的**模块作用域**里,而 harness 不跑
-// unmount 清理 ⇒ 共用一份产物会让上一个用例的座位泄漏到下一个用例(第一版就是这么假红的)。
+// **每个用例都重新 loadClientBundle()**:标签页"座位"登记在入口的**模块作用域**里,而 harness 不跑
+// unmount 清理 ⇒ 共用一份会让上一个用例的座位泄漏到下一个用例(第一版就是这么假红的)。
 //
-// 用法:node scripts/build-client.mjs && node scripts/test-client-bundle-tabs.mjs
+// 用法:node scripts/test-client-bundle-tabs.mjs
 import assert from 'node:assert/strict';
-import { bundleStaleness, loadClientBundle } from './client-bundle-harness.mjs';
+import { loadClientBundle } from './client-bundle-harness.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -30,13 +31,6 @@ async function test(name, fn) {
     fail += 1;
     console.log(`FAIL ${name}: ${error && error.message ? error.message : error}`);
   }
-}
-
-const stale = bundleStaleness();
-if (stale !== null) {
-  console.log(`SKIP ${stale};先跑 node scripts/build-client.mjs`);
-  console.log('SUMMARY pass=0 fail=0 skip=1');
-  process.exit(0);
 }
 
 const SESSIONS = { ids: ['s'], byId: { s: { id: 's', cwd: 'C:/work/repo' } }, phase: 'ready' };

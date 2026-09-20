@@ -1,24 +1,24 @@
-// scripts/test-client-bundle-cwd.mjs —— 直接对**构建产物** lib/client.js 验"工作区跟随"这条链
+// scripts/test-client-bundle-cwd.mjs —— 直接对**客户端入口** lib/client.js 验"工作区跟随"这条链
 //
-// 为什么不能只测 src/workspace.js:0.3.46 的坑不在解析函数里,而在**产物怎么拿输入** ——
+// 为什么不能只测那个纯函数:0.3.46 的坑不在解析函数里,而在**入口怎么拿输入** ——
 // 它从 `useSessions(s => s).current` 里读"当前会话",而 DSH 0.1.6-alpha.2 把这个字段从
 // SessionListState 移除了 ⇒ 客户端不再发 cwd ⇒ IDE 以空工作区启动(实测 pid.json 里 cwd 双空)。
 // 纯函数测试对"喂什么形状"是无感的,只有真跑一遍注册出来的 React 组件、喂进两版 DSH 的
 // 标准 prop 形状,才能钉住这条契约。
 //
-// 做法:用 scripts/client-bundle-harness.mjs 的"最小 DSH"把产物加载起来(它负责 window/document/
+// 做法:用 scripts/client-bundle-harness.mjs 的"最小 DSH"把入口加载起来(它负责 window/document/
 // fetch/react/slots 桩与渲染),拿到注册到 `sidebar.right.pane.tab` 的 body 与 `shell.overlay` 的
 // 预热面,然后看两件事:① 它以什么 cwd 打 `POST /api/code-server/start`(0.3.46 漏掉的那一步);
 // ② 它交给常驻 iframe 的 pageUrl(决定 workbench 用哪个 `?folder=` 打开)。
 // 场景:DSH ≥ 0.1.6-alpha.2(sessionId 标准 prop)、≤ 0.1.6-alpha.1(快照上的 current)、换会话、
 // 文件 tab(地址里的会话)、两版信源都没有(不得猜目录)、根作用域预热面。
 //
-// 产物缺失或比源码旧时 SKIP(exit 0)—— 与 test-webview-bundle.mjs 同一套约定:
-// 没构建就"报绿"是假绿,但要的是显式的 SKIP 行,不是静默通过。
+// 0.3.58 起 lib/client.js 就是**手写源码**(客户端不再构建),所以这里没有"产物缺失/过期就 SKIP"
+// 那条退路:入口加载不了、渲染不出来,就是真失败。
 //
-// 用法:node scripts/build-client.mjs && node scripts/test-client-bundle-cwd.mjs
+// 用法:node scripts/test-client-bundle-cwd.mjs
 import assert from 'node:assert/strict';
-import { bundleStaleness, loadClientBundle } from './client-bundle-harness.mjs';
+import { loadClientBundle } from './client-bundle-harness.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -31,13 +31,6 @@ async function test(name, fn) {
     fail += 1;
     console.log(`FAIL ${name}: ${error && error.message ? error.message : error}`);
   }
-}
-
-const stale = bundleStaleness();
-if (stale !== null) {
-  console.log(`SKIP ${stale};先跑 node scripts/build-client.mjs`);
-  console.log('SUMMARY pass=0 fail=0 skip=1');
-  process.exit(0);
 }
 
 // 只声明这两个座位就够:本文件测的是"工作区跟随",设置座位另有 test-client-settings-seat.mjs

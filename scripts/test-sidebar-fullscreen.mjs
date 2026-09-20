@@ -4,8 +4,12 @@
 // 依赖两个 DOM 约定:body 的祖先里有 `[data-sidebar-right-panel]`、面板里有 `[data-sidebar-right-mode="fullscreen"]`。
 // 约定漂移时必须"保持现状 + 回报原因",而不是抛错打断 React 渲染 —— 这里把四条失败路径钉死。
 //
+// 0.3.58 起这个函数内联在客户端入口 lib/client.js 里(不再构建、不再有 src/ 模块),
+// 经入口的测试钩子取(harness 的 `testHooks: true`),断言与原套件逐字相同。
+//
 // 用法:node scripts/test-sidebar-fullscreen.mjs
 import assert from 'node:assert/strict';
+import { loadClientBundle } from './client-bundle-harness.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -45,7 +49,7 @@ function makeControl({ clicks, throws }) {
   };
 }
 
-const mod = await import('../src/sidebar-mode.js');
+const mod = loadClientBundle({ testHooks: true }).internals;
 
 await test('找到按钮时点一次,返回 clicked(作用域只在自己面板内)', async () => {
   const clicks = [];

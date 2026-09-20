@@ -236,7 +236,9 @@ await test('宿主:悬浮对话框的 5 条路由 + 能力探测 + 上下文折�
   assert.match(host, /function askContextFromCache\(mode\)/, '上下文从宿主缓存的编辑器状态里取');
   assert.match(host, /const \{ agent: _agent, ...payload \} = result/, 'agent 句柄绝不能进 JSON');
   assert.match(host, /function answerApproval\(id, outcome\)/, '对话框与桥的 /approve 共用同一套白名单校验');
-  const client = read('../src/factory.js');
+  // 客户端半部 0.3.58 起是手写单文件 lib/client.js(不再是构建产物、也没有 src/ 中间源码):
+  // 这里的断言是**源码级**的(函数名/字面量),所以只有不压缩的手写入口才验得到。
+  const client = read('../lib/client.js');
   assert.match(client, /function askEnsureShell\(\)/, 'client 半部要造对话框外壳');
   assert.match(client, /__DSHCS_MOUNT__/, '把挂载点交给面板脚本');
   assert.match(client, /window\.acquireVsCodeApi = function \(\) \{ return \{ postMessage: askOnMessage \} \}/,

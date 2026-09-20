@@ -122,9 +122,7 @@ jobs:
       - name: 准备内置 VS Code 树(显式钉版本,不取上游 latest)
         run: node scripts/vendor-vscode-server.mjs --version "${{ steps.tree.outputs.tree_version }}"
 
-      - name: 构建 client bundle
-        run: pnpm run build:client
-
+      # 客户端半部从 0.3.58 起没有构建步骤(lib/client.js 是入库的手写源码),这里只剩面板 webview。
       # 必须在回归之前:test-webview-bundle 见到产物才真验(缺产物时它逐项 SKIP)。
       # 后面 pnpm pack 的 prepack 会再跑一次(幂等)。
       - name: 构建「问 DSH」面板 webview
@@ -155,7 +153,7 @@ jobs:
           fi
           echo "ui_version_check=ok($HAVE)" >> "$GITHUB_ENV"
 
-      - name: 打包(pnpm pack;prepack 对树是 no-op,会重跑 build:client + build:webview)
+      - name: 打包(pnpm pack;prepack 会重跑 vendor:vscode + build:webview)
         run: |
           set -euo pipefail
           pnpm pack

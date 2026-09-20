@@ -49,6 +49,7 @@ const SUITE = [
   'test-webview-bundle.mjs',
   'test-client-bundle-cwd.mjs',
   'test-client-bundle-tabs.mjs',
+  'test-client-entry.mjs',
   'test-client-settings-seat.mjs',
   'test-launcher-routes.mjs',
 ];

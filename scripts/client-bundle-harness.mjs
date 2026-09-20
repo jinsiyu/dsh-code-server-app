@@ -1,44 +1,37 @@
-// scripts/client-bundle-harness.mjs —— 把构建产物 lib/client.js 装进"最小 DSH"里跑起来
+// scripts/client-bundle-harness.mjs —— 把客户端半部 lib/client.js 装进"最小 DSH"里跑起来
 //
 // 为什么值得单独一个模块:插件真正的契约在**浏览器侧** —— 它注册到哪些插槽、拿什么 props 渲染、
-// 发什么请求。这些既不是纯函数也不是 host 行为,只有把产物加载起来、喂进一段假 prop/假 ctx 才能
+// 发什么请求。这些既不是纯函数也不是 host 行为,只有把入口加载起来、喂进一段假 prop/假 ctx 才能
 // 钉住。0.3.48(DSH 0.1.6-alpha.2 去掉 SessionListState.current)与 0.3.50(设置卡从
 // settings.plugin.item 搬到插件页 plugins.bundle.config)两次都是"本机看不出、一升级就静默失效",
 // 所以回归必须落在这一层。
+//
+// **0.3.58 起没有"构建产物"了**:lib/client.js 就是手写源码(见它的文件头)。因此这里不再有
+// "产物比源码旧就 SKIP"那套新鲜度检查 —— 加载失败就是真失败。
 //
 // 提供的能力(刻意保持最小、够用即止):
 //   · window.__ModuleLoader__ / document / fetch / setInterval 桩;
 //   · 极简 react 桩:hook 按调用次数记账,effect **立即执行**(被测的正是 effect 里的请求与 iframe src);
 //   · slots 桩:`inject(name, factory)` **只在声明的插槽列表里回调**(复刻 DSH "插槽未被声明就不回调"
 //     的语义);register 把每个 entry 的 desc 与组件留下来;
-//   · 渲染:调一次组件(可选沿"函数子组件"下钻一层层调),返回它渲染出的元素树。
+//   · 渲染:调一次组件(可选沿"函数子组件"下钻一层层调),返回它渲染出的元素树;
+//   · `testHooks: true` 时先设 `window.__dshcsTestHooks = true`,于是入口会额外导出 `__internals`,
+//     让"纯函数单元套件"(工作区解析、全屏动作)不必为了可测而把模块拆出去(拆出去 = 又要有构建)。
 //
 // 用法:
 //   import { loadClientBundle } from './client-bundle-harness.mjs'
 //   const h = loadClientBundle({ declaredSlots: ['sidebar.right.pane.tab', 'shell.overlay'] })
 //   const reg = h.registrations.find(r => r.desc.name === 'plugins.bundle.config')
 import assert from 'node:assert/strict';
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const pkgRoot = join(here, '..');
 
-/** 产物新鲜度:缺失或比源码旧时返回原因字符串(调用方据此 SKIP),否则 null。 */
-export function bundleStaleness() {
-  const bundlePath = join(pkgRoot, 'lib', 'client.js');
-  const sources = ['src/factory.js', 'src/workspace.js', 'src/surface.js', 'src/sidebar-mode.js', 'src/address.js'];
-  try {
-    readFileSync(bundlePath);
-  } catch {
-    return `产物不存在(${bundlePath})`;
-  }
-  const stale = sources.filter((rel) => {
-    try { return statSync(join(pkgRoot, rel)).mtimeMs > statSync(bundlePath).mtimeMs; } catch { return false; }
-  });
-  return stale.length > 0 ? `产物比源码旧(${stale.join(', ')} 更新)` : null;
-}
+/** 客户端入口的路径(手写源码;DSH 通过 package.json 的 exports["./client"] 加载同一个文件)。 */
+export const CLIENT_ENTRY = join(pkgRoot, 'lib', 'client.js');
 
 /** 极简 react:hook 按调用次数记账,单次渲染即可;effect 立即执行。 */
 function createFakeReact() {
@@ -109,6 +102,8 @@ export function loadClientBundle(options = {}) {
     __ModuleLoader__: { load: (entry) => loaded.push(entry) },
     setInterval: () => 0, clearInterval: () => {}, setTimeout: () => 0, clearTimeout: () => {},
   };
+  // 入口的测试钩子:只有显式要的时候才设,确保"未设标志时没有 __internals"也能被断言到。
+  if (options.testHooks === true) globalThis.window.__dshcsTestHooks = true;
   globalThis.document = {
     head: createFakeElement('head'),
     body: createFakeElement('body'),
@@ -125,12 +120,12 @@ export function loadClientBundle(options = {}) {
     calls.push({ url: String(url), method: (opts && opts.method) || 'GET', body });
     return { ok: true, status: 200, text: async () => JSON.stringify(statusPayload) };
   };
-  const bundle = readFileSync(join(pkgRoot, 'lib', 'client.js'), 'utf8');
+  const bundle = readFileSync(CLIENT_ENTRY, 'utf8');
   new Function('window', 'document', 'fetch', 'setTimeout', 'setInterval', 'clearInterval', 'console', bundle)(
     globalThis.window, globalThis.document, globalThis.fetch,
     (fn) => { void fn; return 0 }, () => 0, () => {}, console,
   );
-  assert.equal(loaded.length, 1, '产物应恰好调用一次 __ModuleLoader__.load');
+  assert.equal(loaded.length, 1, '入口应恰好调用一次 __ModuleLoader__.load');
   const entry = loaded[0];
   assert.equal(entry.id, 'dsh-code-server-app');
   const mod = entry.factory((name) => {
@@ -193,6 +188,13 @@ export function loadClientBundle(options = {}) {
     render,
     statusPayload,
     scopeSnapshot,
+    /** 入口模块的导出(未开 testHooks 时没有 __internals)。 */
+    exports: mod,
+    /**
+     * 入口导出的内部函数表(只有 `testHooks: true` 时存在)。
+     * 两个"纯函数单元套件"用它,避免为了可测把模块拆出去(拆出去就意味着又要有构建)。
+     */
+    internals: mod.__internals ?? null,
     /** 常驻面的当前 src(surface.js 暴露的排障句柄)。 */
     surfaceSrc: () => globalThis.window.__dshcsSurface.snapshot().src,
     /** 最后一次 POST /api/code-server/start 的 cwd。 */

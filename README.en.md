@@ -105,7 +105,7 @@ This plugin registers:
     `canOpen` share that single file, shipped in the package, so the two cannot drift apart);
     unit tests: `scripts/test-claim-types.mjs`.
 - **How the tab body locates the file**: it parses `useTabInfo().tab.navigation.address`
-  (`src/address.js`, same grammar as DSH's `parseFileAddress`), expands a workspace-relative path with that
+  (`lib/client.js`, the "address grammar" section — same grammar as DSH's `parseFileAddress`), expands a workspace-relative path with that
   session's cwd, and posts the absolute path (plus optional `line`) to the host's
   `/api/code-server/open-file`; the bundled extension (`dshcs-open-file`) then calls `showTextDocument`
   (positioned at the line when given).
@@ -119,8 +119,8 @@ This plugin registers:
   (2) only a tab that becomes visible for the first time consolidates — tab restoration/activation order is not
   ours to control, and letting every visible tab close its siblings would ping-pong (a `ref` pins "once per mount").
   These tabs always shared **one resident workbench** (the IDE is a single instance), so closing one never reloads
-  it: the resident iframe is owned by `src/surface.js`, and a tab is merely its docking host (`Element.moveBefore`).
-  Regression: `scripts/test-client-bundle-tabs.mjs` renders two tabs against the **built bundle** and asserts the
+  it: the resident iframe is owned by the "resident IDE surface" section of `lib/client.js`, and a tab is merely its docking host (`Element.moveBefore`).
+  Regression: `scripts/test-client-bundle-tabs.mjs` renders two tabs against the **entry file** and asserts the
   old one is closed, the new one stays, other panes/hidden tabs are untouched, and an old DSH without `actions`
   does not throw (negative control: dropping the consolidation call makes it FAIL).
 - **Why the bundled extension stays**: VS Code Web has no official "open this file from outside" API (the only
@@ -135,7 +135,7 @@ This plugin registers:
 iframe out of the document and destroys its browsing context; switching back is a full VS Code reload (unsaved buffers
 lost). Floating the tab into its own panel only worked around it.
 
-**What it does now (`src/surface.js` in the client, 0.2.2)**: the plugin takes the iframe **away from React** and turns
+**What it does now (the resident-surface section of `lib/client.js`, 0.2.2)**: the plugin takes the iframe **away from React** and turns
 it into a **singleton resident surface**:
 
 | Situation | Action | Result |
@@ -404,8 +404,8 @@ Diagnostics: `GET /api/code-server/status` exposes
 - code-server's workspace **follows the active DSH session/workspace**: switching sessions/workspaces while the IDE is open moves code-server to the new directory
   (resolution order: current session cwd → session's `workspace.path` → workspace of the most recently active session → first workspace.path;
   **where "the current session" comes from depends on the DSH version**: ≥ 0.1.6-alpha.2 reads the session-scoped standard prop `sessionId`,
-  ≤ 0.1.6-alpha.1 falls back to `current` on the session-list snapshot — see the 0.3.48 bullet below; the logic lives in `src/workspace.js`
-  and the contract for both shapes is pinned by `scripts/test-client-bundle-cwd.mjs` directly against the built bundle);
+  ≤ 0.1.6-alpha.1 falls back to `current` on the session-list snapshot — see the 0.3.48 bullet below; the logic is inlined in `lib/client.js`
+  (the "workspace resolution" section) and the contract for both shapes is pinned by `scripts/test-client-bundle-cwd.mjs` directly against the entry file);
   the opened directory is shown inside code-server (`?folder=<cwd>`, the page reloads when following a switch);
   implementation note: the iframe `src` must carry `?folder=<cwd>` — code-server's front-end remembers the "last workspace" and restores it by itself;
   a bare root URL only shows the previously opened directory and does not follow switches (verified locally).
@@ -437,8 +437,8 @@ Diagnostics: `GET /api/code-server/status` exposes
 - Process lifecycle is managed by the host plugin: startup writes `$DSH_HOME/code-server/pid.json`, stop kills the tree (`taskkill /T` or process-group SIGKILL),
   crash/exit updates status live; after a DSH host restart the plugin **adopts** a still-running instance (verifies pid + `/healthz`), without duplicate start or killing unrelated processes;
 - `node_modules` and the pack-time artifact `vendor/` are git-ignored; after cloning, follow
-  "Install the plugin (script-free install; code-server bundled)" below — `pnpm install` → `pnpm run build:client` →
-  `pnpm run vendor:vscode` → `pnpm pack` + `dsh plugin --profile web add`.
+  "Install the plugin (script-free install; code-server bundled)" below — `pnpm install` → `pnpm run vendor:vscode` →
+  `pnpm run build:webview` → `pnpm pack` + `dsh plugin --profile web add` (the client half has no build step).
 
 > Verified locally (BM: Windows 11 ARM64): the whole tree/dependency chain hangs directly off the plugin's
 > dependency table — the tree package `@jinsiyu/dshcs-vscode-server` (currently 4.137.0, a 50.8 MB tarball),
@@ -453,7 +453,6 @@ Diagnostics: `GET /api/code-server/status` exposes
 ```powershell
 cd C:\Users\User\Desktop\dsh-code-server-app
 pnpm install             # dev deps (esbuild + the official-renderer bundling deps); allowBuilds is explicit → no postinstall runs
-pnpm run build:client    # src/factory.js → lib/client.js (not committed; must be built first)
 pnpm run build:webview   # ask panel: official Markdown renderer + panel shell → webview/thread.{js,css} (not committed; must be built first)
 pnpm run vendor:check    # optional: show the bundled tree version vs the latest code-server release
 pnpm run vendor:vscode                            # ① produce vendor/vscode (the trimmed VS Code tree, ~197MB)
@@ -514,7 +513,7 @@ Both workflows live in `.github/workflows/`, and the regression list exists exac
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | push to `main` / PR / manual | `ubuntu-latest` + `windows-latest` matrix: `pnpm install --frozen-lockfile` → `build:client` → `build:webview` → `pnpm test` (the whole suite) → `vendor:check` (report only) → upload `lib/client.js` and the panel assets |
+| `ci.yml` | push to `main` / PR / manual | `ubuntu-latest` + `windows-latest` matrix: `pnpm install --frozen-lockfile` → `build:webview` → `pnpm test` (the whole suite) → `vendor:check` (report only) → upload the panel assets |
 | `release.yml` | push a `v<version>` tag / manual (rehearsal, never publishes) | prepares `vendor/vscode` **at the version pinned in `dependencies`** → builds → full suite → `pnpm pack` → verifies the tarball manifest → **really installs it twice** (windows-latest proves the 16 win32 sub-packages, ubuntu-latest the 10 Linux ones: each deploys a real DSH, installs via the official path `dsh plugin --profile web add <tgz>`, then runs the `test:installed` + `dump-config` assertions; both legs must pass before anything is published) → publishes to npm **`next`** → creates a GitHub Release with the tgz attached |
 | `linux-repack-probe.yml` | push to this file / manual | **feasibility probe (never publishes; superseded by the Linux legs of `repacks.yml`)**: on Linux, builds the platform-specific repack packages per target (`linux-x64` → `ubuntu-latest`, `linux-arm64` → `ubuntu-24.04-arm`) and reports which modules really produce a `.node` and which are Windows-only. It runs the existing `vendor-repacks.mjs` itself; all writes happen in a copy of the repo under `$RUNNER_TEMP`. **Note**: it emits one notice per module, which hits GitHub's ~20-annotations-per-check-run cap and leaves only the tail; for the full verdict use the Linux legs of `repacks.yml` (one summary line per target) |
 | `repacks.yml` | manual (`publish` and `probe_oidc` both default to **false**, the four `build_*` legs default to **true**) / push to this file / push `.github/oidc-probe.enabled` | **builds and publishes the platform-specific sub-packages** (`@jinsiyu/dshcs-*`): one host-architecture runner per target (`win32-x64` → `windows-latest`, `win32-arm64` → `windows-11-arm`, `linux-x64` → `ubuntu-latest`, `linux-arm64` → `ubuntu-24.04-arm`); by default it only builds and uploads `repack/tgz/*.tgz`, and only publishes to npm (default `next`) when `publish` is checked. Ownership and ordering (**five legs, disjoint sets**): the `independent` leg runs **first** (windows-latest; it produces the **VS Code tree package + the 8 platform-independent repacks**, which are the same artifact for all four targets and are therefore published only once); the four platform-specific legs `needs: independent`, build with `--skip-independent` and publish with `--only <their own target>` ⇒ a broken base layer blocks the rest (no half-published state) and no package name is ever published twice. **Auth**: with no `NPM_TOKEN` it uses OIDC (per-package trust entries, all with workflow `repacks.yml` — see below). The Linux legs additionally verify that the `lib/vendored.json` / `package.json` they generate match the committed ones (the platform policy is meant to be host-independent). A `probe-oidc` job additionally does a **staged-only** probe of that OIDC route, so the channel can be proven without publishing anything real |
@@ -617,6 +616,11 @@ pnpm test:bridge-extension   # extension-side pure logic (dirty buffers, diagnos
 pnpm test:webview            # panel bundle: official renderer + tokens, version match, the four /approve constraints
 pnpm test:launcher-routes    # launcher HTTP surface (spawns a real process; slow)
 pnpm test:workspace-switch   # switching workspaces does not restart the process
+pnpm test:workspace-cwd      # "current workspace directory" resolution (DSH 0.1.6-alpha.2 sessionId vs. the older current)
+pnpm test:client-cwd         # the same contract, but asserted against the **client entry** lib/client.js
+pnpm test:client-tabs        # "one code-server tab on the DSH side": a new tab closes the old one in the same pane
+pnpm test:client-entry       # client-entry guard: classic script + factory wrapper, require whitelist, src/ gone, parity with lib/claim-types.js
+pnpm test:client-seat        # which seat the settings card uses: plugins.bundle.config (DSH ≥ 0.1.6-alpha.2) vs settings.plugin.item (≤ alpha.1)
 pnpm test:fullscreen         # opening the tab goes fullscreen
 pnpm test:vendored           # repack table ↔ plugin dependency table (no npm: aliases, no aggregator)
 pnpm test:installed          # install smoke: assert on what was **installed into a profile**
@@ -837,6 +841,33 @@ The main package is only **~110KB** (the plugin's own code plus the launcher); e
 > `serve: loopback`, which behaves exactly like 0.1.43**; switch to `serve: dsh` for same-origin mounting. The install
 > command is unchanged (`dsh plugin --profile web add dsh-code-server-app@<version>`), and pnpm drops the old
 > `dshcs-code-server` sub-package.
+### Why the client half has no build step (since 0.3.58)
+
+**`lib/client.js` *is* the source** — hand-written, committed, not minified. What was removed: `src/**`
+(five ES modules), `scripts/build-client.mjs`, `client.banner.js` / `client.footer.js`, and the
+`build:client` step in `prepack`/CI/release.
+
+Why it can go away: DSH loads the client entry as a classic `<script src>` (`/plugins/<pkg>/client.js`), so it
+**must be one file** in the `window.__ModuleLoader__.load({id, factory})` shape (no ES modules; package-local
+splitting would need `require.async('client.*.js')`, which this plugin does not use). If the artifact can only be
+a single file, it may as well be the source: no intermediate artifact, no bundler, and no "I forgot to rebuild".
+
+Costs and rules (read before editing `lib/client.js`):
+
+| Rule | Why | Enforced by |
+|---|---|---|
+| No top-level `import`/`export`/`await` | syntax errors in a classic script ⇒ the whole client half fails to load (empty UI) | `pnpm test:client-entry` E1 + the harness really loading it (E3) |
+| `require(...)` may only name `react` / `react/jsx-runtime` | the DSH module table is frozen; anything else throws "unknown module" | E1 |
+| Every section's top-level identifiers share one scope | after inlining, a `var`/`function` collision is a **silent overwrite** (real hit: `state` existed in both the surface and the plugin body — the former is now `surfaceState`) | no automatic guard ⇒ grep before adding a top-level name |
+| The claim-types section is a **copy** | a classic script cannot reach the host module `lib/claim-types.js` | E2 compares both over a sample table |
+
+Size: ~114 KB uncompressed (was a 49.7 KB minified artifact) — a one-time download; the rev/caching mechanism is
+unchanged. Test hook: the entry exports `__internals` only when `window.__dshcsTestHooks === true` (used by
+`test-workspace-cwd.mjs` / `test-sidebar-fullscreen.mjs` to call pure functions); DSH never sets that flag.
+
+> The ask-panel webview is **still a build artifact** (`thread.{js,css}` is untracked and produced by
+> `pnpm run build:webview`); removing that build is the next phase.
+
 ### Development: install from source (changes take effect immediately)
 
 ```powershell
@@ -848,11 +879,13 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 > too — but the not-yet-published local `@jinsiyu/*` packages must either be published first, or the
 > `repack/tgz/*.tgz` files must be installed into the profile as `file:` dependencies.
 >
-> **Changing the client bundle**: edit `src/factory.js` then run `pnpm run build:client`
-> to regenerate `lib/client.js` (that artifact is not tracked; a browser refresh picks it up — no host restart needed).
+> **Changing the client half**: edit `lib/client.js` directly (since 0.3.58 it is **hand-written source** —
+> there is no build step and no `src/**` intermediate layer; the format rules are in that file's header and are
+> enforced by `pnpm test:client-entry`). After installing into a profile a hard refresh picks it up
+> (a host restart may be needed; the bundle rev is hashed at host start).
 > **Changing the ask panel**: edit `assets/extensions/dshcs-editor-bridge/webview/src/*` then run
-> `pnpm run build:webview` (same convention: generated, not tracked; the IDE must be restarted once to pick it up,
-> because the extension host caches the webview resources).
+> `pnpm run build:webview` (this half is still a generated artifact, not tracked; the IDE must be restarted once
+> to pick it up, because the extension host caches the webview resources).
 
 ### Pack-machine environment (the user machine needs nothing)
 

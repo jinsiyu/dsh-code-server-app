@@ -27,12 +27,11 @@ spike-*.mjs
 # 让它保持"被忽略"很重要:`npm publish --provenance` 会看 git 工作区是否干净。
 .oidc-probe/
 
-# client bundle 构建产物:由 src/factory.js 经 `pnpm run build:client` 生成,
-# 仓库只跟踪源码与构建脚本(scripts/build-client.mjs)。
-lib/client.js
-
+# 客户端半部 lib/client.js **不再是构建产物**(0.3.58 起):它是手写源码、入库、就是唯一真源。
+# 那次改造删掉了 src/**、scripts/build-client.mjs 与 banner/footer,并把客户端回归改成直接读它。
+#
 # 「问 DSH」面板 webview 的构建产物:由 scripts/build-webview.mjs 生成
-# (官方渲染器 + 面板外壳),同样只跟踪源码与构建脚本。
+# (官方渲染器 + 面板外壳),同样只跟踪源码与构建脚本。面板那一半的"去构建"是下一期的事。
 assets/extensions/dshcs-editor-bridge/webview/thread.js
 assets/extensions/dshcs-editor-bridge/webview/thread.css
 assets/extensions/dshcs-editor-bridge/webview/fonts/

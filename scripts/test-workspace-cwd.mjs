@@ -1,4 +1,4 @@
-// scripts/test-workspace-cwd.mjs —— "当前工作区目录"解析的单元测试(src/workspace.js)
+// scripts/test-workspace-cwd.mjs —— "当前工作区目录"解析的单元测试(lib/client.js 内的同名函数)
 //
 // 为什么要有:这段逻辑决定 workbench 用哪个 `?folder=` 打开(以及会不会给宿主发 cwd),
 // 而它的输入是 **DSH 客户端 store 的形状** —— 形状随 DSH 版本变过一次,错法又完全静默:
@@ -12,9 +12,15 @@
 //     —— 全文件 0 处 `current:`;`ui-deliverables` 的 ReviewTab 用 `useSessions(s => s.byId[sessionId]?.cwd)`;
 //   · 0.1.6-alpha.1:`.../sessions/service.ts` 的 SessionListState 里仍有 `current: SessionId | undefined`。
 //
+// **0.3.58 起客户端入口是手写单文件**(不再构建),这段逻辑就内联在 lib/client.js 里。
+// 为了不把模块再拆出去(拆出去 = 又要有构建),函数经入口的测试钩子取:
+// harness 的 `testHooks: true` 让入口额外导出 `__internals`。断言与原套件逐字相同。
+//
 // 用法:node scripts/test-workspace-cwd.mjs
 import assert from 'node:assert/strict';
-import { pickWorkspaceCwd } from '../src/workspace.js';
+import { loadClientBundle } from './client-bundle-harness.mjs';
+
+const { pickWorkspaceCwd } = loadClientBundle({ testHooks: true }).internals;
 
 let pass = 0;
 let fail = 0;

@@ -116,7 +116,7 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
   - 语法、默认值与解析都在 `lib/claim-types.js`(host 的 `Config` 默认值与客户端 `canOpen` 共用同一份,
     随包发布,不会两边漂移);单测 `scripts/test-claim-types.mjs`。
 - **tab body 怎么定位文件**:从 `useTabInfo().tab.navigation.address` 解析出会话与路径
-  (`src/address.js`,与 DSH `parseFileAddress` 同语义),相对路径按该会话 cwd 展开成绝对路径,
+  (`lib/client.js` 的"地址语法"段,与 DSH `parseFileAddress` 同语义),相对路径按该会话 cwd 展开成绝对路径,
   再把绝对路径 + 可选 `line` 交给 host 的 `/api/code-server/open-file`;内建扩展
   (`dshcs-open-file`)在 workbench 里 `showTextDocument`(带行号时定位到该行)。
 - **只留一个 tab(0.3.57 起)**:官方语义本是"一个地址 = 一个 tab"(`contentId` 就是地址:同址幂等、
@@ -128,8 +128,8 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
   ② 只有"首次可见"的那个新 tab 负责收 —— 标签页恢复/激活顺序不可控,若每个可见的都收别人,
   关掉一个会让下一个变可见,互相收成乒乓(用 ref 钉住"每次挂载只收一次")。
   这些 tab 本来就共用**同一个常驻 workbench**(IDE 是单实例),关掉一个不会重载它:
-  常驻 iframe 由 `src/surface.js` 持有,tab 只是它的停靠宿主(`Element.moveBefore`)。
-  回归:`scripts/test-client-bundle-tabs.mjs` —— 对**构建产物**渲染两个 tab,断言旧的被关、新的还在、
+  常驻 iframe 由 `lib/client.js` 的"常驻 IDE 面"段持有,tab 只是它的停靠宿主(`Element.moveBefore`)。
+  回归:`scripts/test-client-bundle-tabs.mjs` —— 对**入口**渲染两个 tab,断言旧的被关、新的还在、
   跨窗格不动、不可见时不动、缺 `actions` 的老 DSH 也不崩(负向对照:摘掉合并调用 → 该用例 FAIL)。
 - **为什么还留着那个内建扩展**:VS Code Web 没有"从外部打开文件"的官方 API(唯一入口是
   `?folder=` 指定工作区),所以"让 workbench 定位到某个文件"只能由树内的扩展完成;
@@ -142,7 +142,7 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 浏览上下文销毁,切回来就是一次完整的 VS Code 重载(未保存的缓冲区丢失)。把标签浮动成独立面板只是绕开它,
 并没有解决。
 
-**现在的做法(客户端 `src/surface.js`,0.2.2)**:插件把 iframe **从 React 手里接管**,做成**单例常驻面**:
+**现在的做法(客户端 `lib/client.js` 的常驻面段,0.2.2)**:插件把 iframe **从 React 手里接管**,做成**单例常驻面**:
 
 | 场景 | 动作 | 结果 |
 |---|---|---|
@@ -381,8 +381,8 @@ seq,并且 `/sync` 回应里带 `lastSeq`(高水位),扩展据此自查游标是
 - code-server 服务目录**跟随活动工作区/会话**:打开期间切换 DSH 会话/工作区,code-server 自动切到新目录
   (解析优先级:当前会话 cwd → 会话所属 `workspace.path` → 最近活跃会话所属 workspace → 首个 workspace.path;
   **"当前会话"的信源随 DSH 版本而变**:≥ 0.1.6-alpha.2 读会话作用域标准 prop `sessionId`,
-  ≤ 0.1.6-alpha.1 退回会话列表快照上的 `current` —— 详见下面 0.3.48 那条;纯逻辑在 `src/workspace.js`,
-  两版形状的契约由 `scripts/test-client-bundle-cwd.mjs` 直接对构建产物钉住);
+  ≤ 0.1.6-alpha.1 退回会话列表快照上的 `current` —— 详见下面 0.3.48 那条;纯逻辑内联在 `lib/client.js`
+  的"工作区解析"段,两版形状的契约由 `scripts/test-client-bundle-cwd.mjs` 直接对**入口**钉住);
   打开目录显示在 code-server 页面内(`?folder=<cwd>`,跟随切换时页面自动重新加载);
   实现要点:iframe src 必须带 `?folder=<cwd>`——code-server 前端会记住“最近工作区”并自行恢复,
   仅用裸根 URL 只会显示上一次打开的目录、不会跟随切换(本机实测确认)。
@@ -409,8 +409,8 @@ seq,并且 `/sync` 回应里带 `lastSeq`(高水位),扩展据此自查游标是
 - process 生命周期由 host 插件管理:启动写 `$DSH_HOME/code-server/pid.json`,停止树级终止(taskkill /T 或进程组 SIGKILL),
   崩溃/退出实时更新状态;DSH host 重启后自动 adopt 仍在运行的实例(校验 pid + /healthz),不重复启动、不误杀别的进程;
 - `node_modules`、`vendor/` 与 `repack/` 已被 `.gitignore` 排除,推送/克隆仓库后按下方
-  "打包(如何出包)"执行 `pnpm install` → `pnpm run build:client` → `pnpm run vendor:vscode` →
-  (发布预编译原生包)→ `pnpm pack` + `dsh plugin --profile web add` 即可。
+  "打包(如何出包)"执行 `pnpm install` → `pnpm run vendor:vscode` → `pnpm run build:webview` →
+  (发布预编译原生包)→ `pnpm pack` + `dsh plugin --profile web add` 即可(客户端半部不再有构建步骤)。
 
 > 本机(BM: Windows 11 ARM64)实测:树/依赖全链路是"平台子包直挂插件依赖"供给 ——
 > 树包 `@jinsiyu/dshcs-vscode-server`(当前 4.137.0,50.8 MB tgz)、纯 JS 内部依赖与 8 个平台无关
@@ -424,7 +424,6 @@ seq,并且 `/sync` 回应里带 `lastSeq`(高水位),扩展据此自查游标是
 ```powershell
 cd C:\Users\User\Desktop\dsh-code-server-app
 pnpm install             # 开发依赖(esbuild + 官方渲染器打包依赖);allowBuilds 已显式声明 → 不执行任何 postinstall
-pnpm run build:client    # src/factory.js → lib/client.js(不入库,必须先构建)
 pnpm run build:webview   # 「问 DSH」面板:官方 markdown 渲染器 + 面板外壳 → webview/thread.{js,css}(不入库,必须先构建)
 pnpm run vendor:check    # 可选:查看内置 VS Code 树版本 vs code-server 最新版
 pnpm run vendor:vscode                            # ① 生成 vendor/vscode(精简 VS Code 树,≈197MB)
@@ -500,7 +499,9 @@ pnpm test:webview            # 面板 webview 产物:官方渲染器与令牌打
 pnpm test:launcher-routes    # launcher 的 HTTP 面(起真进程,较慢)
 pnpm test:workspace-switch   # 切工作区不重启进程
 pnpm test:workspace-cwd      # "当前工作区目录"解析:DSH 0.1.6-alpha.2(sessionId)与旧版(current)两套形状
-pnpm test:client-cwd         # 同一件事但直接对**构建产物** lib/client.js 验(注册出来的 body 真发不发 cwd、URL 带不带 folder;先跑 build:client)
+pnpm test:client-cwd         # 同一件事但直接对**客户端入口** lib/client.js 验(注册出来的 body 真发不发 cwd、URL 带不带 folder)
+pnpm test:client-tabs        # "DSH 侧只留一个 code-server 标签页":新标签挂载时收掉同窗格旧标签(跨窗格/不可见时不动)
+pnpm test:client-entry       # 客户端入口守卫:经典脚本+工厂包装、require 白名单、src/ 已消失、与 lib/claim-types.js 逐字一致
 pnpm test:client-seat        # 设置卡住哪个座位:插件页 plugins.bundle.config(DSH ≥ 0.1.6-alpha.2)vs settings.plugin.item(≤ alpha.1;新版已退役)
 pnpm test:fullscreen         # 打开标签即全屏
 pnpm test:vendored           # 重打包表 ↔ 插件依赖表一致(无 npm: 别名 / 无聚合包 / vendored.json 进了 files)
@@ -535,7 +536,7 @@ pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**�
 
 | 工作流 | 触发 | 做什么 |
 |---|---|---|
-| `ci.yml` | push `main` / PR / 手动 | `ubuntu-latest` + `windows-latest` 双平台:`pnpm install --frozen-lockfile` → `build:client` → `build:webview` → `pnpm test`(全套回归)→ `vendor:check` 只报告版本差 → 上传 `lib/client.js` 与面板产物 |
+| `ci.yml` | push `main` / PR / 手动 | `ubuntu-latest` + `windows-latest` 双平台:`pnpm install --frozen-lockfile` → `build:webview` → `pnpm test`(全套回归)→ `vendor:check` 只报告版本差 → 上传面板产物 |
 | `release.yml` | 推 `v<version>` 标签 / 手动(演练,不发布) | 按 `dependencies` 钉的版本准备 `vendor/vscode` → 构建 → 全套回归 → `pnpm pack` → 校验 tarball 清单 → **真装两遍**(windows-latest 验 win32 的 16 个子包、ubuntu-latest 验 Linux 的 10 个:各部署一份真 DSH,走官方路径 `dsh plugin --profile web add <tgz>`,再跑 `test:installed` + `dump-config` 断言;两条腿都过才允许发布)→ 发 npm **`next`** → 建 GitHub Release(附 tgz) |
 | `repacks.yml` | 手动(`publish` / `probe_oidc` 默认 **false**,四条腿的 `build_*` 默认 **true**)/ push 本文件 / push `.github/oidc-probe.enabled` | **平台专属子包(`@jinsiyu/dshcs-*`)的构建与发布**:同架构宿主 runner 各打一条(`win32-x64` → `windows-latest`、`win32-arm64` → `windows-11-arm`、`linux-x64` → `ubuntu-latest`、`linux-arm64` → `ubuntu-24.04-arm`),默认只构建 + 传 `repack/tgz/*.tgz`(**不发布**,所以它同时就是 Linux 可行性验证的正式位置);勾上 `publish` 才发 npm(默认 `next`)。发布归属与顺序(**五条腿、集合不相交**):**先跑** `independent`(windows-latest,产 **VS Code 树包 + 8 个平台无关重打包包** —— 它们在四个目标上是同一份产物,所以只发这一次);四条平台专属腿 `needs: independent`、构建带 `--skip-independent`、发布带 `--only <自己的目标>` ⇒ 基础层出问题时后面不会发出"半套"子包,也不会有人重复发同一个包名。**认证**:没配 `NPM_TOKEN` 就走 OIDC(per-package Trusted Publisher,workflow 都填 `repacks.yml`,见下)。Linux 腿还会顺带校验「Linux 上生成的 `lib/vendored.json` / `package.json` 与仓库里的一致」(平台政策应当宿主无关)。额外有一个 `probe-oidc` job:对几个真实子包名做**只暂存、不发正式版**的巡检,用来证明这条 OIDC 通道真的可用 |
 
@@ -813,6 +814,33 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
 
 > 安装/依赖变化后请**重启 `dsh web`**(静态插件行与 host 探测路径在启动时加载)。
 
+### 客户端半部为什么没有构建步骤(0.3.58 起)
+
+**`lib/client.js` 就是源码** —— 手写、入库、不压缩。删掉的东西:`src/**`(5 个 ES 模块)、
+`scripts/build-client.mjs`、`client.banner.js` / `client.footer.js`,以及 `prepack`/CI/release 里的
+`build:client` 步骤。
+
+为什么可以去构建:DSH 用经典 `<script src>` 加载客户端入口(`/plugins/<包名>/client.js`),它**只能是**
+一个文件、且必须是 `window.__ModuleLoader__.load({id, factory})` 形态(不能是 ES module;包内分块只能
+`require.async('client.*.js')`,本插件用不到)。既然产物只能是单文件,就把它当源码维护 ——
+没有中间产物、没有构建器、也不会"忘了重建"。
+
+代价与约束(改 `lib/client.js` 前先读):
+
+| 约束 | 为什么 | 谁守着 |
+|---|---|---|
+| 顶层不许 `import`/`export`/`await` | 经典脚本里它们是语法错误 ⇒ 整个客户端半部不加载(界面全空) | `pnpm test:client-entry` 的 E1 + harness 真加载(E3) |
+| `require(...)` 只允许 `react` / `react/jsx-runtime` | DSH 冻结模块表,别的会抛"未知模块" | E1 |
+| 各段落的顶层标识符共享同一作用域 | 内联后 `var`/`function` 撞名是**静默覆盖**(实测:`surface.js` 与 `factory.js` 都叫 `state`,已把前者改名为 `surfaceState`) | 无自动守卫 ⇒ 新增顶层名字前先搜一遍 |
+| `lib/claim-types.js` 的那份是**副本** | 客户端拿不到 host 模块(经典脚本 + 冻结模块表) | E2 逐字比对四组样例 |
+
+体积:未压缩 ~114 KB(原压缩产物 49.7 KB)—— 一次下载、rev 机制与缓存策略不变。
+测试钩子:入口在 `window.__dshcsTestHooks === true` 时额外导出 `__internals`(供
+`test-workspace-cwd.mjs` / `test-sidebar-fullscreen.mjs` 直接调纯函数),DSH 永不设置该标志。
+
+> 面板 webview 的产物**仍是构建产物**(`thread.{js,css}` 不入库、`pnpm run build:webview`),
+> 它的"去构建"排在下一期。
+
 ### 开发期:源码目录安装(改动即时生效)
 
 ```powershell
@@ -824,10 +852,11 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 > 依赖(内部 JS 依赖 + 重打包子包)同样由 pnpm 安装 —— 本地未发布的 `@jinsiyu/*` 需先发布,
 > 或把 `repack/tgz/*.tgz` 以 `file:` 依赖临时装进 profile(见 `.tmp-verify.mjs`)。
 >
-> **改动 client bundle**:编辑 `src/factory.js` 后执行 `pnpm run build:client`
-> 重新生成 `lib/client.js`(仓库不跟踪该产物;浏览器刷新即生效,host 无需重启)。
+> **改动客户端半部**:直接编辑 `lib/client.js`(0.3.58 起它是**手写源码**,不再有构建步骤、
+> 也没有 `src/**` 中间层;格式约束见该文件头部注释,`pnpm test:client-entry` 守着它们)。
+> 装进 profile 后浏览器硬刷即生效(必要时重启 host;产物 rev 在宿主启动时算好)。
 > **改动提问面板**:编辑 `assets/extensions/dshcs-editor-bridge/webview/src/*` 后执行
-> `pnpm run build:webview`(同一约定:产物不入库;IDE 需重启一次才会加载新产物,扩展宿主会缓存 webview 资源)。
+> `pnpm run build:webview`(这一半仍是构建产物、不入库;IDE 需重启一次才会加载新产物,扩展宿主会缓存 webview 资源)。
 
 ### 打包机环境要求(使用者机器什么都不需要)
 

@@ -1,4 +1,4 @@
-// scripts/test-client-settings-seat.mjs —— "设置卡住在哪个座位"的产物级回归(0.3.50)
+// scripts/test-client-settings-seat.mjs —— "设置卡住在哪个座位"的入口级回归(0.3.50)
 //
 // 背景(真事):DSH **0.1.6-alpha.2** 把插件配置从"设置 → 插件"搬到**插件页**,`settings.plugin.item`
 // 直接退役 —— 上游 agent note 的原话是"`settings.plugin.item` slot 退役"。我们(以及 profile 里
@@ -10,15 +10,15 @@
 //   · owner props = `{ view: 'summary' | 'page' }`,bundle 配置区只用 `page`;
 //   · 页面自己画标题/图标/面包屑,表单自带保存控件。
 //
-// 所以这里钉三件事(全部对**构建产物**验,而不是对源码):
+// 所以这里钉三件事(全部对**客户端入口** lib/client.js 验,而不是对某个中间产物):
 //   ① 两个座位都注册、且 `slots.inject` 的半开语义让"每版 DSH 只有一个生效";
 //   ② 新座位渲染出来的是**表单 + 保存控件**(不是旧的可折叠卡片:标题会与页面标题重复);
 //   ③ `summary` 视图也答得起(契约要求 entry 两种视图都能渲染)。
 //
-// 用法:node scripts/build-client.mjs && node scripts/test-client-settings-seat.mjs
+// 用法:node scripts/test-client-settings-seat.mjs
 import assert from 'node:assert/strict';
 import { DEFAULT_CLAIM_EXTENSIONS, normalizeClaimExtensions } from '../lib/claim-types.js';
-import { bundleStaleness, classNamesOf, elementTypesOf, findElement, loadClientBundle, textOf } from './client-bundle-harness.mjs';
+import { classNamesOf, elementTypesOf, findElement, loadClientBundle, textOf } from './client-bundle-harness.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -31,13 +31,6 @@ async function test(name, fn) {
     fail += 1;
     console.log(`FAIL ${name}: ${error && error.message ? error.message : error}`);
   }
-}
-
-const stale = bundleStaleness();
-if (stale !== null) {
-  console.log(`SKIP ${stale};先跑 node scripts/build-client.mjs`);
-  console.log('SUMMARY pass=0 fail=0 skip=1');
-  process.exit(0);
 }
 
 /** 一份插槽声明集:哪一版 DSH 声明了哪些座位,这里就是那次升级的全部差别。 */
