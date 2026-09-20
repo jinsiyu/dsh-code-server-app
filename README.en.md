@@ -457,7 +457,7 @@ Diagnostics: `GET /api/code-server/status` exposes
   committed hand-written source: there is no build step anywhere on that chain).
 
 > Verified locally (BM: Windows 11 ARM64): the whole tree/dependency chain hangs directly off the plugin's
-> dependency table — the tree package `@jinsiyu/dshcs-vscode-server` (currently 4.137.0, a 50.8 MB tarball),
+> dependency table — the tree package `@jinsiyu/dshcs-vscode-server` (currently 4.138.0, a 50.9 MB tarball),
 > the pure-JS inner dependencies plus the 8 platform-independent repacks in `dependencies`, and the 8
 > platform-specific repacks (win32-arm64 / win32-x64) in `optionalDependencies` with their own os/cpu gates;
 > the original names are restored by junctions created at runtime (`lib/native.js`)
@@ -505,7 +505,7 @@ pnpm run promote -- <version>
 | Goal | Command |
 |---|---|
 | **Build from the latest upstream release** | `pnpm run vendor:latest` (= `--force`): pulls `code-server@latest`'s tree into `vendor/vscode`; afterwards you **must** re-run `repack:build` and republish every sub-package |
-| **Pin a version** | `pnpm run vendor:vscode -- --version 4.137.0` |
+| **Pin a version** | `pnpm run vendor:vscode -- --version 4.138.0` |
 | **Snapshot from an existing tree** | `pnpm run vendor:vscode -- --from <code-server dir>` (seconds) |
 | **Rebuild every sub-package** | `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack` (without `--from` it npm-installs and compiles the source tree itself — slow) |
 | **Rebuild only the tree + dependency table** | `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64 --pack` (reuses the natives already in `repack/build`; also rewrites `lib/vendored.json` and the plugin dependency table) |
@@ -956,7 +956,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 ### Upgrading the VS Code tree (upstream = a code-server release)
 
 - **The version is decided at pack time**: `pnpm run vendor:latest` (= `--force`) pulls the tree of the npm **latest**
-  release; or use `pnpm run vendor:vscode -- --version 4.137.0` / `DSHCS_CODE_SERVER_VERSION`.
+  release; or use `pnpm run vendor:vscode -- --version 4.138.0` / `DSHCS_CODE_SERVER_VERSION`.
   With an existing `vendor/vscode`, a plain `pnpm pack` never upgrades (it is a no-op).
   **Source-tree precedence (fixed in 0.2.13)**: an explicit `--from` uses that tree, while an explicit
   `--force`/`--version` now **always goes to the registry** — before the fix a local source tree won
@@ -971,13 +971,14 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 - **A version bump means rebuilding and republishing the sub-packages** (all with the same script):
   1. `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack` → the new tree package
      (`@jinsiyu/dshcs-vscode-server@<new version>`) and the natives rebuilt against the new inner dependencies (the
-     script also rewrites the plugin's pure-JS `dependencies` and both aggregator versions);
-  2. `pnpm run republish:repacks` (`pnpm run publish:repacks`) → publish; then bump the plugin version → `pnpm pack`
+     script also rewrites the plugin's pure-JS `dependencies`, writes the 16 repacks under their real names into
+     `dependencies` / `optionalDependencies`, and rewrites `lib/vendored.json`);
+  2. `pnpm run publish:repacks` → publish; then bump the plugin version → `pnpm pack`
      → publish the plugin.
 - `productPath` (`<quality>-<commit>`, part of the client WebSocket path) is **computed from `lib/vscode/product.json`**,
   so upgrading the tree needs no code change — but the routes are registered at activation, so restart `dsh web` afterwards.
 - **No runtime auto-upgrade anymore**: nothing fetches latest at startup; the version is fully determined by the bundled artifact.
-- Bundled locally right now: the tree of `code-server@4.137.0` (VS Code 1.137.0, `productPath=stable-b11dabda…`).
+- Bundled locally right now: the tree of `code-server@4.138.0` (VS Code 1.138.0, `productPath=stable-59c988c7…`).
 
 ### Compatibility with the old install locations
 

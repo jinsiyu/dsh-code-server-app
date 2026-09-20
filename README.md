@@ -422,7 +422,7 @@ seq,并且 `/sync` 回应里带 `lastSeq`(高水位),扩展据此自查游标是
   (客户端半部与提问面板都是入库的手写源码 —— 整条链上**没有任何构建步骤**)。
 
 > 本机(BM: Windows 11 ARM64)实测:树/依赖全链路是"平台子包直挂插件依赖"供给 ——
-> 树包 `@jinsiyu/dshcs-vscode-server`(当前 4.137.0,50.8 MB tgz)、纯 JS 内部依赖与 8 个平台无关
+> 树包 `@jinsiyu/dshcs-vscode-server`(当前 4.138.0,50.9 MB tgz)、纯 JS 内部依赖与 8 个平台无关
 > 重打包包直接进插件 `dependencies`、8 个平台专属重打包包按 win32-arm64/x64 进
 > `optionalDependencies`(包自带 os/cpu 自动选),原始名字由 `lib/native.js` 补 junction 还原
 > → healthz 200 → 停止 → 回收全链路验证。
@@ -478,7 +478,7 @@ pnpm run promote -- <version>
 | 目标 | 命令 |
 |---|---|
 | **打最新版(上游 code-server 发行版)** | `pnpm run vendor:latest`(= `--force`):从 registry 取 `code-server@latest` 的树到 `vendor/vscode`;之后**必须**重跑 `repack:build` 并重发全部子包 |
-| **指定版本** | `pnpm run vendor:vscode -- --version 4.137.0` |
+| **指定版本** | `pnpm run vendor:vscode -- --version 4.138.0` |
 | **从已装好的树快照** | `pnpm run vendor:vscode -- --from <code-server 目录>`(秒级) |
 | **开发期让树可直接跑** | `pnpm run vendor:vscode -- --dev-links`(额外把 `lib/vscode/node_modules` 用 junction 补上) |
 | **完整重打子包** | `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack`(不给 `--from` 会自动 npm install 解包 + 编译,耗时)。`--target` 只决定**本次在这台机器上构建哪些目标**(原生包要现编,所以 Linux 目标在 Linux 机器或 `repacks.yml` 的 Linux 腿上构建);产品覆盖哪些目标、每模块在哪些目标上有子包,由 `scripts/repack-platforms.json` 决定 |
@@ -940,7 +940,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 ### 升级 VS Code 树(上游 = code-server 发行版)
 
 - **打包期决定版本**:`pnpm run vendor:latest`(= `--force`)取 npm **最新版 code-server** 的树并重建 `vendor/vscode`;
-  也可 `pnpm run vendor:vscode -- --version 4.137.0` 或设 `DSHCS_CODE_SERVER_VERSION`。
+  也可 `pnpm run vendor:vscode -- --version 4.138.0` 或设 `DSHCS_CODE_SERVER_VERSION`。
   已有 `vendor/vscode` 时,不带 `--force`/`--version` 不会升级(日常 `pnpm pack` 是 no-op)。
   **源树优先级(0.2.13 修正)**:显式 `--from` 用给定树;显式 `--force`/`--version` **一定走 registry**
   —— 修正前它们会被"本机已有源树"抢走(`defaultSourceTree()` 先命中 `vendor/code-server` 或 profile 里的旧树),
@@ -959,7 +959,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 - `productPath`(`<quality>-<commit>`,客户端 WS 路径的组成)**从 `lib/vscode/product.json` 现算**,
   升级树后无需改代码 —— 但也意味着切版本后必须重启 dsh web(路由在激活期注册)。
 - **不再有运行期自动升级**:不会在启动时联网取 latest;版本完全由内置产物决定。
-- 本机当前内置:`code-server@4.137.0` 的树(VS Code 1.137.0,`productPath=stable-b11dabda…`)。
+- 本机当前内置:`code-server@4.138.0` 的树(VS Code 1.138.0,`productPath=stable-59c988c7…`)。
 
 ### 兼容旧安装位
 
