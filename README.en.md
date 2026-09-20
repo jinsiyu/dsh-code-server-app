@@ -12,10 +12,12 @@
 
 A static profile plugin (npm package with host + client bundle) that ships the **VS Code server tree** from a [code-server](https://github.com/coder/code-server) release as a **platform-independent dependency package** (pack-time artifact `vendor/vscode` → `@jinsiyu/dshcs-vscode-server`, no install scripts, no postinstall). The code-server **Node service layer is replaced by the plugin's own `lib/launcher.mjs`**: it drives `<tree>/lib/vscode/out/server-main.js` (`loadCodeWithNls()` / `createServer()` / `handleRequest()` / `handleUpgrade()`) directly and re-adds the few HTTP endpoints code-server used to provide (`/healthz`, `/manifest.json`, `/_static/*`, `/proxy/:port`). The 16 native modules (node-pty / @vscode/sqlite3 / spdlog / …) come from `@jinsiyu/dshcs-*` sub-packages declared **directly on the plugin's dependency table** under their real names (os/cpu-gated per target), with the original import names restored by runtime junctions. VS Code's inner dependencies and the prebuilt native modules are **all installed by the package manager together with the plugin** — no global npm install, no `bin` configuration, no profile config changes, no second install command, **no argon2/C++ toolchain**.
 
-> Since 0.3.22 the ask panel renders the session's new content with **DSH's own Markdown renderer** (the same
-> renderer and design tokens as the DSH UI; new content only) and can **answer approval requests in place**
-> (writing outside the workspace / running commands). See "Working with DSH: the editor bridge" and section 21 of
-> `docs/analysis-code-server-as-dsh-plugin.md`.
+> **The "ask DSH" dialog** renders the session's new content with **DSH's own Markdown renderer** and can
+> **answer approval requests in place** (writing outside the workspace / running commands). The panel is a
+> hand-written React component inside `lib/client.js`: it requires `react-dom/client` and
+> `@deepseek-ai/dsh-client-ui-primitives` straight from the DSH page's module table (the very instance the UI
+> uses), so typography, highlighting and math match the UI and a renderer version mismatch is impossible.
+> There is **no build step anywhere on that chain**. See "Working with DSH: the editor bridge".
 
 ## UI carrier and required DSH version (0.2.3: right-sidebar DSH only)
 
@@ -225,62 +227,70 @@ only the editor knows, and lets editor gestures drive the current session.
 | Direction | Capability | Mechanism |
 |---|---|---|
 | editor → agent | **unsaved buffers** (disk ≠ what the user sees), active file and selection, **language-server diagnostics** with `file:line`, source and code | agent tools `editor_context` / `editor_diagnostics`; plus a notice attached before writing a dirty file |
-| editor → DSH | select code → context menu **"DSH: ask about selection"** → an **ask panel** opens (carrying `file:line` and the selection); the question enters the current session as **user input**, and that session's **new content** is rendered in the panel by DSH's own Markdown renderer | extension command `dsh-code-server.askAboutSelection` (one of the **top two** editor context-menu items) + a webview panel + `POST /ask` + the `thread` field of `/sync` |
-| DSH → editor (approval) | when the agent wants to **write outside the workspace or run a command**, the approval request shows up as a card in the panel (tool, reason, countdown); "allow once" / "reject" takes effect immediately | the `approvals` field of `/sync` + `POST /approve` (the bridge's **only** non-read-only route; constraints under "Security model") |
+| editor → DSH | select code → context menu **"DSH: ask about selection"** → an **ask dialog** opens in the DSH page (its title bar carries `file:line`); the question enters the current session as **user input**, and that session's **new content** is rendered in the dialog by DSH's own Markdown renderer | extension command `dsh-code-server.askAboutSelection` (one of the **top two** editor context-menu items) → bridge `POST /event {kind:'ask-open'}` → the client half's `POST /api/code-server/ask/send` |
+| DSH → editor (approval) | when the agent wants to **write outside the workspace or run a command**, the approval request shows up as a card in the dialog (tool, reason, countdown); "allow once" / "reject" takes effect immediately | the `approvals` field of `/api/code-server/ask/state` + `POST /api/code-server/ask/approve` (the plugin's **only** write route; constraints under "Security model") |
 | agent → editor | the agent changed a file → a **native diff** opens (left = the **full pre-write text**, right = what is on disk now); if that buffer has unsaved changes you get a warning and **no overwrite** | the host reads `result.value.before` (the complete pre-write text) in `tools/post-execute` into a bounded snapshot cache → the `tools/result` event carries an opaque key → the extension fetches the text and opens the diff |
 
 - The tools are only registered while the bridge is live (so the model never sees an unusable tool), and the
   system-prompt section renders only then too.
-- **Ask panel** (extension 0.2.0; the official renderer since 0.2.3; a **floating dialog over the DSH UI since
-  0.2.5**): the context-menu command no longer opens a panel inside the editor (that is always a tab or a column,
-  never a dialog) — the plugin's client half pops up a draggable, resizable floating chat window in the DSH page
-  itself (bottom-right, ✕ closes it), leaving the editor layout alone. Hosts without that capability fall back to
-  the in-editor webview panel. The selection can still be changed while the dialog stays open.
-  The two commands **remember their intent** (0.3.21): "ask about selection" carries a **line range + selection text**
-  only when something is actually selected, while "ask about file" **never carries line numbers or a selection** — the
-  cursor line is irrelevant to the question and only misleads the agent. With no selection, the selection command also
-  degrades to the plain file.
-- **Injected context is collapsed** (0.3.24): the location line plus the selection code block the bridge adds to the
-  message are split out into a collapsed Context row (click it to see the code), while the bubble keeps only the user's
-  own words — the same treatment the DSH UI gives injected context.
-- **The panel renders exactly what DSH renders** (0.3.22): the panel bundles DSH's official Markdown renderer
-  (`MarkdownText` from `@deepseek-ai/dsh-client-ui-primitives`) plus the official design tokens — the same
-  micromark/mdast pipeline, the same incremental streaming parser, the same shiki highlighting (boot set:
-  typescript / shellscript / json), KaTeX math and the same heading/table typography. Only **new content** is
-  rendered (from the moment the panel subscribes); history is **not replayed** and there is no "load earlier".
-- **Thinking shows up like in DSH** (0.3.23): assistant reasoning becomes a Think row — **collapsed by default**,
+- **Ask dialog**: the context-menu command only reports its intent to the host; the dialog itself is popped up by
+  the plugin's client half inside the DSH page — draggable, resizable (bottom-right, ✕ closes it), leaving the
+  editor layout alone. The selection can still be changed while the dialog stays open.
+  When the host cannot prove the dialog is alive (page not open / browser still running an old client) you get a
+  one-line notice telling you to open or refresh the Code Server tab — there is **no second ask UI** in the editor.
+- **The two commands remember their intent**: "ask about selection" carries a **line range + selection text**
+  only when something is actually selected, while "ask about file" **never carries line numbers or a selection** —
+  the cursor line is irrelevant to the question and only misleads the agent. With no selection, the selection
+  command also degrades to the plain file. The host takes that context from its cached editor state; the extension
+  only reports the intent.
+- **Follow-ups are delivered according to DSH's own setting**: `ui-conversation.busyEnter` (Settings → Conversation,
+  "Enter while busy") accepts `queue` (the default) or `steer`. Pressing Enter in the dialog is the same gesture as
+  pressing Enter in the main composer, so it reads the same value: `steer` ⇒ the host calls `agent.steer()` and the
+  follow-up is consumed at the **running turn's next step boundary** (answered within that turn); `queue` ⇒ the host
+  calls `agent.followup()` and the question becomes **its own later turn**, leaving the running one alone. If the
+  setting cannot be read (namespace unregistered / minimal composition) or the host has no `agent.steer`, delivery
+  falls back to `queue` — a setting never makes a question undeliverable. The panel's status row **says which one was
+  used** ("inserted into the current turn…" / "queued for the next turn…"), because while `queue` is in effect the
+  **DSH main UI cannot show that message yet**: it sits in the host-side pending queue (`next-turn`) and the main
+  client does not render pending queues (it joins the chat flow only once it becomes its own turn). The message is
+  not lost.
+- **Injected context is collapsed**: the location line plus the selection code block the bridge adds to the
+  message are split out into a collapsed Context row (click it to see the code), while the bubble keeps only the
+  user's own words — the same treatment the DSH UI gives injected context.
+- **The body is exactly what DSH renders**: it is handed to DSH's official Markdown renderer
+  (`MarkdownText` from `@deepseek-ai/dsh-client-ui-primitives`) — the same micromark/mdast pipeline, the same
+  incremental streaming parser, the same shiki highlighting (DSH's own lazily-loaded grammar set), KaTeX math and
+  the same heading/table typography. Only **new content** is rendered (from the moment the dialog subscribes);
+  history is **not replayed** and there is no "load earlier". If the official components cannot be resolved the
+  body degrades to plain-text `<pre>` instead of a blank panel.
+- **Thinking shows up like in DSH**: assistant reasoning becomes a Think row — **collapsed by default**,
   showing its first line (or the latest line while streaming) and expanding on a row click, built from the official
   `DisclosureRow` plus the official think icon and typography language.
-- **Approvals are handled right in the panel** (0.3.22; window fixed in 0.3.23): while the panel is open, that
-  session's approval requests ask the panel first (5 minutes by default). Clicking "allow once" / "reject" settles it
-  immediately; **closing the panel** or letting the window expire hands the request back **unchanged** to the official
-  path (the DSH UI shows the same card). 0.3.22's 8-second window was far too short for a human — the buttons went
-  grey before anyone could click (reported as "the approval box stopped working"); the window is now 5 minutes and
-  closing the panel hands off immediately instead of waiting it out.
+- **Approvals are handled right in the dialog**: while it is open, that
+  session's approval requests ask the dialog first (5-minute window). Clicking "allow once" / "reject" settles it
+  immediately; **closing the dialog** or letting the window expire hands the request back **unchanged** to the official
+  path (the DSH UI shows the same card).
   **Nothing is ever auto-approved** — `allowed-once` can only come from a click, and there is no "always allow".
-- The question enters the DSH session as a **plain user message** (`source: { kind: 'user' }`, host 0.3.19): earlier
-  versions used `{kind:'plugin'}`, which DSH renders as a *context update* — it did not look like something the user
-  said. Provenance stays in the first line of the text: `From the editor: <file>[:<line>]`.
-- **Read-only with one constrained exception**: the bridge never writes files, applies edits, or runs commands; the
-  single non-read-only route is `POST /approve`, which can only **answer an approval request that already exists**
-  (see invariant 2 below). The agent's writes still go through its own `fs` tools; the bridge only *knows about* them
-  and carries your answer back.
+- The question enters the DSH session as a **plain user message** (`source: { kind: 'user' }`): provenance stays in
+  the first line of the text (`From the editor: <file>[:<line>]`), and the panel folds it into the Context row.
+- **The bridge is completely read-only**: it never writes files, applies edits, or runs commands — all four routes
+  (`/health`, `/sync`, `/old`, `/event`) are reads. The only route that can change state is the DSH-same-origin
+  `POST /api/code-server/ask/approve`, which can only **answer an approval request that already exists**
+  (see invariant 2 below). The agent's writes still go through its own `fs` tools; the bridge only *knows about*
+  them and carries your answer back.
 - Status bar shows `$(plug) DSH` while connected (click it for the log in the "DSH Editor Bridge" output channel).
-- **The extension ships as a built-in** (fixed in 0.3.12): `dshcs-editor-bridge` is installed into
-  `<tree>/lib/vscode/extensions/` next to `dshcs-open-file`. 0.3.0–0.3.11 installed it as a *user* extension
-  instead, and the VS Code server marks any extension that sits in the user extensions folder but in no profile
-  manifest as removed (`.obsolete`, log line `Marked extension as removed`) and then skips it forever — re-marked on
-  every start, so **the bridge never reported any state**. To turn the bridge off use the plugin setting
-  `editorBridge=false` (no mount, no tools) rather than uninstalling the extension from the Extensions view.
+- **The extension ships as a built-in**: `dshcs-editor-bridge` is installed into
+  `<tree>/lib/vscode/extensions/` next to `dshcs-open-file` — an extension left in the *user* extensions folder is
+  marked `.obsolete` (log line `Marked extension as removed`) by the VS Code server and skipped forever.
+  To turn the bridge off use the plugin setting `editorBridge=false` (no mount, no tools).
 
 ### The channels (since 0.3.13 over **local IPC**: a Windows named pipe / unix socket)
 
 ```
-extension → host   POST /code-server-bridge/sync    one round trip: push editor state (+ which session the panel watches) + take events and thread deltas
-extension → host   POST /code-server-bridge/ask     push an editor question into the current session
-extension → host   POST /code-server-bridge/approve answer an approval request that **already exists** (the only non-read-only route)
+extension → host   POST /code-server-bridge/sync    one round trip: push editor state + take events and the capability bit
 extension → host   GET  /code-server-bridge/health  unauthenticated liveness probe
-extension → host   POST /code-server-bridge/event   extension reports open/close etc. (host log tail)
+extension → host   GET  /code-server-bridge/old     fetch one "pre-write text" snapshot (events carry an opaque key)
+extension → host   POST /code-server-bridge/event   report intent: open the dialog / open·close a file etc. (host log tail)
 host → extension   <extensionsDir>/.dshcs-bridge/bridge.json   endpoint + token, re-read every 5s
                    (the same content is also written **next to the built-in extension** in
                    `<tree>/lib/vscode/extensions/.dshcs-bridge/` — the env var is only injected when the host
@@ -289,14 +299,19 @@ host → extension   <extensionsDir>/.dshcs-bridge/bridge.json   endpoint + toke
 ```
 
 Requests use `http.request({ socketPath })` (`fetch` has no socket support) and **no port is ever opened**.
+All four routes are **read-only**; questions and approval answers do not go through the bridge but through the
+DSH-same-origin `/api/code-server/ask/*` (called by the plugin's client half inside the DSH page, under DSH's own
+cookie/Origin checks).
 
-The three `/sync` fields the panel actually consumes (0.3.22):
+The four state fields the dialog actually consumes (`GET /api/code-server/ask/state?rev=N`; an unchanged revision
+returns a single number):
 
 | Field | Content | How the panel uses it |
 |---|---|---|
-| `thread` | **new content** entries (user / assistant / tool / approval) of the session the panel watches; bounded: ≤120 entries per session, ≤8000 chars per body, ≤4 watched sessions | assistant bodies go to the official renderer; tools and approvals become compact summary rows |
-| `approvals` | pending approval requests `[{id, toolName, reason, at}]` (≤4) | renders the card with a countdown; a click posts `/approve` |
-| `approvalHoldMs` / `uiVersion` | the approval window (300000 ms = 5 minutes by default) / the DSH UI version | countdown basis; a renderer-version mismatch is surfaced in the panel |
+| `entries` | **new content** entries (user / assistant / tool / approval) of the session the dialog watches; bounded: ≤120 entries per session, ≤8000 chars per body, ≤4 watched sessions | assistant bodies go to the official renderer; tools and approvals become compact summary rows |
+| `approvals` | pending approval requests `[{id, toolName, reason, at}]` (≤4) | renders the card with a countdown; a click posts `/ask/approve` |
+| `approvalHoldMs` | the approval window (300000 ms = 5 minutes by default) | countdown basis |
+| `contextText` / `mode` | the title line (from the host's cached editor state) plus the ask intent | title text; `mode` decides whether line numbers / the selection travel with the question |
 
 > **Why not HTTP (settled in 0.3.13, all three measured)**
 > 1. **Desktop has no HTTP surface at all**: the renderer calls `host.fetch()` through Electron IPC
@@ -355,7 +370,7 @@ user**, so:
    (d) when no panel is watching, the panel is closed, or the window (5 minutes by default) expires, the request goes
    **back to the official
    path** — never auto-approved (DSH's `approval/request` itself fails closed; this bridge can only keep
-   "nobody answered" as "nobody answered"). `pnpm test:webview` asserts these four plus the host-side whitelist.
+   "nobody answered" as "nobody answered"). `pnpm test:ask-dialog` asserts these four plus the host-side whitelist.
 3. **Any request carrying `Origin` gets 403.** Browsers always send one (including a sandboxed iframe's literal
    `Origin: null`); the Node extension host never does. Origin is checked **before** the token — otherwise the
    bridge would be a "did you guess the token right" oracle for a web page.
@@ -438,7 +453,8 @@ Diagnostics: `GET /api/code-server/status` exposes
   crash/exit updates status live; after a DSH host restart the plugin **adopts** a still-running instance (verifies pid + `/healthz`), without duplicate start or killing unrelated processes;
 - `node_modules` and the pack-time artifact `vendor/` are git-ignored; after cloning, follow
   "Install the plugin (script-free install; code-server bundled)" below — `pnpm install` → `pnpm run vendor:vscode` →
-  `pnpm run build:webview` → `pnpm pack` + `dsh plugin --profile web add` (the client half has no build step).
+  `pnpm pack` + `dsh plugin --profile web add` (after 0.3.58/0.3.59 the client half **and** the ask panel are
+  committed hand-written source: there is no build step anywhere on that chain).
 
 > Verified locally (BM: Windows 11 ARM64): the whole tree/dependency chain hangs directly off the plugin's
 > dependency table — the tree package `@jinsiyu/dshcs-vscode-server` (currently 4.137.0, a 50.8 MB tarball),
@@ -452,13 +468,12 @@ Diagnostics: `GET /api/code-server/status` exposes
 
 ```powershell
 cd C:\Users\User\Desktop\dsh-code-server-app
-pnpm install             # dev deps (esbuild + the official-renderer bundling deps); allowBuilds is explicit → no postinstall runs
-pnpm run build:webview   # ask panel: official Markdown renderer + panel shell → webview/thread.{js,css} (not committed; must be built first)
+pnpm install             # one dev dependency left (@deepseek-ai/schemastery); allowBuilds is explicit → no postinstall runs
 pnpm run vendor:check    # optional: show the bundled tree version vs the latest code-server release
 pnpm run vendor:vscode                            # ① produce vendor/vscode (the trimmed VS Code tree, ~197MB)
 pnpm run repack:build -- --target win32-arm64,win32-x64 --pack   # ② one script builds every sub-package
 pnpm run publish:repacks                         # ③ publish every @jinsiyu/* sub-package (default dist-tag: next)
-pnpm pack                                        # ④ → dsh-code-server-app-<version>.tgz (~750KB, including the panel renderer assets)
+pnpm pack                                        # ④ → dsh-code-server-app-<version>.tgz
 pnpm run publish:plugin                          # ⑤ publish the plugin itself (default dist-tag: next)
 # once the user has restarted dsh web and confirmed it works, promote latest:
 pnpm run promote -- <version>
@@ -473,13 +488,11 @@ pnpm run promote -- <version>
 > so their dist-tags do not affect resolution, but they default to `next` as well.
 > Inspect the current tags with `npm dist-tag ls dsh-code-server-app`.
 
-> `build:webview` bundles DSH's **official** Markdown renderer and design tokens into the panel assets
-> (~1.34MB: 996KB JS + 87KB CSS + 254KB KaTeX fonts), so it needs a local DSH deployment: the script reads the
-> `@deepseek-ai/dsh-web-frontend` version from that deployment and compares it with the renderer version pinned in
-> devDependencies — a mismatch **fails the build** (unless `--allow-version-mismatch`). Same convention as
-> `lib/client.js`: the artifacts are not committed and `prepack` rebuilds them.
-> Rationale (why not an iframe, where the tokens come from, size trade-offs) is section 21 of
-> `docs/analysis-code-server-as-dsh-plugin.md`.
+> **There is no build step on this chain**: `lib/client.js` — including the "ask DSH" dialog panel — is committed
+> hand-written source, and so is the extension (plain JS). `prepack` is down to `vendor:vscode`, the published
+> package carries no frontend bundle, and `devDependencies` holds exactly one entry (`@deepseek-ai/schemastery`,
+> used by the tests).
+> The per-version analysis of the panel and the DSH page lives in `docs/analysis-code-server-as-dsh-plugin.md`.
 
 `repack:build` (`scripts/vendor-repacks.mjs`) is the **single script that produces every sub-package**:
 
@@ -513,7 +526,7 @@ Both workflows live in `.github/workflows/`, and the regression list exists exac
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | push to `main` / PR / manual | `ubuntu-latest` + `windows-latest` matrix: `pnpm install --frozen-lockfile` → `build:webview` → `pnpm test` (the whole suite) → `vendor:check` (report only) → upload the panel assets |
+| `ci.yml` | push to `main` / PR / manual | `ubuntu-latest` + `windows-latest` matrix: `pnpm install --frozen-lockfile` → `pnpm test` (the whole suite; since 0.3.59 there is **no build step in front of it**) → `vendor:check` (report only) |
 | `release.yml` | push a `v<version>` tag / manual (rehearsal, never publishes) | prepares `vendor/vscode` **at the version pinned in `dependencies`** → builds → full suite → `pnpm pack` → verifies the tarball manifest → **really installs it twice** (windows-latest proves the 16 win32 sub-packages, ubuntu-latest the 10 Linux ones: each deploys a real DSH, installs via the official path `dsh plugin --profile web add <tgz>`, then runs the `test:installed` + `dump-config` assertions; both legs must pass before anything is published) → publishes to npm **`next`** → creates a GitHub Release with the tgz attached |
 | `linux-repack-probe.yml` | push to this file / manual | **feasibility probe (never publishes; superseded by the Linux legs of `repacks.yml`)**: on Linux, builds the platform-specific repack packages per target (`linux-x64` → `ubuntu-latest`, `linux-arm64` → `ubuntu-24.04-arm`) and reports which modules really produce a `.node` and which are Windows-only. It runs the existing `vendor-repacks.mjs` itself; all writes happen in a copy of the repo under `$RUNNER_TEMP`. **Note**: it emits one notice per module, which hits GitHub's ~20-annotations-per-check-run cap and leaves only the tail; for the full verdict use the Linux legs of `repacks.yml` (one summary line per target) |
 | `repacks.yml` | manual (`publish` and `probe_oidc` both default to **false**, the four `build_*` legs default to **true**) / push to this file / push `.github/oidc-probe.enabled` | **builds and publishes the platform-specific sub-packages** (`@jinsiyu/dshcs-*`): one host-architecture runner per target (`win32-x64` → `windows-latest`, `win32-arm64` → `windows-11-arm`, `linux-x64` → `ubuntu-latest`, `linux-arm64` → `ubuntu-24.04-arm`); by default it only builds and uploads `repack/tgz/*.tgz`, and only publishes to npm (default `next`) when `publish` is checked. Ownership and ordering (**five legs, disjoint sets**): the `independent` leg runs **first** (windows-latest; it produces the **VS Code tree package + the 8 platform-independent repacks**, which are the same artifact for all four targets and are therefore published only once); the four platform-specific legs `needs: independent`, build with `--skip-independent` and publish with `--only <their own target>` ⇒ a broken base layer blocks the rest (no half-published state) and no package name is ever published twice. **Auth**: with no `NPM_TOKEN` it uses OIDC (per-package trust entries, all with workflow `repacks.yml` — see below). The Linux legs additionally verify that the `lib/vendored.json` / `package.json` they generate match the committed ones (the platform policy is meant to be host-independent). A `probe-oidc` job additionally does a **staged-only** probe of that OIDC route, so the channel can be proven without publishing anything real |
@@ -612,8 +625,8 @@ pnpm test:apply              # apply() under a stub ctx
 pnpm test:claim-types        # claim-type syntax and defaults
 pnpm test:bridge-routes      # bridge route whitelist (read-only + /approve + /old) / Origin-vs-token order / token header agreement
 pnpm test:edit-snapshot      # pre-write snapshots: value.before from tools/post-execute, session-cwd path resolution, triple-bounded cache, /old's 400-404-200
-pnpm test:bridge-extension   # extension-side pure logic (dirty buffers, diagnostics, diff old-side priority, delivery, panel state)
-pnpm test:webview            # panel bundle: official renderer + tokens, version match, the four /approve constraints
+pnpm test:bridge-extension   # extension-side pure logic (dirty buffers, diagnostics, diff old-side priority, delivery, ask intent + "dialog unavailable" notice)
+pnpm test:ask-dialog         # ask-dialog wiring: no artifacts/build chain left, the host's four ask routes, the extension only reporting editor state, the four approval constraints, the bridge's safety invariants
 pnpm test:launcher-routes    # launcher HTTP surface (spawns a real process; slow)
 pnpm test:workspace-switch   # switching workspaces does not restart the process
 pnpm test:workspace-cwd      # "current workspace directory" resolution (DSH 0.1.6-alpha.2 sessionId vs. the older current)
@@ -726,9 +739,6 @@ one itself (with no `NPM_TOKEN` it uses OIDC):
   probe versions (`npm stage list`, then `npm stage reject <id>`; needs 2FA on your machine) — do **not**
   approve, since approving is what would turn a probe into a real version. Delete the sentinel file to
   return to "no automatic probe".
-- **Optional** repository variable `DSH_UI_VERSION` = the version of `@deepseek-ai/dsh-web-frontend` in the current
-  deployment: when set, `release.yml` enforces that the panel renderer matches the deployed UI (the local
-  `build:webview` always checks this; a runner has no DSH deployment).
 
 Things you must know:
 
@@ -741,8 +751,9 @@ Things you must know:
   assertion). Packing happens only in `release.yml`, after
   `node scripts/vendor-vscode-server.mjs --version <pinned>`.
 - **Release gates** (any failure stops the run; `next` is never advanced): tag ≠ `package.json.version`, the
-  version already exists on npm, the tree version does not match (`test:vendored`), the suite fails, or
-  `DSH_UI_VERSION` mismatches.
+  version already exists on npm, the tree version does not match (`test:vendored`), the suite fails, or the
+  tarball manifest / the two real-install legs disagree. (0.3.59 dropped one gate: the panel renderer no longer
+  needs to match the deployed DSH UI — it *is* that instance.)
 - `@deepseek-ai/schemastery` is a **devDependency** (pinned to 3.18.2, the version the deployment uses):
   `lib/index.js` normally takes it from the DSH deployment (in production, the copy hoisted inside the
   profile), and a clean clone / CI runner has no DSH at all — without this devDependency the `apply`-style
@@ -857,7 +868,7 @@ Costs and rules (read before editing `lib/client.js`):
 | Rule | Why | Enforced by |
 |---|---|---|
 | No top-level `import`/`export`/`await` | syntax errors in a classic script ⇒ the whole client half fails to load (empty UI) | `pnpm test:client-entry` E1 + the harness really loading it (E3) |
-| `require(...)` may only name `react` / `react/jsx-runtime` | the DSH module table is frozen; anything else throws "unknown module" | E1 |
+| `require(...)` may only name DSH module-table seed words (`react` / `react/jsx-runtime` / `react-dom/client` / `@deepseek-ai/dsh-client-ui-primitives`) | the DSH module table is frozen; anything else throws "unknown module" | E1 (and, when a local DSH install exists, it cross-checks the real `staticModules` list word by word) |
 | Every section's top-level identifiers share one scope | after inlining, a `var`/`function` collision is a **silent overwrite** (real hit: `state` existed in both the surface and the plugin body — the former is now `surfaceState`) | no automatic guard ⇒ grep before adding a top-level name |
 | The claim-types section is a **copy** | a classic script cannot reach the host module `lib/claim-types.js` | E2 compares both over a sample table |
 
@@ -865,8 +876,35 @@ Size: ~114 KB uncompressed (was a 49.7 KB minified artifact) — a one-time down
 unchanged. Test hook: the entry exports `__internals` only when `window.__dshcsTestHooks === true` (used by
 `test-workspace-cwd.mjs` / `test-sidebar-fullscreen.mjs` to call pure functions); DSH never sets that flag.
 
-> The ask-panel webview is **still a build artifact** (`thread.{js,css}` is untracked and produced by
-> `pnpm run build:webview`); removing that build is the next phase.
+### Why the "ask DSH" dialog has no build step
+
+The dialog's panel (conversation stream, collapsible thinking rows, approval cards, input box) lives **inside
+`lib/client.js`** — hand-written, committed, with no artifact, no `/ask/bundle`, no injected `<script>` and no fake
+`acquireVsCodeApi`.
+
+Why it can work that way: the dialog already runs **inside the DSH page**, and the shell's module table
+(`staticModules` of `dsh-web-frontend`) freezes `react` / `react/jsx-runtime` / `react-dom` / `react-dom/client` /
+`@deepseek-ai/dsh-client-ui-primitives` / … — so the panel simply requires them:
+
+- the renderer, the design tokens, the KaTeX styles and the shiki grammars **all come from the page** (the same
+  instance the DSH UI uses) ⇒ typography matches the UI and a version mismatch is impossible;
+- the panel creates its own React root via `require('react-dom/client')` (its container is the dialog's own div);
+- opening the dialog has no "fetch + parse + execute" step to wait for — there is no artifact.
+
+Costs and rules:
+
+| Rule | Why | Enforced by |
+|---|---|---|
+| CSS injected into the page may only target `.dshcs-*` | the styles land in DSH's own document; touching `:root`/`body` would restyle the whole UI | `pnpm test:ask-panel` P3 (every selector + a ban on at-rules) |
+| Every `var(--vscode-*)` needs a fallback | the DSH page has no `--vscode-*`; a bare `var()` is invalid at computed-value time ⇒ transparent buttons/inputs | P3 |
+| A component with hooks may only be written as `React.createElement(Name, …)` | there is no JSX here; `Name({…})` puts the child's `useState` into the parent's hook chain, and a changed branch throws "Rendered more hooks than during the previous render" | P4 (source-level lookbehind regex) |
+| Official components must be resolved as "function **or** `{$$typeof}` object" | `MarkdownText` is a `React.memo` product (an **object**); testing `typeof === 'function'` silently degraded every body to `<pre>` | P4's `askComponent` cases |
+| Missing seed words / official components must degrade | the panel is the primary path; a blank panel means asking is broken | P5 (`<pre>` body, native `button`) + an error boundary |
+| Three message routes (ask / approve / close) | panel and shell share one window (no postMessage), so messages must reach `/ask/send|approve|close` | P6 |
+
+The extension side has no build step either: it is plain JS (`extension.js` + `lib/*.js`) and only reports intent.
+Those two "no build step" claims are guarded by `pnpm test:client-entry` / `pnpm test:ask-panel` (the panel itself)
+and `pnpm test:ask-dialog` (the wiring, plus "not one trace of the build chain may remain").
 
 ### Development: install from source (changes take effect immediately)
 
@@ -879,13 +917,12 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 > too — but the not-yet-published local `@jinsiyu/*` packages must either be published first, or the
 > `repack/tgz/*.tgz` files must be installed into the profile as `file:` dependencies.
 >
-> **Changing the client half**: edit `lib/client.js` directly (since 0.3.58 it is **hand-written source** —
-> there is no build step and no `src/**` intermediate layer; the format rules are in that file's header and are
-> enforced by `pnpm test:client-entry`). After installing into a profile a hard refresh picks it up
-> (a host restart may be needed; the bundle rev is hashed at host start).
-> **Changing the ask panel**: edit `assets/extensions/dshcs-editor-bridge/webview/src/*` then run
-> `pnpm run build:webview` (this half is still a generated artifact, not tracked; the IDE must be restarted once
-> to pick it up, because the extension host caches the webview resources).
+> **Changing the client half / the ask dialog**: edit `lib/client.js` directly (it is **hand-written source**:
+> no build step, no `src/**` layer; the format rules are in that file's header and are enforced by
+> `pnpm test:client-entry` and `pnpm test:ask-panel`). After installing into a profile a hard refresh picks it up.
+> **Changing the extension**: edit `assets/extensions/dshcs-editor-bridge/{extension.js,lib/*.js}` (plain JS, no
+> build). The IDE side needs one restart to load the new extension code, because the extension host caches loaded
+> extensions.
 
 ### Pack-machine environment (the user machine needs nothing)
 
@@ -1105,16 +1142,12 @@ What remains on the plugin side:
   or by simply calling `editor_context` — 0.3.0–0.3.11 sat in the state "health says bridge:true, extension never
   loaded" (cause above: the user-level install was marked `.obsolete`).
 - **Bridged state can lag by up to 600 ms**, and the tools say "stale" rather than serving data older than 10 s.
-- **The ask panel renders only "new content" (0.3.22)**: the subscription starts when the panel opens, the history
+- **The dialog renders only "new content"**: the subscription starts when the dialog opens, the history
   `records` from `follow`'s opening frame are discarded, and the panel has **no "load earlier"** (the history-paging
   API `sessionController.page()` is deliberately not called in this version). Switch to the DSH UI for older content.
-- **Panel highlighting ships only DSH's boot grammar set** (typescript / shellscript / json): the rest of the
-  official grammars load lazily through `import()` (~1.6MB total), and the panel is a single-file IIFE with no
-  lazy loading, so those languages render as plain text (exactly like DSH's own first render, no errors).
-  For the full set: `node scripts/build-webview.mjs --all-grammars`.
-- **Panel assets are pinned to the DSH version**: the renderer is bundled against the UI version of the deployed
-  DSH, so after upgrading DSH you must rebuild the panel (`pnpm run build:webview`; the build fails loudly on a
-  version mismatch). The panel also shows a mismatch notice at runtime instead of silently using the wrong renderer.
+- **Highlighting follows DSH's own lazily-loaded grammar set**: the panel uses the page's renderer instance, so
+  there is no "the artifact only carries a few grammars" limitation.
+- **A renderer version mismatch is impossible**: the panel requires the very instance the UI uses.
 - **The approval window in the panel is 5 minutes**: while the panel is open, approvals ask the panel first (the card
   shows a countdown); **closing the panel** or letting the 5 minutes run out hands the request back to the DSH UI —
   after that, that request can **only** be answered there (the card disappears from the panel and the thread keeps an

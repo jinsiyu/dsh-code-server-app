@@ -8,8 +8,9 @@
 //   · 与 host 共用的认领类型逻辑漂移 → 设置卡显示的规则和 host 实际执行的规则不一致(静默)。
 //
 // 守三件事:
-//   E1 **结构**:wrapper 首尾、无顶层 ESM 语法、require 实参白名单、src/ 已消失、仓库里不再有
-//      "构建 client" 的残留引用(历史 docs/ 除外)。
+//   E1 **结构**:wrapper 首尾、无顶层 ESM 语法、require 实参白名单(= DSH 壳模块表的种子词,
+//     并尽量拿本机真实 DSH 的 staticModules 对一遍)、src/ 已消失、仓库里不再有 "构建 client" 的残留引用
+//     (历史 docs/ 除外)。
 //   E2 **与 lib/claim-types.js 的一致性**:入口里内联了同一份逻辑(客户端拿不到 host 模块),
 //      两份必须逐字等价 —— 用样例表比对 normalize / parse / claimsAddress / describe。
 //   E3 **入口可用**:真加载一次(无钩子 ⇒ 没有 __internals;有钩子 ⇒ 有),apply/inject/name 形状正确。
@@ -55,6 +56,45 @@ function codeLines(text) {
   return text.split('\n').filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line));
 }
 
+/**
+ * DSH 壳的模块表种子词(`dsh-web-frontend` 的 staticModules)。
+ *
+ * 客户端半部能 `require` 的**只有**这些:多写一个不存在的名字,DSH 的 require 会抛
+ * `missed the module table` —— 而且是运行时、在用户机器上才炸。0.3.59 起「问 DSH」面板
+ * 也从这张表取 `react-dom/client` 与官方 UI primitives(拿不到就降级,见 lib/client.js 的
+ * askPrimitives)。
+ */
+const DSH_SEED_MODULES = [
+  'react',
+  'react/jsx-runtime',
+  'react-dom',
+  'react-dom/client',
+  '@deepseek-ai/cordis',
+  '@deepseek-ai/dsh-client-store',
+  '@deepseek-ai/dsh-client-ui-slots',
+  '@deepseek-ai/dsh-client-ui-primitives',
+  '@deepseek-ai/dsh-client-ui-dockkit',
+];
+
+/**
+ * 本机 DSH 安装里那壳脚本的源码(内含 staticModules 的对象字面量);找不到返回 null。
+ * 只用于把 E1 的种子词清单钉在**真实的** DSH 上(CI 上没有 DSH 安装,那时只留一行 SKIP)。
+ */
+function findDshShellSource() {
+  const roots = [
+    process.env.APPDATA === undefined ? null : join(process.env.APPDATA, 'npm', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist', 'assets'),
+    join(pkgRoot, 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist', 'assets'),
+    process.env.DSH_INSTALL_ROOT === undefined ? null : join(process.env.DSH_INSTALL_ROOT, 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist', 'assets'),
+  ];
+  for (const root of roots) {
+    if (root === null || !existsSync(root)) continue;
+    for (const name of readdirSync(root)) {
+      if (/^index-.*\.js$/.test(name)) return readFileSync(join(root, name), 'utf8');
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------- E1 结构
 
 await test('E1:入口是经典脚本 + loader 工厂包装(格式错了整个客户端半部都不加载)', () => {
@@ -69,13 +109,26 @@ await test('E1:入口是经典脚本 + loader 工厂包装(格式错了整个客
   assert.equal(/^await\s/m.test(code), false, '顶层不许出现 await(经典脚本里是语法错误)');
 });
 
-await test('E1:require 的实参只允许 react / react/jsx-runtime(DSH 冻结模块表)', () => {
+await test('E1:require 的实参只允许 DSH 模块表里的种子词', () => {
   const code = codeLines(source).join('\n');
   const specifiers = [...code.matchAll(/\brequire\(\s*'([^']+)'\s*\)/g)].map((m) => m[1]);
   assert.ok(specifiers.includes('react'), `入口必须 require('react')(实际:${JSON.stringify([...new Set(specifiers)])})`);
-  const outside = [...new Set(specifiers)].filter((s) => s !== 'react' && s !== 'react/jsx-runtime');
+  const outside = [...new Set(specifiers)].filter((s) => !DSH_SEED_MODULES.includes(s));
   assert.deepEqual(outside, [], `这些 require 实参在 DSH 里解析不到(会抛"未知模块"):${outside.join(', ')}`);
   assert.equal(/require\.async\(/.test(code), false, '本插件不使用包内分块(client.*.js)');
+});
+
+await test('E1:种子词清单与本机 DSH 壳的 staticModules 对得上(没有 DSH 安装则跳过)', () => {
+  const shell = findDshShellSource();
+  if (shell === null) {
+    console.log('  SKIP 本机没有 DSH 安装(CI):只校验白名单,不校验真实模块表');
+    return;
+  }
+  // 对象字面量:裸键不加引号(`return{react:vc,...}`),带 `/` 或 `@` 的键加引号。
+  for (const spec of ['react', 'react/jsx-runtime', 'react-dom/client', '@deepseek-ai/dsh-client-ui-primitives']) {
+    const present = spec === 'react' ? shell.includes('{react:') : shell.includes(`"${spec}":`);
+    assert.ok(present, `本机 DSH 的壳模块表里没有 \`${spec}\` ⇒ 入口/面板里的 require 会抛"未知模块"(DSH 改了种子词?)`);
+  }
 });
 
 await test('E1:src/ 已消失,仓库里不再有"构建 client"的残留引用(历史 docs/ 除外)', () => {

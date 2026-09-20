@@ -13,13 +13,16 @@
 //      就什么都不做。状态栏不显示任何东西,更不弹通知。
 //   3. **绝不覆盖未保存改动**:agent 改了文件而该文档是脏的就只告警 + 给 diff,由用户决定。
 //
-// 「问 DSH」面板(0.2.0 起;0.2.3 起正文走 DSH 官方渲染器):
-//   - 提问走 `/ask`(host 侧以**用户输入**进对话);
-//   - 回答**不再是另一条通道**:host 用 `sessionController.follow` 把该会话的**新内容**
-//     投影成条目,随 `/sync` 的 `thread` 回来,面板用官方 markdown 渲染器显示
-//     (产物由 scripts/build-webview.mjs 打成 webview/thread.js + thread.css);
-//   - 授权(写工作区外文件 / 执行命令):host 的 `approvals` 字段回到面板,用户在面板上
-//     「允许一次 / 拒绝」,扩展调 `/approve` 提交(桥里唯一的非只读路由)。
+// 「问 DSH」对话框(0.2.0 起;0.3.59 起是**唯一**的提问 UI):
+//   - 提问:右键命令只向宿主上报意图(`POST /event {kind:'ask-open', mode}`),对话框开在 **DSH 页面**里;
+//     提问正文由插件的客户端半部经 `/api/code-server/ask/send` 投递(host 侧以**用户输入**进对话);
+//   - 回答:host 用 `sessionController.follow` 把该会话的**新内容**投影成条目,对话框轮询
+//     `/api/code-server/ask/state` 取回,面板用 DSH 官方 markdown 渲染器显示 —— 面板本体在客户端
+//     半部(lib/client.js):手写、不打包,直接用 DSH 页面模块表里那一份渲染器;
+//   - 授权(写工作区外文件 / 执行命令):host 把待决请求放进同一份状态,用户在对话框上
+//     「允许一次 / 拒绝」,客户端半部调 `/api/code-server/ask/approve` 提交;
+//   - 编辑器里**不再有**自己的提问面板:0.3.59 删掉了那份 webview 产物(thread.js/css),
+//     探测不到对话框心跳时只弹一条提示,不开一扇用户看不见的窗。
 //
 // 只依赖 `vscode` 与 Node 内置模块;纯逻辑在 lib/ 下且不 require('vscode'),便于单测。
 
@@ -27,7 +30,6 @@
 
 const vscode = require('vscode');
 const crypto = require('crypto');
-const fs = require('fs');
 const path = require('path');
 
 const {
@@ -37,14 +39,6 @@ const {
 } = require('./lib/bridge-client.js');
 const { createProjector } = require('./lib/context-model.js');
 const { chooseOldSide, createDiffCache, describeChange } = require('./lib/diff-model.js');
-const {
-  applySync,
-  createPanelState,
-  failPanel,
-  panelPayload,
-  pendingQuestion,
-  renderPanelHtml,
-} = require('./lib/ask-panel.js');
 
 /** 状态栏项(仅在桥连通时显示)。 */
 let statusBar = null;
@@ -56,16 +50,8 @@ let client = null;
 let pollTimer = null;
 /** 上次成功轮询的时间(状态栏 tooltip 用)。 */
 let lastPollAt = 0;
-/** 「问 DSH」面板:null = 没开。`{panel, state, mode}`(状态模型见 lib/ask-panel.js)。 */
-let askPanel = null;
-/** 宿主是否支持 DSH 页面里的悬浮对话框(0.2.5 探测;0.3.26 起不再自动启用)。 */
+/** 宿主是否已经把"对话框活着"证明给我们看(host 侧 askDialogLive:5 秒内收到过 /ask/state 轮询)。 */
 let askDialogSupported = false;
-/** 上一份对话流快照(host 只在变化时回传,这里兜住"没变化"的那些轮询)。 */
-let lastThreadSnapshot;
-/** 本扩展**当前持有**的对话流修订号(随请求上报;-1 = 一份都还没有 ⇒ host 必须发). */
-let lastThreadRev = -1;
-/** 扩展根目录(activate 时记下;面板要按它取 webview 产物 URI)。 */
-let extensionRoot = null;
 /** 是否已经确认过 host 端点可达(避免把"IDE 刚起、扩展先加载"误判为断线)。 */
 let connected = false;
 /** 诊断集合缓存:host 请求时现算,这里只做"有没有变化"的计数上报。 */
@@ -397,17 +383,6 @@ async function pollOnce() {
     }),
     diagnostics,
     at: Date.now(),
-    // 面板声明它要看哪个会话:host 据此对齐 `sessionController.follow` 订阅,
-    // 并用"有没有人在看"决定授权请求是先问面板还是直接交给 DSH 界面
-    // (见 host 侧 lib/bridge-thread.mjs / lib/bridge-approval.mjs)。
-    watch: askPanel !== null && askPanel.state.sessionId !== null ? [askPanel.state.sessionId] : [],
-    // 声明"本扩展懂对话流修订号"(0.2.9):host 才会在没变化时省略 thread 省流量。
-    // 不声明(旧扩展)时 host 照旧发整份快照 —— 否则旧扩展会误报"宿主没有对话流能力"。
-    threadRev: lastThreadRev,
-    // 声明"我这边能把授权卡片画出来"(0.3.30):面板开着 **且** 对话流正常(不是那条"宿主没有对话流能力"
-    // 的坏状态)。宿主只在它为 true 时才敢抢答授权 —— 否则"抢过来却没人看得见"就是用户遇到的
-    // "没弹出授权"(官方卡片被我们吞了,面板又不画)。
-    approvalsUi: askPanel !== null && askPanel.state.available === true,
   };
   const result = await client.sync(payload);
   if (result.ok !== true) {
@@ -429,28 +404,15 @@ async function pollOnce() {
     await handleEvent(event);
   }
   if ((result.events ?? []).length > 0) client.persist();
-  // 能力探测:宿主支持悬浮对话框(0.3.24)⇒ 右键提问不再开编辑器面板。
+  // 能力探测(0.3.24):宿主证明"DSH 页面里的对话框活着"⇒ 右键提问走 ask-open 事件。
+  // 0.3.59 起这是**唯一**的提问 UI(编辑器里的 webview 面板已退役):探测不到就只弹一条提示,
+  // 绝不退回到一扇用户看不见的窗。
   if (result.askDialog === true && !askDialogSupported) {
     askDialogSupported = true;
-    log('宿主支持 DSH 页面里的对话对话框(本版仍用编辑器面板,见 0.3.26 回退)');
-  }
-  // 对话流 + 授权待决:host 每趟把被观看会话的**新内容**与待决授权一起回来
-  // (见 host 侧 lib/bridge-thread.mjs / lib/bridge-approval.mjs),面板有变化才重画。
-  // 0.3.27 起 host **没变化就不带 thread**(省掉每 600ms 一份 ~1MB 的快照,那会把 /sync 拖成超时,
-  // 于是 approvals 也一起丢掉、卡片永远不出现)⇒ 这里沿用上一份快照。
-  if (askPanel !== null) {
-    const thread = result.thread !== undefined
-      ? result.thread
-      : (result.threadRev !== undefined ? lastThreadSnapshot : undefined);
-    if (result.thread !== undefined) lastThreadSnapshot = result.thread;
-    if (Number.isSafeInteger(result.threadRev)) lastThreadRev = result.threadRev;
-    // 刚开面板、手里还没有任何快照,而 host 说"没变化"(它只看到我们持有 -1)→ 等下一份,别误报
-    // "宿主没有对话流能力"(0.3.29)。
-    if (result.thread === undefined && lastThreadSnapshot === undefined) {
-      refreshAskPanel();
-      return;
-    }
-    if (applySync(askPanel.state, { ...result, thread })) refreshAskPanel();
+    log('宿主已证明「问 DSH」对话框活着:右键提问将打开 DSH 页面里的对话框');
+  } else if (result.askDialog !== true && askDialogSupported) {
+    askDialogSupported = false;
+    log('宿主不再报告对话框心跳(页面关了/刷新过):右键提问会给出提示');
   }
 }
 
@@ -504,152 +466,14 @@ function captureAskContext(mode) {
   };
 }
 
-/** 把状态推给面板(增量更新:输入框与滚动位置都不受影响)。 */
-function refreshAskPanel() {
-  if (askPanel === null) return;
-  void askPanel.panel.webview.postMessage(panelPayload(askPanel.state));
-}
-
-/** 面板进入错误态:状态行 + 最新一条本地提问都标上原因(绝不静默)。 */
-function failAskPanel(message) {
-  if (askPanel === null) return;
-  failPanel(askPanel.state, message);
+/** 提问对话框不可用时的提示(0.3.59 起不再退回编辑器面板 —— 那一半已退役)。 */
+function notifyAskDialogUnavailable() {
+  const message = '「问 DSH」对话框不可用:请在 DSH 页面里打开(或刷新)Code Server 标签后重试。';
   log(message);
-  refreshAskPanel();
+  void vscode.window.showInformationMessage(message);
 }
 
-/** 面板收到一条提问:投递到 DSH,**本地先乐观显示**,回答由 host 的对话流回填。 */
-async function sendAskFromPanel(text) {
-  if (askPanel === null || client === null) return;
-  // 用面板自己的意图(selection / file)取上下文:文件级提问永远不带行号。
-  const context = captureAskContext(askPanel.mode) ?? askPanel.state.context;
-  pendingQuestion(askPanel.state, text, context);
-  refreshAskPanel();
-  try {
-    const result = await client.ask({
-      text,
-      file: context === null ? null : context.file,
-      lineStart: context === null ? null : context.lineStart,
-      lineEnd: context === null ? null : context.lineEnd,
-      selection: context === null ? null : context.selection,
-      languageId: context === null ? null : context.languageId,
-    });
-    if (result.ok === true) {
-      askPanel.state.sessionId = typeof result.sessionId === 'string' ? result.sessionId : null;
-      askPanel.state.status = 'thinking';
-      log(`已投递编辑器消息(session=${result.sessionId ?? '?'})`);
-    } else {
-      failAskPanel(`未投递:${result.error ?? '未知原因'}`);
-      return;
-    }
-  } catch (error) {
-    const status = error && error.status;
-    failAskPanel(status === 409
-      ? 'DSH 里没有可投递的会话:请先在 DSH 里打开或新建一个会话。'
-      : (status === 401 || status === 503
-        ? '编辑器桥尚未就绪,请稍后重试。'
-        : `投递失败:${error && error.message ? error.message : error}`));
-    return;
-  }
-  refreshAskPanel();
-}
-
-/**
- * 面板对一条授权请求的决策 → `POST /approve`。
- *
- * 只接受白名单的两个值(host 侧同样只认这两个);失败必须说出来:面板里点不动的时候,
- * 用户唯一的线索就是这行状态/日志。
- */
-async function decideApproval(id, outcome) {
-  if (askPanel === null || client === null) return;
-  if (outcome !== 'allowed-once' && outcome !== 'rejected') return;
-  try {
-    await client.approve(id, outcome);
-    log(`面板授权决策已提交:${id} → ${outcome}`);
-  } catch (error) {
-    const status = error && error.status;
-    const message = status === 409
-      ? '这条授权请求已经过期或已被处理(DSH 界面里会弹同一张卡片)。'
-      : (status === 401 || status === 503
-        ? '编辑器桥尚未就绪,授权没有提交。'
-        : `授权提交失败:${error && error.message ? error.message : error}`);
-    // 卡片已经没意义了:本地撤掉,避免用户反复点。
-    askPanel.state.approvals = askPanel.state.approvals.filter((item) => item.id !== id);
-    failAskPanel(message);
-    return;
-  }
-  refreshAskPanel();
-}
-
-/**
- * 打开(或聚焦)「问 DSH」面板。
- * @param {'selection'|'file'} mode 提问意图(决定发送时带不带行号/选区),见 captureAskContext。
- */
-function openAskPanel(mode = 'selection') {
-  const contextInfo = captureAskContext(mode);
-  if (askPanel === null) {
-    // webview 产物是构建出来的(scripts/build-webview.mjs)。缺了就别开一个空白面板。
-    const webviewDir = vscode.Uri.joinPath(extensionRoot, 'webview');
-    const bundle = vscode.Uri.joinPath(webviewDir, 'thread.js');
-    const style = vscode.Uri.joinPath(webviewDir, 'thread.css');
-    if (!fs.existsSync(bundle.fsPath) || !fs.existsSync(style.fsPath)) {
-      const message = `面板产物缺失(${bundle.fsPath}):请重新安装插件,或在源码里跑 pnpm run build:webview`;
-      log(message);
-      void vscode.window.showErrorMessage(message);
-      return;
-    }
-    const panel = vscode.window.createWebviewPanel(
-      'dshAsk',
-      'DSH 对话',
-      // 对话框形状(0.2.4):开在**当前编辑器组**,占满工作台宽度 —— 不再用 `Beside` 挤成一条侧栏。
-      // 面板内容自己居中限宽,看起来就是编辑器上的一扇对话窗;右上角的 ✕ 关掉它。
-      { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        // 只允许加载扩展自己的 webview 目录(产物 + 字体),不给别的本地文件开口子。
-        localResourceRoots: [webviewDir],
-      },
-    );
-    askPanel = { panel, state: createPanelState(), mode };
-    panel.webview.html = renderPanelHtml({
-      cspSource: panel.webview.cspSource,
-      nonce: crypto.randomBytes(16).toString('base64url'),
-      scriptUri: panel.webview.asWebviewUri(bundle).toString(),
-      styleUri: panel.webview.asWebviewUri(style).toString(),
-    });
-    panel.webview.onDidReceiveMessage((message) => {
-      if (message === null || typeof message !== 'object') return;
-      if (message.type === 'ready') {
-        refreshAskPanel();
-        return;
-      }
-      if (message.type === 'ask' && typeof message.text === 'string') {
-        const text = message.text.trim();
-        if (text !== '') void sendAskFromPanel(text);
-        return;
-      }
-      if (message.type === 'approve' && typeof message.id === 'string') {
-        void decideApproval(message.id, message.outcome);
-        return;
-      }
-      if (message.type === 'close') {
-        // 面板上的 ✕:关掉它(= 不再看这个会话 ⇒ 待决授权立刻交回 DSH 界面,不用干等窗口)。
-        panel.dispose();
-      }
-    });
-    panel.onDidDispose(() => {
-      askPanel = null;
-    });
-  }
-  askPanel.state.context = contextInfo;
-  askPanel.mode = mode;
-  // 已经开着就提到前面(对话框不重复开)。
-  askPanel.panel.reveal(vscode.ViewColumn.Active, false);
-  refreshAskPanel();
-}
-
-/** 选中内容 → DSH(编辑器→DSH 的主入口):打开面板并带上当前上下文。 */
+/** 选中内容 → DSH(编辑器→DSH 的主入口):请宿主打开对话框并带上当前上下文。 */
 async function askAboutSelection() {
   await openAskPanelFor('selection');
 }
@@ -659,7 +483,7 @@ async function askAboutFile() {
   await openAskPanelFor('file');
 }
 
-/** 两个命令的公共前置检查(桥可用 + 有活动编辑器)。 */
+/** 两个命令的公共前置检查(桥可用 + 有活动编辑器 + 对话框活着)。 */
 async function openAskPanelFor(mode) {
   if (client === null || client.isDormant()) {
     vscode.window.showInformationMessage('编辑器桥未启用:请在 DSH 里打开 Code Server 标签后重试。');
@@ -669,25 +493,27 @@ async function openAskPanelFor(mode) {
     vscode.window.showInformationMessage('没有活动的编辑器:请先打开一个文件。');
     return;
   }
-  // 0.3.26 回退:提问**始终**开编辑器里的 webview 面板。
-  // 0.2.5/0.2.6 试过"浮在 DSH 页面上的对话框",但实测在编辑器侧看不到授权卡片,而面板这条路是
-  // 验证过的(0.3.22/0.3.23 实测卡片就在面板里)。功能优先:先把能看、能批授权的 UI 还给用户;
-  // 对话框那套(client 半部 + /api/code-server/ask/*)留着但**不再自动启用**。
-  // 0.3.30:把悬浮对话框还回来(用户要的形态),但只在宿主证明客户端半部在轮询时才用
-  // (askDialogSupported 现在等于 askDialogLive());否则安静退回编辑器面板 —— 两条路都能看能批授权。
-  if (askDialogSupported) {
-    try {
-      const result = await client.askOpen(mode);
-      if (result !== null && result.ok === true) {
-        log('已请宿主打开悬浮对话框(mode=' + mode + ')');
-        return;
-      }
-      log('宿主没有打开对话框(' + (result !== null && result.error ? result.error : '未知原因') + ')→ 退回编辑器面板');
-    } catch (error) {
-      log('ask-open 失败(' + (error && error.message ? error.message : error) + ') → 退回编辑器面板');
-    }
+  // 0.3.59:提问 UI 只有一处 —— **DSH 页面里的悬浮对话框**(面板本体在插件客户端半部:手写、不打包,
+  // 直接用页面模块表里的官方渲染器)。编辑器里的 webview 面板已退役:那份 1.4MB 产物 + esbuild +
+  // 十几个打包依赖,只为了兜底一条"宿主证明不了对话框活着"的路 —— 而那种情况下用户在编辑器里
+  // 看到的其实也不是他想要的对话(而且我们在 0.3.30 之后就从没走到过那条路)。
+  // 所以现在:拿不到心跳就**明确说清怎么办**,不再开一扇看不见的窗。
+  if (!askDialogSupported) {
+    notifyAskDialogUnavailable();
+    return;
   }
-  openAskPanel(mode);
+  try {
+    const result = await client.askOpen(mode);
+    if (result !== null && result.ok === true) {
+      log(`已请宿主打开「问 DSH」对话框(mode=${mode})`);
+      return;
+    }
+    log(`宿主没有打开对话框(${result !== null && result.error ? result.error : '未知原因'})`);
+    notifyAskDialogUnavailable();
+  } catch (error) {
+    log(`ask-open 失败(${error && error.message ? error.message : error})`);
+    notifyAskDialogUnavailable();
+  }
 }
 
 function showBridgeLog() {
@@ -699,9 +525,6 @@ function showBridgeLog() {
 function activate(context) {
   output = vscode.window.createOutputChannel('DSH Editor Bridge');
   context.subscriptions.push(output);
-
-  // 面板 webview 的产物按扩展根目录取 URI(0.2.3 起正文走官方渲染器,产物是打包出来的)。
-  extensionRoot = context.extensionUri;
 
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 90);
   context.subscriptions.push(statusBar);

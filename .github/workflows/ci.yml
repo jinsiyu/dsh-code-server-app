@@ -51,12 +51,9 @@ jobs:
       - name: 安装依赖(锁文件入库 ⇒ frozen;对不上就失败而不是默默改依赖)
         run: pnpm install --frozen-lockfile
 
-      - name: 构建「问 DSH」面板 webview(官方渲染器 + 设计令牌)
-        run: pnpm run build:webview
-
-      # 客户端半部不再有构建步骤(0.3.58 起 lib/client.js 是手写源码、入库、直接测),
-      # 所以只剩 webview 这一步要在测试之前跑。
-      # 必须在构建之后跑:test-webview-bundle 见到产物才真验(缺产物时它逐项 SKIP),
+      # 0.3.58 起客户端半部没有构建步骤(lib/client.js 是手写源码);
+      # 0.3.59 起「问 DSH」对话框的面板也在同一个文件里(webview 产物、build-webview.mjs、esbuild
+      # 与那批打包依赖一起删掉了)⇒ **整条测试链前面不再有任何构建**。
       # test-launcher-routes 在 runner 上找不到「内部依赖已建链接」的 VS Code 树 ⇒ 自己 SKIP 并 exit 0。
       # 日志与失败注解由 scripts/run-all-tests.mjs 自己负责(DSHCS_SUITE_LOG ⇒ 每个脚本的输出同时写进
       # 该文件,失败行转成 ::error:: annotation)。为什么不让工作流 tee:①GitHub 的 `shell: bash` 是
@@ -81,15 +78,5 @@ jobs:
         continue-on-error: true
         run: pnpm run vendor:check
 
-      # 只上传**构建产物**(webview);lib/client.js 从 0.3.58 起是入库的手写源码,不是构建产物,
-      # 放在这里会让"上传的东西"与"需要构建的东西"混淆。
-      - name: 上传构建产物(两个平台各一份)
-        uses: actions/upload-artifact@v7
-        with:
-          name: build-${{ matrix.os }}
-          if-no-files-found: error
-          retention-days: 14
-          path: |
-            assets/extensions/dshcs-editor-bridge/webview/thread.js
-            assets/extensions/dshcs-editor-bridge/webview/thread.css
-            assets/extensions/dshcs-editor-bridge/webview/THIRD-PARTY.md
+      # 不再有"构建产物"要上传:客户端半部(含对话框面板)是入库的手写源码,
+      # 唯一由 prepack 生成的是 vendor 树(那是重打包流程的输入,不进 CI 产物)。

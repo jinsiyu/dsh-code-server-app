@@ -46,10 +46,11 @@ const SUITE = [
   'test-edit-snapshot.mjs',
   'test-bridge-extension.mjs',
   'test-vendored-table.mjs',
-  'test-webview-bundle.mjs',
+  'test-ask-dialog.mjs',
   'test-client-bundle-cwd.mjs',
   'test-client-bundle-tabs.mjs',
   'test-client-entry.mjs',
+  'test-ask-panel-inline.mjs',
   'test-client-settings-seat.mjs',
   'test-launcher-routes.mjs',
 ];

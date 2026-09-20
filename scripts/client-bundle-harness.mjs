@@ -12,11 +12,17 @@
 // 提供的能力(刻意保持最小、够用即止):
 //   · window.__ModuleLoader__ / document / fetch / setInterval 桩;
 //   · 极简 react 桩:hook 按调用次数记账,effect **立即执行**(被测的正是 effect 里的请求与 iframe src);
+//     另有真的 Component(类组件/错误边界)+ Fragment;
+//   · 模块表桩:`react` / `react/jsx-runtime` / `react-dom/client` /
+//     `@deepseek-ai/dsh-client-ui-primitives` —— 「问 DSH」面板 0.3.59 起靠后两个渲染,所以
+//     `clientReactDom: false` / `clientPrimitives: false` 能模拟"异常宿主取不到种子词",
+//     用来钉住**降级路径**(正文 <pre>、按钮原生 button)而不是白屏;
 //   · slots 桩:`inject(name, factory)` **只在声明的插槽列表里回调**(复刻 DSH "插槽未被声明就不回调"
 //     的语义);register 把每个 entry 的 desc 与组件留下来;
-//   · 渲染:调一次组件(可选沿"函数子组件"下钻一层层调),返回它渲染出的元素树;
+//   · 渲染:调一次组件(可选沿"函数子组件"下钻一层层调;类组件实例化后取 render()),返回元素树;
 //   · `testHooks: true` 时先设 `window.__dshcsTestHooks = true`,于是入口会额外导出 `__internals`,
-//     让"纯函数单元套件"(工作区解析、全屏动作)不必为了可测而把模块拆出去(拆出去 = 又要有构建)。
+//     让"纯函数单元套件"(工作区解析、全屏动作、问 DSH 面板)不必为了可测而把模块拆出去
+//     (拆出去 = 又要有构建)。
 //
 // 用法:
 //   import { loadClientBundle } from './client-bundle-harness.mjs'
@@ -37,15 +43,27 @@ export const CLIENT_ENTRY = join(pkgRoot, 'lib', 'client.js');
 function createFakeReact() {
   let cells = [];
   let index = 0;
+  /** React 只在类组件里提供错误边界 ⇒ 桩里也要有一个真的 Component。 */
+  class Component {
+    constructor(props) { this.props = props === undefined || props === null ? {} : props; this.state = {} }
+
+    setState(patch) {
+      const next = typeof patch === 'function' ? patch(this.state) : patch;
+      this.state = { ...this.state, ...(next === undefined || next === null ? {} : next) };
+    }
+  }
   return {
     reset() { cells = []; index = 0 },
     React: {
+      Component,
+      Fragment: 'Fragment',
       createElement(type, props, ...children) {
         const next = { ...(props === null || props === undefined ? {} : props) };
         if (children.length === 1) next.children = children[0];
         else if (children.length > 1) next.children = children;
         return { type, props: next };
       },
+      memo(component) { return component },
       useRef(initial) {
         const at = index++;
         if (cells[at] === undefined) cells[at] = { current: initial };
@@ -59,20 +77,65 @@ function createFakeReact() {
       },
       useEffect(fn) { index += 1; const out = fn(); return typeof out === 'function' ? out : undefined; },
       useLayoutEffect(fn) { index += 1; const out = fn(); return typeof out === 'function' ? out : undefined; },
+      useMemo(fn) { index += 1; return fn() },
+      useCallback(fn) { index += 1; return fn },
       useSyncExternalStore(subscribe, getSnapshot) { index += 1; return getSnapshot(); },
     },
+  };
+}
+
+/**
+ * 官方 UI primitives 的桩(模块表种子词 `@deepseek-ai/dsh-client-ui-primitives`)。
+ *
+ * 形状照着 0.1.6-alpha.2 的 `.d.ts` 来 —— 面板只用到这五个名字,桩也只提供这五个:
+ * 多给会让"面板用了不存在的导出"这种错误在测试里查不出来。
+ *
+ * **`MarkdownText` 刻意做成 `React.memo` 对象而不是函数**:官方就是
+ * `export declare const MarkdownText: MemoExoticComponent<…>`,值是一个
+ * `{$$typeof: Symbol(react.memo), type}` 对象。(0.3.59 实测踩过:面板用 `typeof === 'function'`
+ * 判可用性,于是实机正文整个退成 `<pre>`,而桩当时是函数 ⇒ 单测全绿。)
+ */
+function createFakePrimitives(React) {
+  return {
+    MarkdownText: {
+      $$typeof: Symbol.for('react.memo'),
+      compare: null,
+      type: function MarkdownTextInner({ text, streaming, labels }) {
+        return React.createElement('div', {
+          className: 'stub-markdown', 'data-streaming': streaming === true, 'data-copy-label': labels.code.copyLabel,
+        }, text);
+      },
+    },
+    DisclosureRow(props) {
+      return React.createElement('div', {
+        className: 'stub-disclosure', 'data-title': props.title, 'data-open': props.open === true,
+        onClick: props.onToggle,
+      }, props.collapsedContent, props.children);
+    },
+    Button(props) {
+      return React.createElement('button', {
+        className: 'stub-button', 'data-variant': props.variant, disabled: props.disabled, onClick: props.onClick,
+      }, props.children);
+    },
+    IconThinkOutline14(props) { return React.createElement('i', { className: 'stub-icon-think', 'data-size': props.size }) },
+    IconContextInjectionOutline16(props) { return React.createElement('i', { className: 'stub-icon-context', 'data-size': props.size }) },
   };
 }
 
 function createFakeElement(tag) {
   const el = {
     tagName: String(tag).toUpperCase(),
-    style: {}, dataset: {}, attributes: {}, children: [], className: '', src: '',
+    style: {}, dataset: {}, attributes: {}, children: [], className: '', src: '', textContent: '',
+    listeners: {},
     setAttribute(name, value) { el.attributes[name] = String(value) },
     removeAttribute(name) { delete el.attributes[name] },
     hasAttribute(name) { return Object.prototype.hasOwnProperty.call(el.attributes, name) },
     appendChild(child) { el.children.push(child); return child },
     removeChild(child) { el.children = el.children.filter((c) => c !== child); return child },
+    addEventListener(type, fn) { (el.listeners[type] = el.listeners[type] || []).push(fn) },
+    removeEventListener(type, fn) { const list = el.listeners[type]; if (list !== undefined) el.listeners[type] = list.filter((f) => f !== fn) },
+    /** 测试用:手动触发已登记的事件(如头部 pointerdown、按钮 click)。 */
+    dispatch(type, event) { (el.listeners[type] || []).forEach((fn) => fn(event === undefined ? {} : event)) },
     getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 } },
     querySelector() { return null },
     closest() { return null },
@@ -128,9 +191,35 @@ export function loadClientBundle(options = {}) {
   assert.equal(loaded.length, 1, '入口应恰好调用一次 __ModuleLoader__.load');
   const entry = loaded[0];
   assert.equal(entry.id, 'dsh-code-server-app');
+  /** 面板挂载时建过的 React 根(断言"挂到哪、渲染了什么")。 */
+  const roots = [];
+  const primitives = createFakePrimitives(fake.React);
   const mod = entry.factory((name) => {
     if (name === 'react') return fake.React;
     if (name === 'react/jsx-runtime') return { jsx: fake.React.createElement, jsxs: fake.React.createElement };
+    if (name === 'react-dom/client') {
+      if (options.clientReactDom === false) {
+        throw new Error('client-modules: require("react-dom/client") missed the module table(测试:模拟异常宿主)');
+      }
+      return {
+        createRoot(container) {
+          const root = {
+            container,
+            rendered: null,
+            render(element) { root.rendered = element },
+            unmount() { root.rendered = null },
+          };
+          roots.push(root);
+          return root;
+        },
+      };
+    }
+    if (name === '@deepseek-ai/dsh-client-ui-primitives') {
+      if (options.clientPrimitives === false) {
+        throw new Error('client-modules: require("@deepseek-ai/dsh-client-ui-primitives") missed the module table(测试:模拟异常宿主)');
+      }
+      return primitives;
+    }
     throw new Error(`未知模块:${name}`);
   });
   assert.equal(typeof mod.apply, 'function');
@@ -166,12 +255,29 @@ export function loadClientBundle(options = {}) {
 
   /** 渲染一次:重置 hook 记账,再把**整棵树的函数组件都调用掉**(深度上限 8),
    *  直到剩下宿主元素与字符串 —— 断言才看得到真正的控件(如 textarea)与全部文案。
-   *  effect 立即执行(app 里真正的请求/iframe src 就发生在 effect 里)。 */
+   *  类组件(面板的错误边界)实例化后取 render();effect 立即执行(app 里真正的请求/iframe src
+   *  就发生在 effect 里)。 */
   function renderTree(node, depth) {
     if (node === null || node === undefined || depth > 8) return node;
     if (typeof node !== 'object') return node;
     if (Array.isArray(node)) return node.map((child) => renderTree(child, depth));
-    if (typeof node.type === 'function') return renderTree(node.type(node.props !== undefined ? node.props : {}), depth + 1);
+    let type = node.type;
+    // React.memo / forwardRef / lazy:对象形态的组件类型(官方 MarkdownText 就是 memo)⇒ 取它包着的那个。
+    if (type !== null && typeof type === 'object' && type.$$typeof !== undefined) {
+      type = type.type !== undefined ? type.type : type.render;
+      if (typeof type !== 'function') return node;
+      return renderTree({ type, props: node.props }, depth + 1);
+    }
+    if (typeof type === 'function') {
+      const props = node.props === undefined ? {} : node.props;
+      // 类组件不能当函数调(`Class constructor ... cannot be invoked without 'new'`)。
+      if (/^\s*class[\s{]/.test(Function.prototype.toString.call(type))) {
+        const instance = new type(props);
+        instance.props = props;
+        return renderTree(instance.render(), depth + 1);
+      }
+      return renderTree(type(props), depth + 1);
+    }
     const props = node.props === undefined ? {} : node.props;
     if (props.children === undefined) return node;
     return { type: node.type, props: { ...props, children: renderTree(props.children, depth + 1) } };
@@ -188,6 +294,10 @@ export function loadClientBundle(options = {}) {
     render,
     statusPayload,
     scopeSnapshot,
+    /** 面板挂载建过的 React 根(`{container, rendered}`);`rendered` 就是面板元素树。 */
+    roots,
+    /** 官方 UI primitives 的桩(面板用它渲染 MarkdownText / DisclosureRow / Button)。 */
+    primitives,
     /** 入口模块的导出(未开 testHooks 时没有 __internals)。 */
     exports: mod,
     /**

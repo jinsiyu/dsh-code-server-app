@@ -18,13 +18,14 @@
 原生模块(node-pty / @vscode/sqlite3 / spdlog …)由 `@jinsiyu/dshcs-*` 子包按**真名直接挂在插件依赖上**、按 os/cpu 自动选中 ——
 **无需全局 npm 安装、无需配置 `bin`、无需改 profile 配置、无需第二条安装命令、无需 argon2/C++ 工具链**。
 
-> 0.2.0 起:**argon2 与 code-server 的 136 个运行时依赖(express / proxy-agent / js-yaml / pem / limiter …)
-> 全部不再随包分发**(减少 ~34.5MB + 一条原生构建链);IDE 提供方式见下方「服务方式(serve)」。
-> 依据与实测证据见 `docs/analysis-code-server-as-dsh-plugin.md`(含子路径挂载、WS 路径、命名管道、fence 的逐项验证)。
+> **打包形态**:插件**不随包分发** argon2 与 code-server 的 136 个运行时依赖
+> (express / proxy-agent / js-yaml / pem / limiter …);IDE 由插件自己的 launcher 拉起内置的 VS Code 树,
+> 服务方式见下方「服务方式(serve)」。依据与实测证据见 `docs/analysis-code-server-as-dsh-plugin.md`。
 >
-> 0.3.22 起:「问 DSH」面板直接渲染 **DSH 官方的 markdown 结果**(与 DSH 界面同一份渲染器 + 同一套设计令牌,
-> 只渲染该会话的新内容),并且**就在面板里处理授权**(工作区外写入 / 执行命令)—— 详见
-> 「与 DSH 的协同:编辑器桥」与 `docs/analysis-code-server-as-dsh-plugin.md` 第 21 节。
+> **「问 DSH」对话框**:面板是 `lib/client.js` 里手写的 React 组件,渲染器直接 require DSH 页面模块表里的
+> `react-dom/client` 与 `@deepseek-ai/dsh-client-ui-primitives`(与界面同一份实例 ⇒ 排版、代码高亮、
+> 公式都一致,而且**不可能**版本错配),授权也在同一个对话框里就地处理 —— 详见
+> 「与 DSH 的协同:编辑器桥」。整条链上**没有任何构建步骤**。
 
 ## UI 载体与 DSH 版本要求(0.2.3 起只支持带右侧栏的 DSH)
 
@@ -221,53 +222,57 @@ DSH 用**资源地址**命名文件,`openFile` 只负责把地址交给右侧栏
 | 方向 | 能力 | 落地方式 |
 |---|---|---|
 | 编辑器 → agent | **未保存缓冲区**(磁盘内容 ≠ 用户所见)、活动文件与选区、**语言服务器诊断**(含 file:line、来源、code) | agent 工具 `editor_context` / `editor_diagnostics`;写脏文件前额外附一条提醒 |
-| 编辑器 → DSH | 选中代码 → 右键「DSH: 针对选中内容提问」→ 打开**提问面板**(带 `文件:行` 与选中内容);提问以**用户输入**进当前会话,该会话的**新内容**用 DSH 官方 markdown 渲染器显示在面板里 | 命令 `dsh-code-server.askAboutSelection`(编辑器右键菜单**最上面两条**之一)+ webview 面板 + `POST /ask` + `/sync` 的 `thread` 字段 |
-| DSH → 编辑器(授权) | agent 要**写工作区外的文件 / 执行命令**时的授权请求 → 面板里就地弹卡片(工具名 + 原因 + 倒计时),点「允许一次 / 拒绝」立刻生效 | `/sync` 的 `approvals` 字段 + `POST /approve`(桥里**唯一**的非只读路由,约束见「安全模型」) |
+| 编辑器 → DSH | 选中代码 → 右键「DSH: 针对选中内容提问」→ DSH 页面右下角弹出**提问对话框**(标题栏带 `文件:行`);提问以**用户输入**进当前会话,该会话的**新内容**用 DSH 官方 markdown 渲染器显示在对话框里 | 命令 `dsh-code-server.askAboutSelection`(编辑器右键菜单**最上面两条**之一)→ 桥 `POST /event {kind:'ask-open'}` → 客户端半部 `POST /api/code-server/ask/send` |
+| DSH → 编辑器(授权) | agent 要**写工作区外的文件 / 执行命令**时的授权请求 → 对话框里就地弹卡片(工具名 + 原因 + 倒计时),点「允许一次 / 拒绝」立刻生效 | `/api/code-server/ask/state` 的 `approvals` + `POST /api/code-server/ask/approve`(全插件**唯一**的写口令,约束见「安全模型」) |
 | agent → 编辑器 | agent 改了哪个文件 → 开**原生 diff** 审阅(左 = **写前的完整原文**,右 = 磁盘现状);缓冲区有未保存改动时**告警而不覆盖** | host 在 `tools/post-execute` 取 `result.value.before`(完整写前全文)存入有界快照缓存 → `tools/result` 的事件带不透明 key → 扩展轮询后取回原文并开 diff + 非模态告警 |
 
 - 工具只在桥就绪时注册(IDE 没起来时模型看不到"有个用不了的工具");提示词段落也只在桥存活时渲染。
-- **提问面板**(扩展 0.2.0 起;0.2.3 起正文走官方渲染器;0.2.5 起是**浮在 DSH 界面上的对话框**):
-  右键命令不再开编辑器里的面板(那是编辑器的一个 tab/一列,怎么开都不像对话框),而是让 DSH 页面里的
-  插件客户端弹出一个**可拖动、可缩放的浮动对话窗**(右下角,✕ 关闭),不占编辑器版面;
-  面板开着的**同时**还能改选区再问。老宿主(探测不到对话框能力)才退回编辑器里的 webview 面板。
-  两个命令的**意图分开记**(0.3.21):「针对选中内容提问」只有真的选了内容才带**行区间 + 选区正文**;
+- **提问对话框**:右键命令只向宿主上报意图,真正的对话框由 DSH 页面里的插件客户端弹出 ——
+  **可拖动、可缩放**(右下角,✕ 关闭),不占编辑器版面;对话框开着的**同时**还能改选区再问。
+  宿主证明不了对话框活着(页面没开 / 浏览器还缓存着旧客户端)时只给一条
+  「请在 DSH 页面里打开(或刷新)Code Server 标签」的提示 —— 扩展里**没有第二套提问 UI**。
+- **两个命令的意图分开记**:「针对选中内容提问」只有真的选了内容才带**行区间 + 选区正文**;
   「针对当前文件提问」**永远不带行号、不带选区** —— 光标停在哪一行跟问题无关,行号只会误导 agent;
-  没选区时用选中命令提问也会退化成纯文件。
-- **注入的上下文是折叠的**(0.3.24):桥拼进消息的位置行 + 选区代码块会被拆出来,显示成一行默认收起的
+  没选区时用选中命令提问也会退化成纯文件。上下文由宿主从它缓存的编辑器状态里取,扩展只上报意图。
+- **追问跟着 DSH 自己的设置投递**:DSH 的 `ui-conversation.busyEnter`(设置 → 对话:「忙碌时按 Enter」)
+  取值只有 `queue`(默认)与 `steer`。面板里按 Enter 与主界面里按 Enter 是同一个手势,所以读同一个值:
+  `steer` ⇒ 宿主用 `agent.steer()`,追问在**当前轮的下一个步骤边界**被读到(当轮就能回应);
+  `queue` ⇒ 宿主用 `agent.followup()`,排到**下一轮**、不打扰当前轮。读不到这个设置(命名空间未注册 /
+  极简组合)· 老宿主上没有 `agent.steer` ⇒ 一律退回 `queue`,绝不因为设置而投不出去。
+  面板状态行会**说清用的是哪种**(「已插入当前轮…」/「已排入下一轮…」)—— 因为 `queue` 期间
+  **DSH 主界面看不到这条消息**:它进的是宿主侧待发队列(`next-turn`),而主界面客户端不渲染待发队列
+  (只有它成为自己那一轮时才进聊天流)。这不是消息丢了。
+- **注入的上下文是折叠的**:桥拼进消息的位置行 + 选区代码块会被拆出来,显示成一行默认收起的
   「上下文」(点开才看得到那段代码),气泡里只留你的原话 —— 与 DSH 界面处理注入上下文的方式一致。
-- **面板里的正文就是 DSH 的渲染结果**(0.3.22):面板打包了 DSH 官方的 markdown 渲染器
-  (`@deepseek-ai/dsh-client-ui-primitives` 的 `MarkdownText`)与官方设计令牌 —— 同一套 micromark/mdast 管线、
-  同一个增量流式解析器、同一个 shiki 高亮(启动集 typescript / shellscript / json)、KaTeX 公式、同样的标题与表格排版。
-  只渲染**新内容**(从面板订阅那一刻起),**不重放历史**、没有"加载更早"。
-- **思考过程也照官方显示**(0.3.23):助手的 reasoning 以「思考」行出现 —— **默认收起**、收起时显示首行
+- **正文就是 DSH 的渲染结果**:正文交给 DSH 官方的 markdown 渲染器
+  (`@deepseek-ai/dsh-client-ui-primitives` 的 `MarkdownText`)—— 同一套 micromark/mdast 管线、
+  同一个增量流式解析器、同一个 shiki 高亮(走 DSH 自己的懒加载语法集)、KaTeX 公式、
+  同样的标题与表格排版。只渲染**新内容**(从对话框订阅那一刻起),**不重放历史**、没有"加载更早"。
+  官方部件取不到时降级成纯文本 `<pre>`,不白屏。
+- **思考过程也照官方显示**:助手的 reasoning 以「思考」行出现 —— **默认收起**、收起时显示首行
   (流式时显示最新一行)、点整行展开全文,用的就是官方 `DisclosureRow` + 官方的思考图标与排版语言。
-- **授权就在面板里处理**(0.3.22;0.3.23 修好窗口):面板打开着的时候,该会话的授权请求**先问面板**(默认 5 分钟),
-  点「允许一次」/「拒绝」立刻生效;**关掉面板**或等满窗口就把请求**原样交回官方链路**(DSH 界面照旧弹卡)。
-  0.3.22 的 8 秒窗口对人来说太短 —— 卡片还没读完按钮就灰了(实测反馈「授权框失效了」),现在窗口是 5 分钟,
-  而且面板一关就立刻交回、不干等。
-  **永不自动放行** —— `allowed-once` 只能来自你的一次点击,面板里没有"以后都允许"这种入口。
-- 提问进 DSH 会话时是**普通用户消息**(`source: { kind: 'user' }`,host 0.3.19 修正):早期版本用
-  `{kind:'plugin'}` 会被 DSH 渲染成"上下文更新",看起来不像自己说的话;来源信息靠正文首行
-  `From the editor: <file>[:<行>]` 保留。
-- **只读 + 一个受限例外**:桥不写文件、不改文档、不执行命令;唯一的非只读路由是 `POST /approve`,
-  它只能**回答**已经存在的授权请求(见「安全模型」第 2 条)。agent 的写操作仍然全部走它自己的 `fs` 工具,
-  桥只是"知道它写了什么"、并把你对授权的答复带回去。
+- **授权就在对话框里处理**:对话框打开着的时候,该会话的授权请求**先问对话框**(5 分钟窗口),
+  点「允许一次」/「拒绝」立刻生效;**关掉对话框**或等满窗口就把请求**原样交回官方链路**(DSH 界面照旧弹卡)。
+  **永不自动放行** —— `allowed-once` 只能来自你的一次点击,对话框里没有"以后都允许"这种入口。
+- 提问进 DSH 会话时是**普通用户消息**(`source: { kind: 'user' }`):来源信息靠正文首行
+  `From the editor: <file>[:<行>]` 保留,面板把它折成「上下文」行。
+- **桥完全只读**:不写文件、不改文档、不执行命令 —— 四条路由(`/health`、`/sync`、`/old`、`/event`)都是读的。
+  唯一能改状态的是 DSH 同源的 `POST /api/code-server/ask/approve`,它只能**回答**已经存在的授权请求
+  (见「安全模型」第 2 条)。agent 的写操作仍然全部走它自己的 `fs` 工具,桥只是"知道它写了什么"、
+  并把你对授权的答复带回去。
 - 编辑器侧的入口还有状态栏的 `$(plug) DSH`(连通时显示,点击打开日志),日志在输出面板
   「DSH Editor Bridge」里 —— 出问题时先看它。
-- **扩展装在内置目录**(0.3.12 修正):`dshcs-editor-bridge` 与 `dshcs-open-file` 一样装进
-  `<树>/lib/vscode/extensions/`。0.3.0–0.3.11 装的是用户级目录,而 VS Code 服务端会把
-  "在用户扩展目录里、不在任何 profile 清单里"的扩展标进 `.obsolete`(日志 `Marked extension as removed`)
-  并永远跳过它 —— 每一轮启动都再标一次,**桥因此从来没有上报过状态**。
+- **扩展装在内置目录**:`dshcs-editor-bridge` 与 `dshcs-open-file` 一样装进 `<树>/lib/vscode/extensions/`
+  —— 用户级目录里那个会被 VS Code 服务端标进 `.obsolete`(日志 `Marked extension as removed`)并永久跳过。
   要关掉桥请用插件设置 `editorBridge=false`(不挂桥、不注册工具),不要再指望在扩展视图里卸载它。
 
 ### 三条通道(0.3.13 起走**本机 IPC**:Windows 命名管道 / unix socket)
 
 ```
-扩展 → host     POST /code-server-bridge/sync    一趟来回:上报编辑器状态(+ 面板在看哪个会话)+ 取回待处理事件与对话流
-扩展 → host     POST /code-server-bridge/ask     把编辑器里的提问投进当前会话
-扩展 → host     POST /code-server-bridge/approve 回答一条**已经存在**的授权请求(唯一的非只读路由)
+扩展 → host     POST /code-server-bridge/sync    一趟来回:上报编辑器状态 + 取回待处理事件与能力位
 扩展 → host     GET  /code-server-bridge/health  无鉴权探活(便于重启后一眼确认)
-扩展 → host     POST /code-server-bridge/event   扩展上报打开/关闭文件等(进 host 日志尾)
+扩展 → host     GET  /code-server-bridge/old     取一份"写前原文"快照(事件里只带不透明 key)
+扩展 → host     POST /code-server-bridge/event   上报意图:请宿主打开对话框 / 打开·关闭文件等(进 host 日志尾)
 host  → 扩展    <extensionsDir>/.dshcs-bridge/bridge.json  端点 + 令牌(扩展每 5s 重读)
                 (同一份内容还会写到**内置扩展旁边** `<树>/lib/vscode/extensions/.dshcs-bridge/` ——
                  环境变量只在 host spawn IDE 时注入,而被**接管**的 IDE 是上一次启动的进程、拿不到它,
@@ -275,14 +280,17 @@ host  → 扩展    <extensionsDir>/.dshcs-bridge/bridge.json  端点 + 令牌(�
 ```
 
 请求走 `http.request({ socketPath })`(`fetch` 不支持 socket),**不开任何端口**。
+这四条**全部只读**;提问与授权答复不走桥,而在 DSH 同源的 `/api/code-server/ask/*` 上
+(调用方是 DSH 页面里的插件客户端,吃 DSH 自己的 cookie/Origin 校验)。
 
-`/sync` 的响应里，面板真正用到的三段(0.3.22):
+对话框真正用到的四段状态(`GET /api/code-server/ask/state?rev=N`;没变化只回一个数字):
 
 | 字段 | 内容 | 面板怎么用 |
 |---|---|---|
-| `thread` | 被面板 `watch` 的会话的**新内容**条目(user / assistant / tool / approval),有界:每会话 ≤120 条、单条正文 ≤8000 字符、同时 watch ≤4 个会话 | 助手正文交给官方渲染器;工具与授权是紧凑摘要行 |
-| `approvals` | 待决授权请求 `[{id, toolName, reason, at}]`(≤4 条) | 弹卡片 + 倒计时;点按后 `POST /approve` |
-| `approvalHoldMs` / `uiVersion` | 授权窗口长度(默认 300000ms = 5 分钟)/ DSH 界面版本 | 倒计时基准;渲染器版本不一致时提示 |
+| `entries` | 被对话框 `watch` 的会话的**新内容**条目(user / assistant / tool / approval),有界:每会话 ≤120 条、单条正文 ≤8000 字符、同时 watch ≤4 个会话 | 助手正文交给官方渲染器;工具与授权是紧凑摘要行 |
+| `approvals` | 待决授权请求 `[{id, toolName, reason, at}]`(≤4 条) | 弹卡片 + 倒计时;点按后 `POST /ask/approve` |
+| `approvalHoldMs` | 授权窗口长度(默认 300000ms = 5 分钟) | 倒计时基准 |
+| `contextText` / `mode` | 标题栏那一行(来自宿主缓存的编辑器状态)+ 提问意图 | 标题栏文案;`mode` 决定发送时带不带行号/选区 |
 
 > **为什么不是 HTTP(0.3.13 定论,三条都实测过)**
 > 1. **desktop 根本没有 HTTP 面**:渲染进程经 Electron IPC 调 `host.fetch()`
@@ -331,7 +339,7 @@ seq,并且 `/sync` 回应里带 `lastSeq`(高水位),扩展据此自查游标是
    (c) `outcome` 只接受 `allowed-once` / `rejected`,**没有"永久允许"**;
    (d) 没有面板在看 / 面板关掉 / 窗口超时(默认 5 分钟)→ **交回官方链路**,绝不自动放行
    (DSH 的 `approval/request` 本身 fail closed,这里只能把"没人答"保持成"没人答")。
-   `pnpm test:webview-bundle` 里有针对这四条与宿主侧白名单的断言。
+   `pnpm test:ask-dialog` 里有针对这四条与宿主侧白名单的断言。
 3. **带 `Origin` 的请求一律 403。** 浏览器发起必带 Origin(含沙箱 iframe 的 `Origin: null`),
    扩展宿主是 Node 进程、不带。判定顺序上 Origin **先于令牌** —— 否则等于给浏览器一个
    "令牌猜对没有"的 oracle。
@@ -409,8 +417,9 @@ seq,并且 `/sync` 回应里带 `lastSeq`(高水位),扩展据此自查游标是
 - process 生命周期由 host 插件管理:启动写 `$DSH_HOME/code-server/pid.json`,停止树级终止(taskkill /T 或进程组 SIGKILL),
   崩溃/退出实时更新状态;DSH host 重启后自动 adopt 仍在运行的实例(校验 pid + /healthz),不重复启动、不误杀别的进程;
 - `node_modules`、`vendor/` 与 `repack/` 已被 `.gitignore` 排除,推送/克隆仓库后按下方
-  "打包(如何出包)"执行 `pnpm install` → `pnpm run vendor:vscode` → `pnpm run build:webview` →
-  (发布预编译原生包)→ `pnpm pack` + `dsh plugin --profile web add` 即可(客户端半部不再有构建步骤)。
+  "打包(如何出包)"执行 `pnpm install` → `pnpm run vendor:vscode` →
+  (发布预编译原生包)→ `pnpm pack` + `dsh plugin --profile web add` 即可
+  (客户端半部与提问面板都是入库的手写源码 —— 整条链上**没有任何构建步骤**)。
 
 > 本机(BM: Windows 11 ARM64)实测:树/依赖全链路是"平台子包直挂插件依赖"供给 ——
 > 树包 `@jinsiyu/dshcs-vscode-server`(当前 4.137.0,50.8 MB tgz)、纯 JS 内部依赖与 8 个平台无关
@@ -423,23 +432,21 @@ seq,并且 `/sync` 回应里带 `lastSeq`(高水位),扩展据此自查游标是
 
 ```powershell
 cd C:\Users\User\Desktop\dsh-code-server-app
-pnpm install             # 开发依赖(esbuild + 官方渲染器打包依赖);allowBuilds 已显式声明 → 不执行任何 postinstall
-pnpm run build:webview   # 「问 DSH」面板:官方 markdown 渲染器 + 面板外壳 → webview/thread.{js,css}(不入库,必须先构建)
+pnpm install             # 开发依赖只剩 1 个(@deepseek-ai/schemastery);allowBuilds 已显式声明 → 不执行任何 postinstall
 pnpm run vendor:check    # 可选:查看内置 VS Code 树版本 vs code-server 最新版
 pnpm run vendor:vscode                            # ① 生成 vendor/vscode(精简 VS Code 树,≈197MB)
 pnpm run repack:build -- --target win32-arm64,win32-x64 --pack   # ② 统一脚本产出全部子包(见下表)
 pnpm run publish:repacks                         # ③ 发布全部 @jinsiyu/* 子包(默认 dist-tag = next)
-pnpm pack                                        # ④ → dsh-code-server-app-<version>.tgz(约 750KB,含面板渲染器产物)
+pnpm pack                                        # ④ → dsh-code-server-app-<version>.tgz
 pnpm run publish:plugin                          # ⑤ 发布插件本体(默认 dist-tag = next)
 # 用户重启 dsh web 确认无误后,再把 latest 推进到该版本:
 pnpm run promote -- <version>
 ```
 
-> `build:webview` 会把 DSH **官方**的 markdown 渲染器与设计令牌打进面板产物(≈1.34MB:JS 996KB +
-> CSS 87KB + KaTeX 字体 254KB),所以它要求本机有 DSH 部署:脚本读部署里 `@deepseek-ai/dsh-web-frontend`
-> 的版本,与 devDependency 钉住的渲染器版本比对,**不一致就报错退出**(`--allow-version-mismatch` 才放行)。
-> 它与 `lib/client.js` 同一约定:产物不入 git,`prepack` 里会自动重跑。
-> 细节(为什么不是 iframe、令牌从哪来、体积取舍)见 `docs/analysis-code-server-as-dsh-plugin.md` 第 21 节。
+> **这条链上没有构建步骤**:`lib/client.js` —— 包含「问 DSH」对话框的面板 —— 就是入库的手写源码,
+> 扩展也是纯 JS。所以 `prepack` 只剩 `vendor:vscode` 一步,发布包里没有任何前端产物,
+> `devDependencies` 只剩一个(`@deepseek-ai/schemastery`,测试用)。
+> 面板与 DSH 页面的历史分析(按版本分段)见 `docs/analysis-code-server-as-dsh-plugin.md`。
 
 > **dist-tag 政策(必须遵守)**:发布一律发到 **`next`**,**不动 `latest`**;
 > `latest` 只保留「最近一个确认无 bug 的版本」,由 `pnpm run promote -- <version>`
@@ -494,14 +501,15 @@ pnpm test:apply              # 桩 ctx 下跑通 apply(回归:apply 期的 Refer
 pnpm test:claim-types        # 认领类型语法与默认值
 pnpm test:bridge-routes      # 编辑器桥:路由表白名单(只读 + /approve + /old)/ Origin 与令牌的判定顺序 / 令牌头三处一致
 pnpm test:edit-snapshot      # 写前原文快照:从 tools/post-execute 的 value 取完整 before / 路径按会话 cwd 绝对化 / 缓存三重有界 / /old 的 400-404-200
-pnpm test:bridge-extension   # 编辑器桥扩展侧纯逻辑:未保存缓冲区上报、诊断排序截断、diff 判据(old 侧优先级)、投递降级、面板状态机
-pnpm test:webview            # 面板 webview 产物:官方渲染器与令牌打包、版本一致、/approve 的四条约束(先跑 build:webview)
+pnpm test:bridge-extension   # 编辑器桥扩展侧纯逻辑:未保存缓冲区上报、诊断排序截断、diff 判据(old 侧优先级)、投递降级、提问意图与"对话框不可用给提示"
+pnpm test:ask-dialog         # 「问 DSH」对话框的接线:没有产物/构建链了、宿主 4 条 ask 路由、扩展只上报编辑器状态、授权四条、桥的安全不变式
 pnpm test:launcher-routes    # launcher 的 HTTP 面(起真进程,较慢)
 pnpm test:workspace-switch   # 切工作区不重启进程
 pnpm test:workspace-cwd      # "当前工作区目录"解析:DSH 0.1.6-alpha.2(sessionId)与旧版(current)两套形状
 pnpm test:client-cwd         # 同一件事但直接对**客户端入口** lib/client.js 验(注册出来的 body 真发不发 cwd、URL 带不带 folder)
 pnpm test:client-tabs        # "DSH 侧只留一个 code-server 标签页":新标签挂载时收掉同窗格旧标签(跨窗格/不可见时不动)
-pnpm test:client-entry       # 客户端入口守卫:经典脚本+工厂包装、require 白名单、src/ 已消失、与 lib/claim-types.js 逐字一致
+pnpm test:client-entry       # 客户端入口守卫:经典脚本+工厂包装、require 白名单(= DSH 模块表种子词)、src/ 已消失、与 lib/claim-types.js 逐字一致
+pnpm test:ask-panel          # 「问 DSH」对话框面板(0.3.59 起手写):注入机制已下线、视图白名单、注入 CSS 的选择器/var() 安全、六种条目与授权卡片、三条消息落点、拿不到官方部件时的降级
 pnpm test:client-seat        # 设置卡住哪个座位:插件页 plugins.bundle.config(DSH ≥ 0.1.6-alpha.2)vs settings.plugin.item(≤ alpha.1;新版已退役)
 pnpm test:fullscreen         # 打开标签即全屏
 pnpm test:vendored           # 重打包表 ↔ 插件依赖表一致(无 npm: 别名 / 无聚合包 / vendored.json 进了 files)
@@ -536,8 +544,8 @@ pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**�
 
 | 工作流 | 触发 | 做什么 |
 |---|---|---|
-| `ci.yml` | push `main` / PR / 手动 | `ubuntu-latest` + `windows-latest` 双平台:`pnpm install --frozen-lockfile` → `build:webview` → `pnpm test`(全套回归)→ `vendor:check` 只报告版本差 → 上传面板产物 |
-| `release.yml` | 推 `v<version>` 标签 / 手动(演练,不发布) | 按 `dependencies` 钉的版本准备 `vendor/vscode` → 构建 → 全套回归 → `pnpm pack` → 校验 tarball 清单 → **真装两遍**(windows-latest 验 win32 的 16 个子包、ubuntu-latest 验 Linux 的 10 个:各部署一份真 DSH,走官方路径 `dsh plugin --profile web add <tgz>`,再跑 `test:installed` + `dump-config` 断言;两条腿都过才允许发布)→ 发 npm **`next`** → 建 GitHub Release(附 tgz) |
+| `ci.yml` | push `main` / PR / 手动 | `ubuntu-latest` + `windows-latest` 双平台:`pnpm install --frozen-lockfile` → `pnpm test`(全套回归;0.3.59 起**前面没有任何构建步骤**)→ `vendor:check` 只报告版本差 |
+| `release.yml` | 推 `v<version>` 标签 / 手动(演练,不发布) | 按 `dependencies` 钉的版本准备 `vendor/vscode` → 全套回归 → `pnpm pack` → 校验 tarball 清单 → **真装两遍**(windows-latest 验 win32 的 16 个子包、ubuntu-latest 验 Linux 的 10 个:各部署一份真 DSH,走官方路径 `dsh plugin --profile web add <tgz>`,再跑 `test:installed` + `dump-config` 断言;两条腿都过才允许发布)→ 发 npm **`next`** → 建 GitHub Release(附 tgz) |
 | `repacks.yml` | 手动(`publish` / `probe_oidc` 默认 **false**,四条腿的 `build_*` 默认 **true**)/ push 本文件 / push `.github/oidc-probe.enabled` | **平台专属子包(`@jinsiyu/dshcs-*`)的构建与发布**:同架构宿主 runner 各打一条(`win32-x64` → `windows-latest`、`win32-arm64` → `windows-11-arm`、`linux-x64` → `ubuntu-latest`、`linux-arm64` → `ubuntu-24.04-arm`),默认只构建 + 传 `repack/tgz/*.tgz`(**不发布**,所以它同时就是 Linux 可行性验证的正式位置);勾上 `publish` 才发 npm(默认 `next`)。发布归属与顺序(**五条腿、集合不相交**):**先跑** `independent`(windows-latest,产 **VS Code 树包 + 8 个平台无关重打包包** —— 它们在四个目标上是同一份产物,所以只发这一次);四条平台专属腿 `needs: independent`、构建带 `--skip-independent`、发布带 `--only <自己的目标>` ⇒ 基础层出问题时后面不会发出"半套"子包,也不会有人重复发同一个包名。**认证**:没配 `NPM_TOKEN` 就走 OIDC(per-package Trusted Publisher,workflow 都填 `repacks.yml`,见下)。Linux 腿还会顺带校验「Linux 上生成的 `lib/vendored.json` / `package.json` 与仓库里的一致」(平台政策应当宿主无关)。额外有一个 `probe-oidc` job:对几个真实子包名做**只暂存、不发正式版**的巡检,用来证明这条 OIDC 通道真的可用 |
 
 ### Linux 适配(x64 / arm64):改了什么、还差什么
@@ -704,8 +712,6 @@ pnpm run promote -- 0.3.47                 # 4) 确认无误后推 latest(手动
     收尾:把暂存的探针版本**reject** 掉(`npm stage list` 看 id、`npm stage reject <id>`,需要你本机的 2FA;
     npm 网页上也有对应的 staged 列表)——**不要 approve**,approve 才会让它变成正式版本。
     验证完删掉哨兵文件,工作流就恢复"不自动巡检"。
-- **可选**仓库 Variables `DSH_UI_VERSION` = 当前部署里 `@deepseek-ai/dsh-web-frontend` 的版本:设了之后
-  `release.yml` 会强制面板渲染器版本与部署一致(本机 `build:webview` 本来就会比,runner 上没有 DSH 部署)。
 
 几条必须知道的:
 
@@ -716,7 +722,7 @@ pnpm run promote -- 0.3.47                 # 4) 确认无误后推 latest(手动
   树版本不同步(反而会把「树包精确钉版本」搞挂)。打包只在 `release.yml` 里做,且显式
   `node scripts/vendor-vscode-server.mjs --version <pinned>`。
 - **发布门禁**(任一不过即中止,`next` 不会被推进):tag ≠ `package.json.version`、该版本已存在于 npm、
-  树包版本不一致(`test:vendored` 的「树包精确钉版本」断言)、回归失败、`DSH_UI_VERSION` 不匹配。
+  树包版本不一致(`test:vendored` 的「树包精确钉版本」断言)、回归失败、tarball 清单与两条真装腿的断言。
 - 首次发布必须用一个**没发过的版本号**(npm 版本不可变);`release.yml` 支持 `workflow_dispatch` **演练**
   (完整跑一遍但不发布、不建 Release),建议先演练一次再打真 tag。
 - 锁文件 `pnpm-lock.yaml` **已入库**(CI 用 `--frozen-lockfile` 做可复现安装,缓存 key 也靠它);它不在
@@ -814,32 +820,59 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
 
 > 安装/依赖变化后请**重启 `dsh web`**(静态插件行与 host 探测路径在启动时加载)。
 
-### 客户端半部为什么没有构建步骤(0.3.58 起)
+### 客户端半部:为什么没有构建步骤
 
-**`lib/client.js` 就是源码** —— 手写、入库、不压缩。删掉的东西:`src/**`(5 个 ES 模块)、
-`scripts/build-client.mjs`、`client.banner.js` / `client.footer.js`,以及 `prepack`/CI/release 里的
-`build:client` 步骤。
+**`lib/client.js` 就是源码** —— 手写、入库、不压缩。它同时是:右侧栏标签里的常驻 IDE 面、
+「问 DSH」对话框的面板、设置卡/设置页。整条链上没有中间产物、没有构建器,也不会"忘了重建"。
 
-为什么可以去构建:DSH 用经典 `<script src>` 加载客户端入口(`/plugins/<包名>/client.js`),它**只能是**
+为什么可以这样:DSH 用经典 `<script src>` 加载客户端入口(`/plugins/<包名>/client.js`),它**只能是**
 一个文件、且必须是 `window.__ModuleLoader__.load({id, factory})` 形态(不能是 ES module;包内分块只能
-`require.async('client.*.js')`,本插件用不到)。既然产物只能是单文件,就把它当源码维护 ——
-没有中间产物、没有构建器、也不会"忘了重建"。
+`require.async('client.*.js')`,本插件用不到),而它需要的一切(React、官方 UI 部件)都能从
+DSH 自己的模块表里 `require` 到。
 
 代价与约束(改 `lib/client.js` 前先读):
 
 | 约束 | 为什么 | 谁守着 |
 |---|---|---|
 | 顶层不许 `import`/`export`/`await` | 经典脚本里它们是语法错误 ⇒ 整个客户端半部不加载(界面全空) | `pnpm test:client-entry` 的 E1 + harness 真加载(E3) |
-| `require(...)` 只允许 `react` / `react/jsx-runtime` | DSH 冻结模块表,别的会抛"未知模块" | E1 |
-| 各段落的顶层标识符共享同一作用域 | 内联后 `var`/`function` 撞名是**静默覆盖**(实测:`surface.js` 与 `factory.js` 都叫 `state`,已把前者改名为 `surfaceState`) | 无自动守卫 ⇒ 新增顶层名字前先搜一遍 |
+| `require(...)` 只能是 DSH 模块表的种子词(`react` / `react/jsx-runtime` / `react-dom/client` / `@deepseek-ai/dsh-client-ui-primitives`) | DSH 冻结模块表,别的会抛"未知模块" | E1(有本机 DSH 安装时还会拿它真实的 `staticModules` 逐词核对) |
+| 各段落的顶层标识符共享同一作用域 | `var`/`function` 撞名是**静默覆盖**(面板与常驻面都叫过 `state`,已改名 `surfaceState`) | 无自动守卫 ⇒ 新增顶层名字前先搜一遍 |
 | `lib/claim-types.js` 的那份是**副本** | 客户端拿不到 host 模块(经典脚本 + 冻结模块表) | E2 逐字比对四组样例 |
+| 面板段的额外约束(选择器、`var()` fallback、hook 组件写法、降级路径) | 见下一节 | `pnpm test:ask-panel` 的 P1–P6 |
 
-体积:未压缩 ~114 KB(原压缩产物 49.7 KB)—— 一次下载、rev 机制与缓存策略不变。
+体积:未压缩 ~145 KB —— 一次下载,rev 机制与缓存策略不变。
 测试钩子:入口在 `window.__dshcsTestHooks === true` 时额外导出 `__internals`(供
-`test-workspace-cwd.mjs` / `test-sidebar-fullscreen.mjs` 直接调纯函数),DSH 永不设置该标志。
+`test-workspace-cwd.mjs` / `test-sidebar-fullscreen.mjs` / `test-ask-panel-inline.mjs` 直接调内部函数),
+DSH 永不设置该标志。
 
-> 面板 webview 的产物**仍是构建产物**(`thread.{js,css}` 不入库、`pnpm run build:webview`),
-> 它的"去构建"排在下一期。
+### 「问 DSH」对话框:为什么没有构建步骤
+
+对话框的面板(对话流 / 思考折叠行 / 授权卡片 / 输入框)就在 `lib/client.js` 里 —— 手写、入库、
+没有产物、没有 `/ask/bundle`、不往页面注入 `<script>`、也不需要假的 `acquireVsCodeApi`。
+
+它凭什么能不打包:对话框本来就跑在 **DSH 页面里**,而壳的模块表(`dsh-web-frontend` 的
+`staticModules`)已经冻结了 `react` / `react/jsx-runtime` / `react-dom` / `react-dom/client` /
+`@deepseek-ai/dsh-client-ui-primitives` / … —— 面板直接 `require` 它们:
+
+- 渲染器、设计令牌、KaTeX 样式、shiki 语法集**全部由页面提供**(与 DSH 界面**同一份实例**)
+  ⇒ 排版与界面一致,而且**不可能**版本错配;
+- 面板用 `require('react-dom/client')` 给自己的容器建 React 根(容器是对话框自己的 div);
+- 打开对话框没有"取文本 + 解析 + 执行"这一等 —— 没有产物可等。
+
+代价与约束:
+
+| 约束 | 为什么 | 谁守着 |
+|---|---|---|
+| 注入页面的 CSS **只能**挂 `.dshcs-*` 选择器 | 样式注入进的是 DSH 自己的文档,碰 `:root`/`body` 会改掉整个界面 | `pnpm test:ask-panel` 的 P3(逐条选择器 + 禁用 at 规则) |
+| 每个 `var(--vscode-*)` 都要带 fallback | DSH 页面里没有 `--vscode-*`,裸 `var()` 是"计算值无效"⇒ 按钮/输入框透明 | P3 |
+| 带 hook 的组件只能写成 `React.createElement(Name, …)` | 手写没有 JSX;`Name({…})` 会把子组件的 `useState` 算进父组件的 hook 链,分支一变就抛 "Rendered more hooks than during the previous render" | P4(源码级后顾正则) |
+| 官方部件要按"函数**或** `{$$typeof}` 对象"取 | `MarkdownText` 是 `React.memo` 的产物(**对象**),按 `typeof === 'function'` 判可用性会让正文静默退成 `<pre>` | P4 的 `askComponent` 用例 |
+| 取不到种子词/官方部件时必须降级 | 面板是主路径,白屏等于提问功能没了 | P5(正文退 `<pre>`、按钮退原生 `button`)+ 错误边界 |
+| 通知/提问/授权三条消息的路由 | 面板与外壳在同一个 window(不走 postMessage),消息必须落到 `/ask/send|approve|close` | P6 |
+
+编辑器侧同样没有构建步骤:扩展是纯 JS(`extension.js` + `lib/*.js`),提问只上报意图。
+这两条"没有构建步骤"的守卫分别在 `pnpm test:client-entry` / `pnpm test:ask-panel`(面板本体)与
+`pnpm test:ask-dialog`(接线 + "产物与构建链一处都不许残留")里。
 
 ### 开发期:源码目录安装(改动即时生效)
 
@@ -852,11 +885,11 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 > 依赖(内部 JS 依赖 + 重打包子包)同样由 pnpm 安装 —— 本地未发布的 `@jinsiyu/*` 需先发布,
 > 或把 `repack/tgz/*.tgz` 以 `file:` 依赖临时装进 profile(见 `.tmp-verify.mjs`)。
 >
-> **改动客户端半部**:直接编辑 `lib/client.js`(0.3.58 起它是**手写源码**,不再有构建步骤、
-> 也没有 `src/**` 中间层;格式约束见该文件头部注释,`pnpm test:client-entry` 守着它们)。
-> 装进 profile 后浏览器硬刷即生效(必要时重启 host;产物 rev 在宿主启动时算好)。
-> **改动提问面板**:编辑 `assets/extensions/dshcs-editor-bridge/webview/src/*` 后执行
-> `pnpm run build:webview`(这一半仍是构建产物、不入库;IDE 需重启一次才会加载新产物,扩展宿主会缓存 webview 资源)。
+> **改动客户端半部 / 提问对话框**:直接编辑 `lib/client.js`(它是**手写源码**:没有构建步骤、
+> 也没有 `src/**` 中间层;格式约束见该文件头部注释,`pnpm test:client-entry` 与 `pnpm test:ask-panel`
+> 守着它们)。装进 profile 后浏览器硬刷即生效。
+> **改动扩展**:编辑 `assets/extensions/dshcs-editor-bridge/{extension.js,lib/*.js}`(纯 JS、无构建);
+> IDE 侧要重启一次才会加载新扩展代码 —— 扩展宿主会缓存已加载的扩展。
 
 ### 打包机环境要求(使用者机器什么都不需要)
 
@@ -1100,15 +1133,12 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
   0.3.54 及以前只有"编辑器缓冲区 / 扩展自己的缓存"两条来源,都没命中时左栏是空文本 + 标题写"没有改动前的内容"。
   仍然拿不到的情形有两种,标题会如实说明:`str_replace_editor` 这类 output 是纯字符串的工具(没有 `value`),
   以及写前内容 >1MB(不塞进缓存)。**注意** `value` 是 execution-local:它不进会话日志,宿主重启后旧的 diff 不会重放。
-- **提问面板只渲染"新内容"(0.3.22)**:订阅从面板建立那一刻开始,`follow` 开帧里的历史 `records` 被丢弃,
+- **对话框只渲染"新内容"**:订阅从对话框建立那一刻开始,`follow` 开帧里的历史 `records` 被丢弃,
   面板里**没有"加载更早"**(历史分页 API `sessionController.page()` 在这个版本里刻意不调用)。
   想看更早的内容请回 DSH 界面。
-- **面板的高亮只带 DSH 启动集的三套语法**(typescript / shellscript / json):官方其余语法走**懒加载**
-  (按需 `import()`,合计约 1.6MB),面板是单文件 IIFE、没有按需加载,所以那些语言的代码块**纯文本**显示
-  (与 DSH 首次渲染时的样子一致,不报错)。要全量:`node scripts/build-webview.mjs --all-grammars`。
-- **面板产物与 DSH 版本绑定**:渲染器按构建时 DSH 部署的界面版本打包,DSH 升级后**要重打面板**
-  (`pnpm run build:webview`;构建脚本会在版本不一致时直接报错)。运行期面板顶部也会提示版本不一致,
-  不会悄悄用错版本的渲染器。
+- **代码高亮跟着 DSH 的懒加载语法集走**:面板用的是页面里那一份渲染器,所以不存在
+  "产物里只带哪几套语法"的限制。
+- **渲染器版本不可能错配**:面板 `require` 的就是界面自己用的那一份实例。
 - **面板里的授权窗口是 5 分钟**:面板打开着的时候授权先问面板(卡片上有倒计时);**关掉面板**或等满 5 分钟
   就交回 DSH 界面 —— 交回之后这一条**只能**在 DSH 界面里处理(卡片从面板消失,对话流里留一行授权审计)。
 

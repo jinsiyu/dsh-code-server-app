@@ -27,7 +27,7 @@
 #   全新 clone 上 `pnpm pack` 的 prepack 会跑 vendor-vscode-server,而它在没有本地源树时会去 registry
 #   取 `code-server@latest` ⇒ VENDOR.json 与 dependencies 里钉的 `@jinsiyu/dshcs-vscode-server@<版本>`
 #   不同步 ⇒ test-vendored-table 的「树包精确钉版本」断言失败。这里先按 package.json 的钉法把树
-#   准备好,prepack 因此变成 no-op(它仍会重跑一次 build:webview,幂等)。
+#   准备好,prepack 因此变成 no-op(0.3.59 起 prepack 只剩 vendor:vscode 这一步)。
 #
 # 认证:npm trusted publishing(OIDC,`id-token: write`)优先,无需长期凭据;
 #   需要在 npmjs.com 上把包 `dsh-code-server-app` 的 Trusted Publisher 指到本仓库 + 本文件名
@@ -122,11 +122,9 @@ jobs:
       - name: 准备内置 VS Code 树(显式钉版本,不取上游 latest)
         run: node scripts/vendor-vscode-server.mjs --version "${{ steps.tree.outputs.tree_version }}"
 
-      # 客户端半部从 0.3.58 起没有构建步骤(lib/client.js 是入库的手写源码),这里只剩面板 webview。
-      # 必须在回归之前:test-webview-bundle 见到产物才真验(缺产物时它逐项 SKIP)。
-      # 后面 pnpm pack 的 prepack 会再跑一次(幂等)。
-      - name: 构建「问 DSH」面板 webview
-        run: pnpm run build:webview
+      # 0.3.58 起客户端半部没有构建步骤(lib/client.js 是入库的手写源码);
+      # 0.3.59 起「问 DSH」对话框的面板也在同一个文件里 —— webview 产物、build-webview.mjs、
+      # esbuild 与那批打包依赖全删了,所以这里**没有任何构建步骤**要跑。
 
       # ---- 门禁 3:全套回归(与 ci.yml 同一份清单)-------------------------------------------
       - name: 全量回归(pnpm test)
@@ -134,26 +132,11 @@ jobs:
           DSHCS_SUITE_LOG: ${{ runner.temp }}/suite.log
         run: pnpm run test
 
-      # ---- 门禁 4:面板渲染器必须与部署的 DSH 界面同版本 --------------------------------------
-      # 本地 build:webview 会自动比对部署;runner 上没有 DSH 部署 ⇒ 这一步靠仓库变量补上,
-      # 未配置时只告警(不会静默通过:summary 里明确写"未校验")。
-      - name: UI 版本守卫(渲染器 vs 部署的 DSH 界面)
-        run: |
-          set -euo pipefail
-          if [ -z "${DSH_UI_VERSION:-}" ]; then
-            echo "::warning::未设置仓库变量 DSH_UI_VERSION ⇒ 跳过部署 UI 版本校验(本地 build:webview 会做这一步)"
-            echo "ui_version_check=skipped(未配置 DSH_UI_VERSION)" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          HAVE="$(node -p 'require("./package.json").devDependencies["@deepseek-ai/dsh-client-ui-primitives"]')"
-          echo "部署 UI=$DSH_UI_VERSION 渲染器=$HAVE"
-          if [ "$HAVE" != "$DSH_UI_VERSION" ]; then
-            echo "::error::面板渲染器是 $HAVE,部署的 DSH 界面是 $DSH_UI_VERSION —— 面板排版会不一致;请把 devDependencies 的两个 @deepseek-ai/dsh-client-ui-* 升到 $DSH_UI_VERSION"
-            exit 1
-          fi
-          echo "ui_version_check=ok($HAVE)" >> "$GITHUB_ENV"
+      # 门禁 4(渲染器版本 == 部署的 DSH 界面版本)已随面板产物一起退役(0.3.59):
+      # 面板现在 require **DSH 页面模块表里那一份**渲染器(与界面同一份实例),
+      # 版本错配从构造上不可能发生,不再需要仓库变量 DSH_UI_VERSION 参与校验。
 
-      - name: 打包(pnpm pack;prepack 会重跑 vendor:vscode + build:webview)
+      - name: 打包(pnpm pack;prepack 会重跑 vendor:vscode)
         run: |
           set -euo pipefail
           pnpm pack

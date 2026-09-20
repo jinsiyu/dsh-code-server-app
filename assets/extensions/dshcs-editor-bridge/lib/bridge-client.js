@@ -285,20 +285,12 @@ function createClient(options) {
         // 症状就是"每个 IDE 会话只收到第一条 diff")。退回 0 重新对齐即可自愈。
         const lastSeq = body !== null && Number.isSafeInteger(body.lastSeq) ? body.lastSeq : null;
         if (lastSeq !== null && lastSeq < since) since = 0;
-        // 0.2.3 起面板像 DSH 对话一样显示内容,数据走这三个字段(见 host 侧 lib/bridge-thread.mjs
-        // 与 lib/bridge-approval.mjs):
-        //   - thread:被面板观看的会话的**新内容**条目(旧版宿主没有这个字段 → 面板明确报错);
-        //   - approvals:待决授权请求(工作区外写入 / 命令执行),面板就地作答;
-        //   - uiVersion:DSH 界面的版本(面板据此提示"渲染器与界面版本不一致")。
-        // 全部原样透传,解析与合并交给 lib/ask-panel.js 的纯模型。
+        // 0.3.59:对话流 / 待决授权**不再经这条通道**(那是编辑器 webview 面板时代的分工)。
+        // 现在唯一的面板在 DSH 页面里、由插件的客户端半部直接读 `/api/code-server/ask/state`,
+        // 扩展这边只留下能力位:宿主有没有证明"对话框活着"。
         return {
           ok: true,
           events,
-          thread: body !== null && body.thread !== undefined ? body.thread : undefined,
-          approvals: body !== null && Array.isArray(body.approvals) ? body.approvals : [],
-          approvalHoldMs: body !== null && Number.isSafeInteger(body.approvalHoldMs) ? body.approvalHoldMs : undefined,
-          uiVersion: body !== null && typeof body.uiVersion === 'string' ? body.uiVersion : undefined,
-          // 能力探测(0.3.24):宿主支持 DSH 页面里的悬浮对话框 ⇒ 提问改走 ask-open 事件(不开 webview 面板)。
           askDialog: body !== null && body.askDialog === true,
         };
       } catch (error) {
@@ -316,35 +308,11 @@ function createClient(options) {
         body: JSON.stringify({ kind: 'ask-open', mode: mode === 'file' ? 'file' : 'selection' }),
       });
     },
-    /** 把"选中内容 + 问题"投给 DSH 的当前会话。 */
-    async ask(payload) {
-      return request(`${BRIDGE_BASE}/ask`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-    },
-    /**
-     * 回答一条待决的授权请求(桥里**唯一**的非只读路由)。
-     *
-     * 约束在 host 侧写死:只认本进程发起、仍未决的 id(单次使用),outcome 只接受
-     * `allowed-once` / `rejected`,不接受任何自由文本 —— 这条路由只能"回答问题",不能"发起动作"。
-     *
-     * @param {string} id 授权请求 id(来自 /sync 的 approvals)
-     * @param {'allowed-once'|'rejected'} outcome
-     */
-    async approve(id, outcome) {
-      return request(`${BRIDGE_BASE}/approve`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id, outcome }),
-      });
-    },
     /**
      * 取一份"写前原文"快照(0.3.55):事件里带的是不透明 key,文本单独取。
      *
-     * 为什么不让事件直接带文本:host 每 600ms 的 `/sync` 响应还驮着对话流与待决授权,
-     * 塞进 ~1MB 文本会把那一趟拖成超时(超时 ⇒ approvals 一起丢 ⇒ 授权卡片永远不出现)。
+     * 为什么不把文本塞进事件:一趟 /sync 要驮的东西越少越好 —— 塞进 ~1MB 文本会把那一趟拖成超时,
+     * 而超时意味着事件也一起丢(用户看到的症状就是"diff 不弹")。
      *
      * 取不到(404 = 过期/被淘汰/宿主重启)时**返回 null 而不是抛**:调用方据此回退到缓冲区或缓存。
      *

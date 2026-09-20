@@ -187,11 +187,9 @@ function skipIfUnreachable(result, name) {
   return false;
 }
 
-const BRIDGE_SUFFIXES = ['/health', '/sync', '/old', '/ask', '/event', '/approve'];
+const BRIDGE_SUFFIXES = ['/health', '/sync', '/old', '/event'];
 /** 每个后缀的方法(GET 的必须是纯读;/old 只是读快照缓存,不消费、不写)。 */
-const BRIDGE_METHODS = { '/health': 'GET', '/sync': 'POST', '/old': 'GET', '/ask': 'POST', '/event': 'POST', '/approve': 'POST' };
-/** 命名空间里**唯一**非只读的路由:它只能回答既有授权请求(0.3.22,见 handleBridgeApprove)。 */
-const WRITE_SUFFIX = '/approve';
+const BRIDGE_METHODS = { '/health': 'GET', '/sync': 'POST', '/old': 'GET', '/event': 'POST' };
 /** 与 host 侧 lib/bridge.mjs 的 BRIDGE_TOKEN_HEADER 同名同值(扩展侧另有一份字面量)。 */
 const TOKEN_HEADER = 'x-dshcs-bridge-token';
 
@@ -238,39 +236,30 @@ await test('/old:只读、不消费、key 缺失 400、未启用 503(与 /sync �
   // 响应语义(400/404/200)由 lib/edit-snapshot.mjs 的 snapshotResponse 承担,单测在 test-edit-snapshot.mjs
 });
 
-await test('命名空间:只认这几条后缀,写/执行类一律 404;唯一非只读的只有 /approve', async () => {
+await test('命名空间:只认这四条只读后缀,写/执行类一律 404(桥没有写口子)', async () => {
   // 命名白名单:新增路由必须改这里 —— 逼着人重新想一遍"这是只读的吗"。
   for (const suffix of BRIDGE_SUFFIXES) {
-    assert.ok(/^\/(health|sync|old|ask|event|approve)$/.test(suffix), `未在白名单里的桥路由:${suffix}`);
+    assert.ok(/^\/(health|sync|old|event)$/.test(suffix), `未在白名单里的桥路由:${suffix}`);
   }
-  // 唯一允许改状态的路由必须**只有** /approve,且它的语义是"回答既有问题"(见下一条用例)。
-  assert.deepEqual(BRIDGE_SUFFIXES.filter((s) => s === WRITE_SUFFIX), [WRITE_SUFFIX]);
-  for (const bad of ['/write', '/edit', '/exec', '/run', '/shell', '/apply', '/save', '/delete', '/create']) {
+  for (const bad of ['/write', '/edit', '/exec', '/run', '/shell', '/apply', '/save', '/delete', '/create',
+    // 0.3.59:提问与授权答复搬去 DSH 同源的 /api/code-server/ask/*(调用方是 DSH 页面里的客户端),
+    // 桥这边**不再有**这两条 —— 它们必须 404,否则"桥完全只读"这条不变量就不成立。
+    '/ask', '/approve']) {
     const res = await callBridge(`/code-server-bridge${bad}`, { method: 'POST', body: '{}' });
     if (skipIfUnreachable(res, '命名空间只读')) return;
     assert.equal(res.status, 404, `${bad} 必须 404(实际 ${res.status})`);
   }
 });
 
-await test('/approve:方法/鉴权先过闸,授权不能凭空发放', async () => {
-  // 这条路由是命名空间里唯一的写口子。本用例覆盖"闸门"部分(方法 → 405、Origin → 403、
-  // 桥未启用 → 503);**白名单与未知 id** 的语义由上面那条 board 级用例覆盖
-  // (本测试框架不起 IDE,`bridgeMeta` 永远为 null,所以请求到不了 body 校验那一段)。
-  const badMethod = await callBridge('/code-server-bridge/approve', { method: 'GET' });
-  if (skipIfUnreachable(badMethod, '/approve')) return;
-  assert.equal(badMethod.status, 405, 'GET 必须 405');
-  const withOrigin = await callBridge('/code-server-bridge/approve', {
-    method: 'POST', headers: { origin: 'http://evil.example' }, body: '{}',
-  });
-  assert.equal(withOrigin.status, 403, '带 Origin 必须 403(浏览器一律拒绝)');
-  const noToken = await callBridge('/code-server-bridge/approve', {
-    method: 'POST', headers: { [TOKEN_HEADER]: 'whatever-0123456789abcdef' }, body: '{}',
-  });
-  assert.equal(noToken.status, 503, '桥未启用时与 /sync 同口径(503)');
-  // 源码级:白名单 + 未知 id 的约束必须在实现里(不能被绕过)
+await test('写口令只在 /api/code-server/ask/approve 上,约束写死在实现里', async () => {
+  // 桥(本机 IPC,令牌对本机同用户进程可读)不再有任何写路由;唯一能改状态的是 DSH 同源那条,
+  // 它吃 DSH 自己的 cookie/Origin 校验。约束:
   const source = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
   assert.match(source, /PANEL_OUTCOMES\.includes\(outcome\)/, 'outcome 必须走白名单');
   assert.match(source, /bridgeApprovalBoard\.get\(id\) === null/, '未知 / 已处理的 id 必须被拒(409)');
+  assert.match(source, /\{ path: `\$\{API_BASE\}\/ask\/approve`, methods: \['POST'\]/, '写口令挂在 /api/code-server/ask/approve 上');
+  assert.equal(source.includes('handleBridgeApprove'), false, '桥的 /approve 必须删除(没有调用方了)');
+  assert.equal(/suffix: '\/ask'/.test(source), false, '桥的 /ask 必须删除(扩展只上报 ask-open 意图)');
 });
 
 await test('health 无需令牌(便于重启后一眼确认),且不返回任何编辑器数据', async () => {
@@ -611,11 +600,15 @@ await test('授权拦截:面板先答则返回该 outcome;没人答 / 面板没�
   assert.equal(interceptor.size(), 0);
 });
 
-await test('源码级:/sync 带 thread+approvals、ask 建立会话流与授权拦截、提问以用户输入投递', () => {
+await test('源码级:/sync 只回事件与能力位;ask 建立会话流与授权拦截、提问以用户输入投递', () => {
   const source = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
-  assert.match(source, /thread: threadChanged \? snapshot : undefined/,
-    '/sync 要带对话流,且**只在变化时**重传(0.3.27:每趟塞 ~1MB 会把 /sync 拖成超时,approvals 也一起丢)');
-  assert.match(source, /approvals: bridgeApprovalBoard\.snapshot\(\)/, '/sync 必须带待决授权(面板显示卡片)');
+  // 0.3.59:对话流/待决授权**不再经 /sync**(那是编辑器 webview 面板时代的分工,面板已退役);
+  // 现在由对话框自己每 900ms 问 `/api/code-server/ask/state`。这里钉住"别再把它们塞回 /sync"。
+  const syncBody = source.split('async function handleBridgeSync')[1].split('async function handleBridgeAsk')[0];
+  for (const gone of ['thread:', 'threadRev', 'approvals:', 'approvalHoldMs', 'uiVersion']) {
+    assert.equal(syncBody.includes(gone), false, `/sync 不该再带 ${gone}(0.3.59 起面板走 /ask/state)`);
+  }
+  assert.match(syncBody, /askDialog: askDialogLive\(\)/, '/sync 仍要给"对话框活着"的能力位');
   assert.match(source, /bridgeThread\.watch\(result\.sessionId\)/, 'ask 成功后必须开始会话流');
   assert.match(source, /bridgeApproval\.intercept\(result\.agent, result\.sessionId\)/, 'ask 成功后必须启用授权拦截');
   assert.equal(/snapshotEvents\(|eventAt\(|ownEvents\(/.test(source), false,

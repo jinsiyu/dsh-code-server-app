@@ -1,7 +1,7 @@
 // scripts/test-installed.mjs —— 对**已装进 profile 的产物**做安装冒烟断言(装在真 DSH 里能不能用)。
 //
 // 为什么要单独一个脚本(npm 包发出去之后才发现的那类问题):
-//   · files 白名单漏了产物(lib/client.js / webview 产物 / vendor/VENDOR.json 都是构建产物);
+//   · files 白名单漏了产物(lib/client.js 曾是构建产物,vendor/VENDOR.json 由 prepack 生成);
 //   · 可选子树的依赖被 pnpm 丢掉(0.3.45 的 requires missing bindings —— desktop 装完立刻校验);
 //   · profile 的 hoisted 布局与仓库 dev 布局不同,运行时依赖解析不到(仓库里跑得再绿也看不出来)。
 // 这几类都**不会**在仓库自己的回归里暴露,所以发布门禁要拿**发出去的那个 tarball**、走官方安装路径
@@ -116,7 +116,7 @@ const installedPkg = JSON.parse(readFileSync(installedPkgFile, 'utf8'));
 check('已安装版本正确', wantVersion === null || installedPkg.version === wantVersion,
   `已安装 ${installedPkg.version}${wantVersion === null ? '' : `,期望 ${wantVersion}`}`);
 
-// ③ files 白名单(漏产物最常见:lib/client.js / webview 产物 / vendor/VENDOR.json 都是构建产物)
+// ③ files 白名单(漏产物最常见:vendor/VENDOR.json 是 prepack 生成物)
 const files = Array.isArray(installedPkg.files) ? installedPkg.files : [];
 const missingFiles = files.filter((entry) => !existsSync(join(pluginDir, entry)));
 check(`files 白名单的每一条都在已安装副本里(${files.length} 条)`, missingFiles.length === 0,

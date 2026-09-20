@@ -30,16 +30,9 @@ spike-*.mjs
 # 客户端半部 lib/client.js **不再是构建产物**(0.3.58 起):它是手写源码、入库、就是唯一真源。
 # 那次改造删掉了 src/**、scripts/build-client.mjs 与 banner/footer,并把客户端回归改成直接读它。
 #
-# 「问 DSH」面板 webview 的构建产物:由 scripts/build-webview.mjs 生成
-# (官方渲染器 + 面板外壳),同样只跟踪源码与构建脚本。面板那一半的"去构建"是下一期的事。
-assets/extensions/dshcs-editor-bridge/webview/thread.js
-assets/extensions/dshcs-editor-bridge/webview/thread.css
-assets/extensions/dshcs-editor-bridge/webview/fonts/
-assets/extensions/dshcs-editor-bridge/webview/THIRD-PARTY.md
-# 从官方发布物里抽出来的设计令牌表(生成物)
-assets/extensions/dshcs-editor-bridge/webview/src/official-tokens.css
-# webview 打包的中间产物(替身模块 / esbuild metafile)
-.tmp-webview/
+# 「问 DSH」对话框的面板也在同一个文件里(0.3.59 起):那次改造把 webview/thread.{js,css} 这份
+# 1.4MB 的产物、scripts/build-webview.mjs、esbuild 与那批打包依赖、以及编辑器里的兜底面板
+# 一起删掉了 —— 所以这里不再有任何 webview 产物要忽略。
 
 # code-server 运行期数据(扩展/用户数据/pid 等,由插件生成)
 code-server/
