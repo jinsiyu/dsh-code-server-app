@@ -626,7 +626,9 @@ await test('提问:右键命令只上报意图,对话框不可用时给提示(�
   // 0.3.59 把编辑器里的 webview 面板连同它的产物与构建链一起删了,扩展这边只剩"请宿主打开对话框"。
   assert.match(source, /const result = await client\.askOpen\(mode\)/,
     '提问要走 ask-open(宿主把对话框开在 DSH 页面里)');
-  assert.match(source, /if \(!askDialogSupported\) \{\n\s+notifyAskDialogUnavailable\(\)/,
+  // **换行必须写成 \r?\n**:CI 的 windows 腿是 CRLF 检出(仓库没有 .gitattributes 强制 LF),
+  // 只写 \n 会让这条断言在 windows runner 上红、而本机与 ubuntu 全绿(0.3.59 的第一次 CI 就这么红的)。
+  assert.match(source, /if \(!askDialogSupported\) \{\r?\n\s+notifyAskDialogUnavailable\(\)/,
     '拿不到对话框心跳时直接给提示(不开一扇用户看不见的窗)');
   assert.match(source, /client\.isDormant\(\)/, '桥没启用时要提示"先打开 Code Server 标签"');
   assert.match(source, /captureAskContext\(mode\) === null/, '没有活动编辑器要提示');
