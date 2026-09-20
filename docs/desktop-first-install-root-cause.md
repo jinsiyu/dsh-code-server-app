@@ -108,3 +108,94 @@ os/cpu 不匹配的 optional 真名依赖会被 pnpm 跳过,而校验器对 `opt
 + `.spike/repro-agg/probe.mjs`(复刻 `packageFrom()`)。
 `.spike/` 是工作区里的脚手架目录,不进发布物;上面的实验目录(repro-agg2/3/4/5、repro-direct)
 可以删掉,只留 repro-agg 复现用。
+
+## 五、0.3.45 的残留 +「has no manifest」卡死态(0.3.46 修,2026-09-15)
+
+用户报的错:**`desktop project: installed package "dsh-code-server-app" has no manifest`**。
+查下来是**两个独立故障**,都实测复现过:
+
+### 5.1 0.3.45 仍丢包,只是丢到了下一层(平台专属包自己的依赖)
+
+0.3.45 把 8 个平台专属重打包包放进插件 `optionalDependencies`(depth 1,optional)。
+它们的**注册表依赖**落在 depth 2、父节点是 optional ⇒ 仍被 pnpm 的增量 hoisted 安装整支丢进
+`node_modules/.modules.yaml` 的 `skipped`。在 win32-arm64 上实测首次 `pnpm add` 后仍缺:
+
+```
+@jinsiyu/dshcs-kerberos-win32-arm64   -> bindings@^1.5.0     MISSING(运行时 index.js 里 require('bindings'))
+@jinsiyu/dshcs-vscode-spdlog-win32-arm64 -> bindings / mkdirp@^1.0.4  MISSING
+@jinsiyu/dshcs-vscode-deviceid-win32-arm64 -> fs-extra@^11.2.0 / uuid@^14.0.0  MISSING
+```
+
+⇒ dsh-desktop 装完立刻校验,报
+`desktop profile: dsh-code-server-app -> @jinsiyu/dshcs-kerberos-win32-arm64 requires missing bindings@^1.5.0`,
+profile 停在「已声明依赖 + 校验失败」的半装状态。
+
+**与 0.3.44 那次的区别**:这次 `pnpm install --frozen-lockfile` 会打印 «Already up to date» 并退出 0
+(锁文件里也没有这些条目),**修不好**;只有「删掉整个 node_modules + 全量 frozen 安装」才能补齐
+(实测 7s,blocking 问题 5 → 0)。所以「重启自愈」这条退路在这一层只剩一半。
+
+### 5.2 「has no manifest」是怎么冒出来的(卡死态,不自愈)
+
+`project-manager.ts` 里 `inspectPlugin()`(第 200 行)对「声明了依赖但
+`<profile>/node_modules/<name>/package.json` 不存在」是**硬失败**,而 `pluginRecords()` 会在这些地方
+被**提前求值**:
+
+- `listPlugins()`(第 240 行)⇒ 插件页渲染;
+- `reconcileProfile()` 的 `rebuild` 表达式(第 365 行 `pluginRecords(projectDir).length > 0`)⇒ **应用启动**就抛,
+  而且是在任何修复动作**之前**;
+- `plugin-remove` / `plugin-update` / `plugin-toggle`(第 405/418/427 行)。
+
+于是只要 profile 里留着一条「声明在、目录没了」的依赖(装到一半被关掉、校验失败后又被
+`removeOwnedDirectory(node_modules)` 清过、或手工删过),插件页/启动/卸载任何一步都会显示
+**installed package "dsh-code-server-app" has no manifest**,且**永远不会自愈**。
+
+实测(用桌面版自己的源码跑,`node --experimental-transform-types`):
+
+```
+listPlugins() (插件页渲染)              -> THROW installed package "dsh-code-server-app" has no manifest
+applyRelease() (应用启动,同一 profile)  -> THROW 同一句
+```
+
+### 5.3 0.3.46 的修法
+
+平台专属包的注册表依赖**提成插件自己的直接依赖**(depth 0 ⇒ 落到 profile 根 `node_modules`,
+校验器与运行时都能解析到):
+
+```jsonc
+// package.json
+"bindings": "1.5.0", "mkdirp": "1.0.4", "fs-extra": "11.4.0", "uuid": "14.0.2"
+```
+
+- `scripts/vendor-repacks.mjs` 里是 `OPTIONAL_SUBTREE_DEPS` 表,写依赖表时自动并入;
+- 新增 `verifyOptionalSubtreeDeps()`:**构建期闸门** —— 平台专属重打包清单里出现不在表内的注册表依赖
+  就直接报错(避免将来又静默丢包);
+- `scripts/test-vendored-table.mjs` 加回归(从 `repack/build/<平台包>/package.json` 反查,断言每个
+  非 `npm:` 别名依赖都在插件 `dependencies` 里)。
+
+验收(全新 profile + 桌面版自带 node/pnpm 逐字复刻 `pnpm add`,再跑桌面版自己的
+`validateDesktopPluginGraph`):
+
+```
+exit=0, node_modules/dsh-code-server-app/package.json 存在(0.3.46)
+VALIDATOR: PASS        ⇐ dsh-desktop 会接受这个 profile
+完整图 probe: visited 109, blocking 0
+kerberos-arm64 / spdlog-arm64 / deviceid-arm64 三个锚点都能解析到 bindings / mkdirp / uuid
+```
+
+### 5.4 桌面侧仍建议修(没变,同第三节 ①)
+
+1. `reconcileProfile()` 在 `packagesChanged` 时也走一次完整安装(否则 mutation 永远在增量树上校验);
+2. `pluginRecords()` 不要放进 `rebuild` 表达式的求值链,或把「声明在、目录没了」当成 `rebuild=true` 的
+   触发条件(现在它是硬失败 ⇒ 卡死);
+3. 报错文案带上「请删掉 `<profile>/node_modules` 后重试」,别只给一句 has no manifest。
+
+### 5.5 profile 卡死时的手工恢复
+
+```powershell
+# 关掉 DSH Desktop 后:
+Remove-Item "$env:USERPROFILE\.dsh\profiles\desktop\desktop-packages-pending" -Force  # 清掉未完成标记
+Remove-Item "$env:USERPROFILE\.dsh\profiles\desktop\node_modules" -Recurse -Force      # 让下次启动全量重装
+# 重启应用:会走「删 node_modules + pnpm install --frozen-lockfile」⇒ 依赖补齐、校验通过
+```
+(profile 里若残留一条「声明在、目录没了」的依赖,也可以直接把该条从
+`~/.dsh/profiles/desktop/package.json` 的 `dependencies` 里删掉再重启。)
