@@ -35,6 +35,9 @@ const STATE_FILENAME = 'extension-state.json';
 // 请求超时(0.2.8 起 8s):3s 在实测里太紧 —— 对话流快照一大,宿主序列化就要几秒,
 // 超时会让扩展**丢整份响应**(包括 approvals),表现就是"授权卡片一直不出现"。
 const REQUEST_TIMEOUT_MS = 8000;
+/** 补全请求的超时:**独立且更短**。宿主侧自己在 4s 放弃,这里给 6s 只是别先于宿主超时 ——
+ *  补全的价值在"比你打字快",8s 那个值对它毫无意义,而挂住的请求会挡住下一次补全。 */
+const COMPLETE_TIMEOUT_MS = 6000;
 /** 轮询间隔:host 侧事件只是"去看一眼这个文件"的提示,600ms 足够且几乎无开销。 */
 const POLL_INTERVAL_MS = 600;
 /** 宿主配置重读间隔(端点/令牌轮换后最多这么久恢复)。 */
@@ -292,6 +295,9 @@ function createClient(options) {
           ok: true,
           events,
           askDialog: body !== null && body.askDialog === true,
+          // FIM(实验性)状态与用量:宿主每趟都带上来,扩展据此决定"要不要注册补全 provider"
+          // 以及状态栏上那串数字怎么显示。没开时是 {enabled:false}(不是 null)。
+          fim: body !== null && typeof body.fim === 'object' && body.fim !== null ? body.fim : { enabled: false },
         };
       } catch (error) {
         return { ok: false, error: error.message, status: error.status, code: error.code };
@@ -328,11 +334,40 @@ function createClient(options) {
         return null;
       }
     },
+    /**
+     * 求一次 FIM(幽灵)补全(实验性)。
+     *
+     * **不抛**:补全失败是常态(没开、太快、模型抽风),抛异常会让 provider 每次都写错误日志。
+     * 返回值统一是 `{ok, text?, usage?, ms?, error?, status?}` —— 调用方只看 `ok`。
+     * 超时是独立的短超时(宿主侧 4s 就放弃了,这里给到 6s 只是别先于宿主超时)。
+     */
+    async complete(payload) {
+      try {
+        const body = await requestImpl({
+          socketPath: (refreshConfig(true) ?? {}).pipe,
+          path: `${BRIDGE_BASE}/complete`,
+          method: 'POST',
+          headers: { [TOKEN_HEADER]: config === null ? '' : config.token, 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+          timeoutMs: COMPLETE_TIMEOUT_MS,
+        });
+        if (body === null || typeof body !== 'object') return { ok: false, error: '空响应' };
+        const status = body.status === undefined ? 0 : body.status;
+        if (status < 200 || status >= 300) {
+          const reason = body.json !== null && typeof body.json.error === 'string' ? body.json.error : `HTTP ${status}`;
+          return { ok: false, error: reason, status };
+        }
+        const json = body.json === null || typeof body.json !== 'object' ? {} : body.json;
+        if (json.ok !== true) return { ok: false, error: typeof json.error === 'string' ? json.error : '宿主未返回补全', status };
+        return { ok: true, text: typeof json.text === 'string' ? json.text : '', usage: json.usage ?? null, ms: json.ms ?? null };
+      } catch (error) {
+        return { ok: false, error: error && error.message ? error.message : String(error), status: error && error.status };
+      }
+    },
     /** 把游标落盘(实例重启后不重复播报旧事件)。 */
     persist() {
       return writeState(extensionsDir, { since, pid: config === null ? null : config.pid });
-    },
-    /** 从磁盘恢复游标(实例没换才生效)。 */
+    },    /** 从磁盘恢复游标(实例没换才生效)。 */
     restore() {
       const saved = readState(extensionsDir);
       if (config !== null && saved.pid === config.pid) since = saved.since;
@@ -351,6 +386,7 @@ module.exports = {
   POLL_INTERVAL_MS,
   CONFIG_REREAD_MS,
   REQUEST_TIMEOUT_MS,
+  COMPLETE_TIMEOUT_MS,
   BridgeError,
   isBridgeEndpoint,
   defaultExtensionsDir,

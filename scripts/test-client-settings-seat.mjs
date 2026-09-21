@@ -44,6 +44,20 @@ const SEATS = {
 const entriesAt = (h, name) => h.registrations.filter((r) => r.desc.name === name);
 const injectAt = (h, name) => h.injects.find((i) => i.name === name);
 
+/** 找第一个满足谓词的宿主元素(harness 的 findElement 只按类型找,数字输入要按 props 找)。 */
+function findInputBy(tree, predicate) {
+  if (tree === null || tree === undefined || typeof tree !== 'object') return null;
+  if (Array.isArray(tree)) {
+    for (const item of tree) {
+      const hit = findInputBy(item, predicate);
+      if (hit !== null) return hit;
+    }
+    return null;
+  }
+  if (tree.type === 'input' && predicate(tree.props) === true) return tree;
+  return tree.props === undefined ? null : findInputBy(tree.props.children, predicate);
+}
+
 // ---------- DSH ≥ 0.1.6-alpha.2:注册到插件页的配置区 ----------
 const alpha2 = loadClientBundle({ declaredSlots: SEATS['alpha.2'] });
 const newEntries = entriesAt(alpha2, 'plugins.bundle.config');
@@ -99,7 +113,7 @@ await test('alpha.2:认领类型渲染成多行文本域,并按内容自动长�
   const tree = alpha2.render(reg.component, { view: 'page', scope: reg.desc.inject().scope });
   const types = elementTypesOf(tree);
   assert.ok(types.includes('textarea'), '认领类型应是 textarea(默认值 98 条排除项,单行框看不到也改不动)');
-  assert.equal(types.filter((t) => t === 'input').length, 2, '剩下的单行 input 只该是两个复选框(打开即全屏 / 后台常驻)');
+  assert.equal(types.filter((t) => t === 'input').length, 5, '单行 input 是四个复选框(打开即全屏 / FIM 补全 / 允许多行 / 后台常驻)+ 一个数字输入(停顿毫秒数)');
   const area = findElement(tree, 'textarea');
   const rows = Number(area.props.rows);
   assert.ok(rows >= 8 && rows <= 12, `默认值(~700 字符)应自动长到 8-12 行,实际 rows=${rows}`);
@@ -107,8 +121,35 @@ await test('alpha.2:认领类型渲染成多行文本域,并按内容自动长�
   assert.match(String(area.props.placeholder), /留空/, '占位文案改短:默认值另有提示块展示');
 });
 
-await test('alpha.2:下面的提示是多行(默认值按三组折行,不再一整行撑破卡片)', async () => {
+await test('0.3.61:FIM 补全项在卡片上,写明"实验性 / 默认关闭 / 会外发代码"', async () => {
   const reg = newEntries[0];
+  const tree = alpha2.render(reg.component, { view: 'page', scope: reg.desc.inject().scope });
+  const text = textOf(tree);
+  assert.ok(text.includes('FIM 补全(实验性)'), '设置项标题必须带"实验性"字样');
+  assert.ok(text.includes('默认关闭'), '必须写明默认关闭');
+  assert.ok(text.includes('唯一会把内容发出去'), '必须写明它是本插件唯一外发内容的能力(隐私边界要写在用户看得见的地方)');
+  assert.ok(text.includes('不计入 DSH'), '必须写明这条调用不进 DSH 的 token 计量(否则用户会在账单与界面之间困惑)');
+});
+
+await test('0.3.62:FIM 的三个子项在卡片上(停顿毫秒数 / 允许多行 / 按 glob 禁用)', async () => {
+  const reg = newEntries[0];
+  const tree = alpha2.render(reg.component, { view: 'page', scope: reg.desc.inject().scope });
+  const text = textOf(tree);
+  assert.ok(text.includes('停顿毫秒数'), '要有停顿毫秒数这一行');
+  assert.ok(text.includes('允许多行补全'), '要有多行开关');
+  assert.ok(text.includes('按 glob 禁用'), '要有按 glob 禁用这一行');
+  assert.ok(text.includes('100–3000ms'), '停顿的范围要写在用户看得见的地方');
+  assert.ok(text.includes('扩展侧先判'), '要说清 glob 是两边都判(扩展不发请求 + 宿主再判一遍)');
+  const numberInput = findInputBy(tree, (p) => p !== undefined && p.type === 'number');
+  assert.ok(numberInput !== null, '停顿毫秒数要渲染成数字输入(type=number)');
+  assert.equal(numberInput.props.min, 100, 'min 要与宿主 clampDebounce 的下限一致');
+  assert.equal(numberInput.props.max, 3000, 'max 要与宿主 clampDebounce 的上限一致');
+  assert.equal(Number(numberInput.props.value), 250, '默认值 250ms');
+  // glob 那一行必须是多行文本域(与"认领类型"同一形态,清单会长)
+  assert.equal(elementTypesOf(tree).includes('textarea'), true, 'glob 清单用 textarea');
+});
+
+await test('alpha.2:下面的提示是多行(默认值按三组折行,不再一整行撑破卡片)', async () => {  const reg = newEntries[0];
   const tree = alpha2.render(reg.component, { view: 'page', scope: reg.desc.inject().scope });
   const text = textOf(tree);
   assert.ok(text.includes('实际规则:'), '「实际规则」一行要在');

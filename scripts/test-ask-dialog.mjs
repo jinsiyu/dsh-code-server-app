@@ -206,7 +206,8 @@ await test('A5:桥完全只读;唯一的写口令在 DSH 同源的 ask/approve �
   assert.match(approval, /export const PANEL_OUTCOMES = \['allowed-once', 'rejected'\]/, '只能给这两个 outcome');
   assert.match(approval, /没有答案者就 fail closed|fail closed/, '没有答案者必须失败关闭(不自动放行)');
   const bridge = read('../lib/bridge.mjs');
-  assert.match(bridge, /全部只读/, '桥头部的安全不变量要写明"没有写路由"');
+  assert.match(bridge, /四条只读路由 \+ 一条有界的模型调用/, '桥头部的安全不变量要写明"没有写路由",并交代 /complete 这条唯一例外');
+  assert.match(bridge, /不允许\*\*出现写文件、改文档、执行命令/, '桥头部必须明确禁止写文件/执行命令类的路由');
 });
 
 console.log(`\nSUMMARY pass=${pass} fail=${fail}`);

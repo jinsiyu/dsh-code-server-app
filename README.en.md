@@ -50,7 +50,7 @@ A static profile plugin (npm package with host + client bundle) that ships the *
     the narrow-viewport handling). When the button is missing it keeps the current mode and logs one `console.warn` — panel
     rendering is never affected.
 - **Resident IDE (0.2.2, on by default)**: switching to another tab or collapsing the sidebar and coming back **no longer reloads** code-server — unsaved editor buffers, terminals and debug sessions all stay put (see "Why switching tabs no longer reloads" below).
-- The settings card has exactly **three settings**: "**Claim types**", "**Fullscreen on open**" and "Resident in background" — no other rows (0.2.7 removed the "Entry", "dependency install" and "environment check" rows).
+- The settings card has exactly **four settings**: "**Claim types**", "**Fullscreen on open**", "Resident in background" and "**FIM completion (experimental, off by default)**" — no other rows (0.2.7 removed the "Entry", "dependency install" and "environment check" rows).
   Open the IDE from the **Code Server box** on the sidebar's guide page, or by clicking DSH's own produced-file chips / delivered-file previews / inline file names;
   diagnostics stay out of the UI — the `[code-server]` lines in the DSH host log are the place to look (`/api/code-server/status` still returns `env` for scripts).
   The old `windowedOpen` (open in a window) and `reserveComposer` were **removed in 0.2.6**: leftover keys in an old settings document neither fail nor apply (they are no longer part of the schema).
@@ -354,10 +354,15 @@ Regression: the "push → take → clear, twice" case in `scripts/test-bridge-ro
 The token lives in `<extensionsDir>/.dshcs-bridge/bridge.json`, **readable by any process of the same local
 user**, so:
 
-1. **`/code-server-bridge/*` is read-only, with `/approve` as the single exception.** No route writes files,
+1. **`/code-server-bridge/*` is read-only, with two bounded exceptions.** No route writes files,
    edits documents, runs commands, or spawns processes. A leaked token is therefore bounded to "sees information
    that is in the editor" and **can never** become arbitrary file writes or command execution. A whitelist
    assertion in `scripts/test-bridge-routes.mjs` guards this.
+   `/complete` (0.3.61, **experimental FIM completion, off by default**) is the one route that makes a **model
+   call**: it takes two strings (the text before/after the cursor) and returns one string. It still writes
+   nothing and runs nothing, is disabled unless the setting is on (403 otherwise), and is bounded by
+   length/rate/concurrency/timeout caps — so the worst case for a leaked token grows only to "spends a little
+   completion budget and reads back one completion".
    `/old` (added in 0.3.55) lives under the same invariant: it only reads the bounded cache of "pre-write copies of
    the last few agent writes" (≤8 entries, ≤1 MB each, ≤4 MB total, 5-minute TTL) by **opaque key**, 404s when it
    is gone, takes no path argument (so it cannot read arbitrary files) and does not consume (repeat polls get the
@@ -393,6 +398,64 @@ as stated for the loopback port.
 
 Diagnostics: `GET /api/code-server/status` exposes
 `bridge: { enabled, live, toolsRegistered, supported, url, file }` — **never the token** (that only exists in the file).
+
+## FIM completion (experimental, since 0.3.61, **off by default**)
+
+When you pause while typing, a grey continuation appears after the cursor (Tab accepts, Esc discards).
+It is **off by default**; turn it on with that row in the settings card — it takes effect immediately
+(no host restart, no reinstall).
+
+| Item | Value |
+|---|---|
+| Endpoint | DeepSeek **FIM (Beta)**: `POST https://api.deepseek.com/beta/completions`, params `prompt` (prefix) + `suffix` (suffix) |
+| Model | `deepseek-flash` (the model the official FIM doc uses — also this deployment's default) |
+| Credential | Reuses the `DEEPSEEK_API_KEY` DSH already has: `ctx.get('credentials').resolve(...)`, the same path the official adapter takes (falling back to the launch environment) |
+| Measured latency | **112–416 ms** (non-streaming; streaming was *slower*, hence non-streaming on purpose) |
+| When it fires | After a ≥250 ms pause and only past the gates: non-empty selection / non-`file` document / empty context / document >20k lines — those **never send a request** |
+
+**How it is wired in (option A)**: FIM speaks the Completions API, while `ctx.llm.stream(GenerateOptions)`
+only knows `messages` (no `prompt`/`suffix`; `purpose` is a closed union of `'compaction' | 'session-title'`).
+So the plugin **registers its own LLM adapter route** `dshcs-fim`: the prefix/suffix travel inside a
+`messages` envelope with a fixed marker (`dshcs-fim/1 `), and the adapter decodes it before hitting that
+endpoint. The call therefore still goes **through DSH's LLM service** — cancellation, timeouts, terminal
+chunks and stable error codes all follow the service contract (instead of the plugin bypassing it with a
+raw fetch). Evidence and measurements: B6/B7 of `docs/analysis-continuedev-reuse.md`.
+
+**Three knobs (0.3.62, all in the settings card, effective immediately)**:
+
+| Setting | Default | Effect |
+|---|---|---|
+| Pause in ms | `250` | How long typing must stop before a request. Range 100–3000 ms (clamped on save); the endpoint round trip measured **112–416 ms**, so the pause *is* the perceived latency |
+| Allow multi-line | on | Off ⇒ the host returns the first line only; an empty first line means no completion. Turn it off to be less intrusive |
+| Disable by glob | empty | In these files **no request is sent at all**. Semantics: `*` does not cross directories, `**` does, a pattern without `/` matches the basename, a pattern with `/` matches any path suffix (so `vendor/**` and `src/*.ts` work at any depth), a trailing `/` means `/**`. Example: `*.md;vendor/**;**/dist/**` |
+
+> Both sides implement these semantics independently (the extension is a static file shipped with the package
+> and cannot import host code); `scripts/test-fim.mjs` pins their equivalence with one shared (pattern, path)
+> corpus.
+
+**Safety and bounds** (this is the only capability of the plugin that sends content out):
+
+- **Still read-only**: the extension never writes files and never runs commands — it only *proposes* text;
+  insertion happens when you press Tab;
+- The bridge gains its fifth route `POST /complete` (**the only route that makes a model call**) only while
+  the setting is on; with it off the route answers 403 and no request is made;
+- Bounded: prefix/suffix ≤6000/2000 chars (120/40 lines, whichever comes first), output ≤2000 chars,
+  4 s timeout, 120 ms minimum interval, concurrency 1, 60 calls/minute; over-limit requests are rejected
+  (409/429) and the extension simply shows no completion for that beat;
+- One more layer in the extension: turning the setting off disposes the provider immediately (no requests at
+  all), and identical context hits a local 2-minute cache;
+
+**Usage is visible in exactly two places**: these calls are **not session requests**, so they are not written
+to the session log and DSH's own token accounting (per-turn usage, context pressure, telemetry) **excludes
+them**. Usage therefore shows up in ① the IDE status bar's DSH item — a `$(zap) 1.2k` counter when on, with
+input/output/cache-read/last-latency/last-error on hover, and ② the `fim` field of
+`GET /api/code-server/status` (same snapshot).
+
+**Known limits**: the model occasionally invents an insertion where nothing is needed (2/2 reproduced at a
+cursor position that needed none); the filter pipeline strips code fences and control markers, but "should
+this be completed at all" stays your call — Esc or typing on makes it disappear. A more reliable shape needs
+a faster completion route, or DSH making completion a first-class request (at which point only the adapter's
+data call changes; the caller stays as it is).
 
 ## Legacy DSH (unsupported since 0.2.3)
 
@@ -997,8 +1060,12 @@ persisted via the official settings domain (`settingsScope`, namespace `code-ser
 | `claimExtensions` | `*` + three exclusion groups (preview-friendly / executables / Office; full lists in the "Claim types" section) | **Claim types** (0.2.11, replaces 0.2.5's `fileOpenScope`): decides by extension which files go to VS Code, semicolon-separated; `*` claims every other type, `!ext` excludes (exclusion wins). The default leaves the four categories DSH's preview renders well (markdown/html/images/PDF) to DSH and sends everything else to the IDE; an empty value claims nothing. **Scope (session vs absolute) is no longer distinguished** |
 | `fullscreenOnOpen` | `true` | **Fullscreen on open** (0.2.9): opening the Code Server tab (including clicking a file) switches the right sidebar to fullscreen (fills the window); off keeps DSH's default push mode (side by side with the conversation). Only the moment of opening is affected — a manual "Exit fullscreen" is never fought back |
 | `keepResident` | `true` | **Resident in background**: on, the host preloads the IDE into a parked surface right after start — switching tabs or collapsing the sidebar never reloads it and the first open needs no cold start; off loads it only when the panel is opened (saves memory) |
+| `fim` | `false` | **FIM completion (experimental, 0.3.61)**: when on, pausing while typing shows a grey inline continuation (Tab accepts, Esc discards). **Off by default** — it is the only capability of this plugin that sends content out (a bounded slice of code around the cursor, per completion), and those calls **do not enter DSH's token accounting**, so usage is visible only in the IDE status bar. See the "FIM completion" section |
+| `fimDebounceMs` | `250` | **FIM · pause in milliseconds** (0.3.62): how long typing must stop before one completion request is sent. Effective range **100–3000 ms**, clamped on save (same rule as the host); empty/invalid falls back to 250 |
+| `fimMultiline` | `true` | **FIM · allow multi-line completions** (0.3.62): off means the host returns the first line only (an empty first line = no completion this time). The model does invent insertions where none are needed, and multi-line amplifies that noise |
+| `fimDisableGlobs` | empty | **FIM · disable by glob** (0.3.62): semicolon/newline separated. `*` does not cross directories, `**` does, a pattern without `/` matches the basename, a pattern with `/` matches any path suffix, and a trailing `/` means `/**`. Examples: `*.md`, `vendor/**`, `**/dist/**`. **Checked on both sides**: the extension first (no request at all), the host again |
 
-(Since 0.2.9 the card keeps only those three settings; `windowedOpen` and `reserveComposer` are gone — leftover keys in an old
+(Since 0.2.9 the card keeps only those settings (0.3.61 added FIM completion, 0.3.62 its three sub-rows); `windowedOpen` and `reserveComposer` are gone — leftover keys in an old
 settings document neither fail nor apply. `serve` remains a key in the settings namespace (usable from a settings document) but
 has **no card row** — see "Serving mode".)
 
@@ -1130,6 +1197,22 @@ What remains on the plugin side:
   "open this file from outside" API, so this is the only way to aim the workbench at a file. It is installed as a
   **built-in** extension (in `lib/vscode/extensions`), so users cannot remove it from the extensions panel, and the
   installer re-syncs it whenever its content changes.
+
+## Third-party and license
+
+This project is **MIT**-licensed (see [`LICENSE`](LICENSE)). Its experimental **FIM completion** feature was
+**designed with reference to** [continuedev/continue](https://github.com/continuedev/continue)
+(Apache License 2.0, Copyright 2023 Continue) — specifically the settings taxonomy of upstream
+`tabAutocompleteOptions` (`debounceDelay`, `useAutocompleteMultilineCompletions`, `disableInFiles`) and its
+debounce / cursor-window / filtering / bounded-cache approach.
+
+**No source code, template strings or files from continuedev/continue are included here** (completion
+requests target DeepSeek's official FIM (Beta) endpoint; the prompt shape comes from DeepSeek's docs and
+local measurement). The standard Apache License 2.0 text ships as
+[`LICENSE-Apache-2.0.txt`](LICENSE-Apache-2.0.txt), and the per-location reference log is
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — so Apache-2.0's obligations (notices, marking modified
+files, keeping an upstream NOTICE if one appears) are already satisfied should a code fragment ever be ported
+in. Apache-2.0 grants no trademark rights; this project does not use "Continue" as a name or in promotion.
 
 ## Known limitations
 

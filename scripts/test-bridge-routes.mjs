@@ -187,9 +187,11 @@ function skipIfUnreachable(result, name) {
   return false;
 }
 
-const BRIDGE_SUFFIXES = ['/health', '/sync', '/old', '/event'];
-/** 每个后缀的方法(GET 的必须是纯读;/old 只是读快照缓存,不消费、不写)。 */
-const BRIDGE_METHODS = { '/health': 'GET', '/sync': 'POST', '/old': 'GET', '/event': 'POST' };
+const BRIDGE_SUFFIXES = ['/health', '/sync', '/old', '/event', '/complete'];
+/** 每个后缀的方法(GET 的必须是纯读;/old 只是读快照缓存,不消费、不写)。
+ *  `/complete`(0.3.61)是**唯一的例外**:它会发起一次模型调用(实验性 FIM 补全),
+ *  但仍然不写文件、不执行命令 —— 它的额外约束在下面的专项测试里钉住。 */
+const BRIDGE_METHODS = { '/health': 'GET', '/sync': 'POST', '/old': 'GET', '/event': 'POST', '/complete': 'POST' };
 /** 与 host 侧 lib/bridge.mjs 的 BRIDGE_TOKEN_HEADER 同名同值(扩展侧另有一份字面量)。 */
 const TOKEN_HEADER = 'x-dshcs-bridge-token';
 
@@ -207,9 +209,9 @@ await test('桥走本机 IPC(命名管道 / unix socket),既不在 /api 下、�
   assert.equal(webRoutes.has(bridge.BRIDGE_BASE), false, '桥不该再挂到 webServer 上(desktop 没有它)');
 });
 
-await test('六条路由可达,未知后缀 404(绝不落到 VS Code 那边)', async () => {
+await test('所有桥路由都可达,未知后缀 404(绝不落到 VS Code 那边)', async () => {
   const unknown = await callBridge('/code-server-bridge/nope');
-  if (skipIfUnreachable(unknown, '六条路由可达')) return;
+  if (skipIfUnreachable(unknown, '路由可达')) return;
   assert.equal(unknown.status, 404, `未知后缀应 404(实际 ${unknown.status})`);
   const suffixWithPost = await callBridge('/code-server-bridge/health', { method: 'POST' });
   assert.equal(suffixWithPost.status, 405, '方法不符应 405');
@@ -236,10 +238,12 @@ await test('/old:只读、不消费、key 缺失 400、未启用 503(与 /sync �
   // 响应语义(400/404/200)由 lib/edit-snapshot.mjs 的 snapshotResponse 承担,单测在 test-edit-snapshot.mjs
 });
 
-await test('命名空间:只认这四条只读后缀,写/执行类一律 404(桥没有写口子)', async () => {
+await test('命名空间白名单:四条只读 + 一条有界的模型调用(/complete);写/执行类一律 404', async () => {
   // 命名白名单:新增路由必须改这里 —— 逼着人重新想一遍"这是只读的吗"。
+  // 0.3.61 起白名单多了 /complete:它是唯一会**发起模型调用**的路由(实验性 FIM 补全),
+  // 但它不写文件、不执行命令,且默认关(没开一律 403)。
   for (const suffix of BRIDGE_SUFFIXES) {
-    assert.ok(/^\/(health|sync|old|event)$/.test(suffix), `未在白名单里的桥路由:${suffix}`);
+    assert.ok(/^\/(health|sync|old|event|complete)$/.test(suffix), `未在白名单里的桥路由:${suffix}`);
   }
   for (const bad of ['/write', '/edit', '/exec', '/run', '/shell', '/apply', '/save', '/delete', '/create',
     // 0.3.59:提问与授权答复搬去 DSH 同源的 /api/code-server/ask/*(调用方是 DSH 页面里的客户端),
@@ -249,6 +253,23 @@ await test('命名空间:只认这四条只读后缀,写/执行类一律 404(桥
     if (skipIfUnreachable(res, '命名空间只读')) return;
     assert.equal(res.status, 404, `${bad} 必须 404(实际 ${res.status})`);
   }
+});
+
+await test('/complete(0.3.61):默认关 ⇒ 403(不开就不外发任何内容);只接受 POST', async () => {
+  // 桩 ctx 的 settingsValue 里没有 fim 键 ⇒ 走默认 false。这条路由必须**拒绝**而不是
+  // "可用但补全为空":拒绝才是"没开就不发请求"的证据(扩展侧也据此不注册 provider)。
+  const disabled = await callBridge('/code-server-bridge/complete', {
+    method: 'POST', body: JSON.stringify({ prompt: 'const a =', suffix: '' }),
+  });
+  if (skipIfUnreachable(disabled, '/complete')) return;
+  assert.equal(disabled.status, 403, `未开启 FIM 时必须 403(实际 ${disabled.status})`);
+  const wrongMethod = await callBridge('/code-server-bridge/complete');
+  assert.equal(wrongMethod.status, 405, 'GET 应 405(只接受 POST)');
+  const source = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
+  assert.match(source, /if \(!fimSetting\) return jsonResponse\(\{ ok: false, error: 'fim-disabled' \}, 403\)/,
+    '启用判定必须在读请求体/发请求之前');
+  assert.match(source, /fimBudget\.acquire\(\)/, '必须有速率与并发闸(这条链路由击键触发)');
+  assert.match(source, /provider: FIM_PROVIDER/, '取数必须走 ctx.llm(注册我们自己的适配器路由),不是裸 fetch');
 });
 
 await test('写口令只在 /api/code-server/ask/approve 上,约束写死在实现里', async () => {

@@ -38,6 +38,17 @@ const {
   createClient,
 } = require('./lib/bridge-client.js');
 const { createProjector } = require('./lib/context-model.js');
+const {
+  FIM_DEBOUNCE_DEFAULT_MS,
+  shouldRequest,
+  buildPayload,
+  fingerprint,
+  createCompletionCache,
+  formatTokens,
+  describeFimUsage,
+  matchDisabledGlob,
+  toSingleLine,
+} = require('./lib/fim-completion.js');
 const { chooseOldSide, createDiffCache, describeChange } = require('./lib/diff-model.js');
 
 /** 状态栏项(仅在桥连通时显示)。 */
@@ -64,6 +75,119 @@ const diffCache = createDiffCache();
 const diffTextStore = new Map();
 /** 同一个文件的 diff tab 不重复开。 */
 const openDiffTabs = new Map();
+
+// ---------------------------------------------------------------- FIM(幽灵)补全:实验性
+//
+// 这条能力**只在宿主说 enabled=true 时才注册 provider**(宿主的 /sync 每趟都带上来),
+// 所以"设置里没开"不会让编辑器每敲一个字就发一次注定被拒的请求。
+//
+// 三条与宿主一致的分工:
+//   - **该不该问**在这里判(纯逻辑 shouldRequest):不值得问的位置根本不发请求 ——
+//     实测模型在被问到"不该补的地方"时会硬凑(2/2),所以判据必须前置;
+//   - **问什么**在这里裁(窗口内的前后文),宿主侧再兜一层同样的上限;
+//   - **问过没有**用本地缓存答(相同前后文 + 语言)。
+/** 宿主报来的 FIM 状态与用量({enabled:false} 表示设置里没开)。 */
+let fimSnapshot = { enabled: false };
+/** 已注册的 provider disposer(null = 未注册)。 */
+let fimProvider = null;
+/** 扩展上下文(activate 里赋值):provider 需要在轮询里注册/注销,而轮询拿不到 context 参数。 */
+let extensionContext = null;
+/** 前后文 → 补全文本 的有界缓存。 */
+const fimCache = createCompletionCache();
+
+/** 取消感知的停顿:打字过程中的请求全丢掉(宿主侧也有速率闸,但那是最后一道)。
+ *  停顿毫秒数由设置在宿主侧提供(0.3.62),每趟 /sync 带上来;拿不到就用默认值。 */
+async function fimWait(token) {
+  const configured = Number.isFinite(fimSnapshot.debounceMs) ? fimSnapshot.debounceMs : FIM_DEBOUNCE_DEFAULT_MS;
+  const deadline = Date.now() + configured;
+  while (Date.now() < deadline) {
+    if (token.isCancellationRequested === true) return false;
+    // 40ms 一跳:足够细,且不会为一次补全拉起一串定时器。
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  return token.isCancellationRequested !== true;
+}
+
+/** 取光标前后的窗口(只按行取,不把整份文档摸一遍 —— 大文件上每次击键都 getText() 是灾难)。 */
+function fimWindows(document, position) {
+  const startLine = Math.max(0, position.line - 120);
+  const endLine = Math.min(document.lineCount - 1, position.line + 40);
+  const prefixText = document.getText(new vscode.Range(new vscode.Position(startLine, 0), position));
+  const afterEnd = document.lineAt(endLine).range.end;
+  const suffixText = document.getText(new vscode.Range(position, afterEnd));
+  const lineTextBefore = document.lineAt(position.line).text.slice(0, position.character);
+  return { prefixText, suffixText, lineTextBefore };
+}
+
+/** 内联补全 provider。返回 null = 这次不补(与"补一个空串"是两回事)。 */
+function createFimProvider() {
+  return {
+    async provideInlineCompletionItems(document, position, _context, token) {
+      if (fimSnapshot.enabled !== true) return null;
+      const editor = vscode.window.activeTextEditor;
+      const windows = fimWindows(document, position);
+      const decision = shouldRequest({
+        selectionEmpty: editor === undefined || editor === null ? true : editor.selection.isEmpty,
+        scheme: document.uri.scheme,
+        lineCount: document.lineCount,
+        prefixText: windows.prefixText,
+        suffixText: windows.suffixText,
+        lineTextBefore: windows.lineTextBefore,
+      });
+      if (decision.ask !== true) return null;
+      const payload = buildPayload({
+        prefixText: windows.prefixText,
+        suffixText: windows.suffixText,
+        language: document.languageId,
+        path: document.uri.scheme === 'file' ? document.uri.fsPath : document.uri.toString(),
+      });
+      // 按 glob 禁用(0.3.62):**在发请求之前**判 —— 这是这一层存在的主要理由(不花冤枉钱)。
+      // 宿主侧还会再判一次(服务端那道),所以即使这里漏了也不会真的发出去。
+      const blocked = matchDisabledGlob(payload.path, fimSnapshot.disableGlobs);
+      if (blocked !== null) return null;
+      const key = fingerprint(payload.prompt, payload.suffix, payload.language);
+      const cached = fimCache.get(key);
+      if (cached !== null) {
+        return cached === '' ? null : [new vscode.InlineCompletionItem(cached, new vscode.Range(position, position))];
+      }
+      if ((await fimWait(token)) !== true) return null;
+      if (client === null || client.isDormant()) return null;
+      if (typeof client.complete !== 'function') return null;
+      const result = await client.complete(payload);
+      if (token.isCancellationRequested === true) return null;
+      if (result.ok !== true) {
+        if (result.status !== 409 && result.status !== 429) log(`补全失败:${result.error ?? '未知'}(status=${result.status ?? 0})`);
+        return null;
+      }
+      // 多行关掉时宿主已经裁过一道;这里再裁一次是防"宿主版本比扩展旧"(随包分发的静态文件可能不同步)。
+      const raw = typeof result.text === 'string' ? result.text : '';
+      const text = fimSnapshot.multiline === false ? toSingleLine(raw) : raw;
+      fimCache.set(key, text);
+      if (text.trim() === '') return null; // 模型说"这里不用补"是合法回答
+      log(`补全 ${text.length} 字符(${result.ms ?? '?'}ms,缓存${result.usage?.cacheReadTokens ?? 0} tok)`);
+      return [new vscode.InlineCompletionItem(text, new vscode.Range(position, position))];
+    },
+  };
+}
+
+/** 按宿主状态注册/注销 provider(状态翻转时才动)。 */
+function syncFimProvider() {
+  const want = fimSnapshot.enabled === true;
+  if (want && fimProvider === null) {
+    fimProvider = vscode.languages.registerInlineCompletionItemProvider({ pattern: '**' }, createFimProvider());
+    if (extensionContext !== null) extensionContext.subscriptions.push(fimProvider);
+    log('FIM 补全(实验性)已启用:开始提供内联补全');
+  } else if (!want && fimProvider !== null) {
+    try {
+      fimProvider.dispose();
+    } catch {
+      // 已被 VS Code 回收
+    }
+    fimProvider = null;
+    fimCache.clear();
+    log('FIM 补全已关闭:不再提供内联补全');
+  }
+}
 
 /** 把"改动前的文本"登记进 store,返回它的 docId。 */
 function registerDiffText(text) {
@@ -404,6 +528,13 @@ async function pollOnce() {
     await handleEvent(event);
   }
   if ((result.events ?? []).length > 0) client.persist();
+  // FIM(实验性):宿主每趟带状态与用量上来。只在**翻转**时注册/注销 provider,
+  // 但状态栏每趟都刷 —— 用户要看到的是"这轮补全花了多少 token",它一直在变。
+  const nextFim = result.fim !== null && typeof result.fim === 'object' ? result.fim : { enabled: false };
+  const wasEnabled = fimSnapshot.enabled === true;
+  fimSnapshot = nextFim;
+  if ((nextFim.enabled === true) !== wasEnabled) syncFimProvider();
+  updateStatusBar();
   // 能力探测(0.3.24):宿主证明"DSH 页面里的对话框活着"⇒ 右键提问走 ask-open 事件。
   // 0.3.59 起这是**唯一**的提问 UI(编辑器里的 webview 面板已退役):探测不到就只弹一条提示,
   // 绝不退回到一扇用户看不见的窗。
@@ -430,8 +561,23 @@ function startPolling(context) {
 function updateStatusBar() {
   if (statusBar === null) return;
   if (connected && client !== null && client.config !== null) {
-    statusBar.text = '$(plug) DSH';
-    statusBar.tooltip = `编辑器桥已连接:${client.config.pipe}\n上次轮询:${lastPollAt === 0 ? '—' : new Date(lastPollAt).toLocaleTimeString()}\n点击查看日志`;
+    // FIM(实验性)开着时,状态栏多一格 token 计数 —— 这条链路的调用**不进 DSH 的计量**
+    // (一次性调用不是 loop 请求,不进会话日志 ⇒ token-meter 看不到它),所以这里是用户唯一能看到
+    // "补全花了多少"的地方(设置卡里也有同样一份,见 README)。
+    const fimOn = fimSnapshot !== null && fimSnapshot.enabled === true;
+    const used = fimOn ? Number(fimSnapshot.totalTokens ?? 0) : 0;
+    statusBar.text = fimOn
+      ? (used > 0 ? `$(plug) DSH $(zap) ${formatTokens(used)}` : '$(plug) DSH $(zap)')
+      : '$(plug) DSH';
+    const lines = [
+      `编辑器桥已连接:${client.config.pipe}`,
+      `上次轮询:${lastPollAt === 0 ? '—' : new Date(lastPollAt).toLocaleTimeString()}`,
+      '',
+      ...describeFimUsage(fimSnapshot),
+      '',
+      '点击查看日志',
+    ];
+    statusBar.tooltip = lines.join('\n');
     statusBar.command = 'dsh-code-server.showBridgeLog';
     statusBar.show();
   } else {
@@ -523,6 +669,7 @@ function showBridgeLog() {
 // ---------------------------------------------------------------- 激活
 
 function activate(context) {
+  extensionContext = context;
   output = vscode.window.createOutputChannel('DSH Editor Bridge');
   context.subscriptions.push(output);
 
