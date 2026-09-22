@@ -184,5 +184,47 @@ await test('文案来自词典而不是 manifest.description(后者是给 npm �
     'package.json 的顶层 title 不会被宿主读取(readPluginMeta 只认词典与 manifest.name),别写它');
 });
 
+await test('随包分发的每个图标素材都有使用者(不许留下没人读的"另一个 icon")', async () => {
+  // 真实事故(0.3.68):`assets/favicon.ico`(33.7 KB)在 `files` 里躺了很久,而全仓库**没有任何
+  // 代码读它** —— 用户看到界面上的图标不是自己想要的那个时,这个孤儿素材让人以为"另一个 icon 在用"。
+  // 判据:图标素材要么是 package.json 的 `icon`(插件页),要么被 lib/ 或自带扩展的源码引用。
+  // 只扫 lib/ 与 assets/extensions/(不扫 scripts/):否则**本脚本自己的文本**会把素材"用"起来,
+  // 守卫就自证成立了。
+  const ICON_EXTENSIONS = new Set(['.svg', '.png', '.jpg', '.jpeg', '.webp', '.ico']);
+  const walk = (absDir, relDir, out) => {
+    if (!existsSync(absDir)) return out;
+    for (const ent of readdirSync(absDir, { withFileTypes: true })) {
+      const rel = relDir === '' ? ent.name : `${relDir}/${ent.name}`;
+      if (ent.isDirectory()) walk(join(absDir, ent.name), rel, out);
+      else if (ICON_EXTENSIONS.has(extname(ent.name).toLowerCase())) out.push(rel);
+    }
+    return out;
+  };
+  const assets = walk(join(pkgRoot, 'assets'), 'assets', []);
+  assert.ok(assets.length > 0, 'assets/ 下找不到任何图标素材 —— 守卫本身可能失效了');
+  const consumers = [];
+  for (const relDir of ['lib', 'assets/extensions']) {
+    const absDir = join(pkgRoot, relDir);
+    if (!existsSync(absDir)) continue;
+    const stack = [absDir];
+    while (stack.length > 0) {
+      const dir = stack.pop();
+      for (const ent of readdirSync(dir, { withFileTypes: true })) {
+        if (ent.isDirectory()) { stack.push(join(dir, ent.name)); continue; }
+        if (!/\.(?:js|mjs|cjs|json)$/u.test(ent.name)) continue;
+        consumers.push(readFileSync(join(dir, ent.name), 'utf8'));
+      }
+    }
+  }
+  const declaredIcon = typeof pkg.icon === 'string' ? pkg.icon.replace(/^\.\//, '') : '';
+  const orphans = assets.filter((rel) => {
+    if (rel === declaredIcon) return false; // 插件页图标:宿主直接读 package.json 的 icon
+    const base = rel.slice(rel.lastIndexOf('/') + 1);
+    return !consumers.some((text) => text.includes(base) || text.includes(rel));
+  });
+  assert.deepEqual(orphans, [],
+    `这些图标素材随包发布但没有任何使用者(要么删掉并去掉 files 里的条目,要么接上引用):\n  ${orphans.join('\n  ')}`);
+});
+
 console.log(`SUMMARY pass=${pass} fail=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

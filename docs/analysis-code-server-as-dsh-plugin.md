@@ -1810,6 +1810,15 @@ dsh-code-server-app: pending (waiting for service: settingsScope)
 - `locale/en.json` / `locale/zh.json`:`title = "Code Server"`(与侧栏标签、设置座位标题一致)+ 一句话描述。
 - `lib/client.js` 的 guide 入口描述与 `zh.json` 统一口径(只改字符串)。
 
+**0.3.68 收尾:删掉"另一个 icon"**。仓库里当时有两个图标素材,`assets/favicon.svg`(0.7 KB)与
+`assets/favicon.ico`(33.7 KB)。后者在 `files` 白名单里躺了很久,但**全仓库没有任何代码读它**
+(`git grep -i favicon` 的其余命中全是**树内自带**的 `/_static/src/browser/media/favicon.ico` —— 那是
+vendored VS Code 的静态,由 launcher 的 `/_static` 挂载提供;`lib/launcher.mjs` 的 `.ico → image/x-icon`
+只是 MIME 表;`test-claim-types.mjs` 里的 `'a.ico'` 是认领类型的扩展名夹具)。它的 git 历史只有一条
+`6551343 优化图标`,之后再没人碰。用户看到"界面上的图标不是想要的那个"时,正是这个孤儿素材造成的误判,
+所以直接删文件 + 去掉 `files` 条目,favicon.svg 成为唯一图标素材;回归里新增**孤儿图标素材守卫**
+(见 27.4)—— 负向对照已验:把 `.ico` 放回去,守卫立刻报失败。
+
 ### 27.4 回归
 
 新增 `scripts/test-plugin-metadata.mjs`(`pnpm test:metadata`,已进 `run-all-tests.mjs`):
@@ -1819,7 +1828,9 @@ dsh-code-server-app: pending (waiting for service: settingsScope)
 - 词典:`en.json` 锚点必须存在;每份语言 id 合法且大小写不重复;`meta` 的键集**恰好** `title` + `description`
   且各语言一致;标题 ≤ 40、描述 ≤ 140(插件页一行放不下就该改文案,而不是被截断);
 - **通道守卫**:`exports` 必须暴露 `./locale/*.json`(否则静默不本地化)、`en.json` 的描述不得等于
-  `manifest.description`、`package.json` 里不许写顶层 `title`(宿主不读它 ⇒ 写了会让人误以为生效)。
+  `manifest.description`、`package.json` 里不许写顶层 `title`(宿主不读它 ⇒ 写了会让人误以为生效);
+- **孤儿图标素材守卫**:`assets/` 下的每个图标素材要么是 `package.json` 的 `icon`,要么被 `lib/` 或
+  自带扩展的源码引用(只扫这两处:扫 `scripts/` 的话本脚本自己的文本会把素材"用"起来,守卫就自证成立了)。
 
 结论:上面两个**静默失败**模式现在都在本地测试里直接报错,而不是在界面上悄悄退化。
 
