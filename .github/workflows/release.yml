@@ -232,8 +232,24 @@ jobs:
           $cli = if ($env:DSH_CLI_VERSION) { "@deepseek-ai/dsh@$env:DSH_CLI_VERSION" } else { '@deepseek-ai/dsh@latest' }
           $prefix = Join-Path $env:APPDATA 'npm'
           New-Item -ItemType Directory -Force $prefix | Out-Null
-          Write-Host "npm install -g --prefix $prefix $cli"
-          npm install -g --prefix $prefix $cli
+          # 2026-09-22 上游事故:0.1.5-rc.3 这条线**漏发了** @deepseek-ai/dsh-client-ui-sidebar-documentpreview,
+          # 而 @latest(=0.1.5-rc.2) 的依赖范围写作 ^0.1.5-rc.2 —— 按 semver 的预发布规则 rc.3 满足它,
+          # 于是 npm 会去解析 rc.3 的依赖图并报 ETARGET ⇒ 此刻任何人 `npm i -g @deepseek-ai/dsh` 都装不上
+          # (发布因此被挡:2026-09-22 的 release run 两条腿都挂在"全局安装 DSH CLI")。
+          # 这轮 rc.3 是**分批**发布的(2026-09-22T05:38:20Z 起、到 05:55:31Z 共 205 个包),所以截断点必须落在
+          # **最早一次之前**,否则会切到半个快照(实测 05:50 会报 dsh-native-command@^0.1.5-rc.3 无解)。
+          # 默认就用这个干净截断点 = "要 rc.2 那棵树"(闭包已单独验证可解);上游补齐那个子包之后,
+          # 把仓库变量 DSH_CLI_BEFORE 设为 off(或显式给 DSH_CLI_VERSION)即可回到 latest 的当前语义。
+          $before = $null
+          if (-not $env:DSH_CLI_VERSION) {
+            $before = if ($env:DSH_CLI_BEFORE) { $env:DSH_CLI_BEFORE } else { '2026-09-22T05:38:00Z' }
+            if ($before -in @('off', 'none')) { $before = $null }
+          }
+          $npmArgs = @('install', '-g', '--prefix', $prefix)
+          if ($before) { $npmArgs += "--before=$before" }
+          $npmArgs += $cli
+          Write-Host "npm $($npmArgs -join ' ')"
+          & npm @npmArgs
           $dshCmd = Join-Path $prefix 'dsh.cmd'
           if (-not (Test-Path $dshCmd)) { throw "全局装完没找到 $dshCmd" }
           "DSH_EXE=$dshCmd" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
@@ -330,8 +346,20 @@ jobs:
           cli="${cli:-@deepseek-ai/dsh@latest}"
           prefix="$HOME/.npm-global"
           mkdir -p "$prefix"
-          echo "npm install -g --prefix $prefix $cli"
-          npm install -g --prefix "$prefix" "$cli"
+          # 2026-09-22 上游事故:0.1.5-rc.3 这条线**漏发了** @deepseek-ai/dsh-client-ui-sidebar-documentpreview,
+          # 而 @latest(=0.1.5-rc.2) 的依赖范围写作 ^0.1.5-rc.2 —— 按 semver 的预发布规则 rc.3 满足它,
+          # 于是 npm 去解析 rc.3 的依赖图并报 ETARGET ⇒ 此刻任何人 `npm i -g @deepseek-ai/dsh` 都装不上。
+          # 这轮 rc.3 是**分批**发布的(2026-09-22T05:38:20Z 起、到 05:55:31Z 共 205 个包),所以截断点必须
+          # 落在**最早一次之前**,否则会切到半个快照(实测 05:50 会报 dsh-native-command@^0.1.5-rc.3 无解)。
+          # 默认就用这个干净截断点 = "要 rc.2 那棵树"(闭包已单独验证可解);上游补齐后把 DSH_CLI_BEFORE 设为 off
+          # (或显式给 DSH_CLI_VERSION)即可回到 latest 的当前语义。
+          args_note=""
+          before=""
+          if [ -z "${DSH_CLI_VERSION:-}" ] && [ "${DSH_CLI_BEFORE:-}" != "off" ]; then
+            before="--before=${DSH_CLI_BEFORE:-2026-09-22T05:38:00Z}"
+          fi
+          echo "npm install -g --prefix $prefix $before $cli"
+          npm install -g --prefix "$prefix" $before "$cli"
           dsh_exe="$prefix/bin/dsh"
           test -x "$dsh_exe" || { echo "::error::全局装完没找到 $dsh_exe"; exit 1; }
           echo "$prefix/bin" >> "$GITHUB_PATH"
