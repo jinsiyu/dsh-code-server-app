@@ -27,11 +27,11 @@
 > 公式都一致,而且**不可能**版本错配),授权也在同一个对话框里就地处理 —— 详见
 > 「与 DSH 的协同:编辑器桥」。整条链上**没有任何构建步骤**。
 
-## UI 载体与 DSH 版本要求(0.2.3 起只支持带右侧栏的 DSH)
+## UI 载体与 DSH 支持范围(0.2.3 起只支持带右侧栏的 DSH;2026-09-22 收敛为下面两条线)
 
 | DSH 版本 | 载体 | 入口 |
 |---|---|---|
-| **≥ 0.1.5-alpha.1**(有 `sidebarRight` / `sidebarRightTabs` 服务) | **右侧栏标签**(kind=`code-server`,标签名 `Code Server`),并**认领文件地址**(见下) | ① **DSH 官方的产物 chip / 「交付」卡片预览 / 正文里的文件名**(0.2.5 起,走官方 `openFile` → 文件地址 → 本 tab);② 右侧栏「开始」页的 **Code Server 入口框**;③ 设置 → 插件 → Code Server → **「在右侧栏打开」** |
+| **rc 线** `0.1.5-rc.x`(最新 `0.1.5-rc.3` = npm `latest`/`next`)**与 alpha 线** `≥ 0.1.6-alpha.2`(最新 `0.1.7-alpha.1`)—— 判据是**有没有** `sidebarRight` / `sidebarRightTabs` 服务,不按版本号硬判 | **右侧栏标签**(kind=`code-server`,标签名 `Code Server`),并**认领文件地址**(见下) | ① **DSH 官方的产物 chip / 「交付」卡片预览 / 正文里的文件名**(0.2.5 起,走官方 `openFile` → 文件地址 → 本 tab);② 右侧栏「开始」页的 **Code Server 入口框**;③ 设置 → 插件 → Code Server → **「在右侧栏打开」** |
 | 更早(无右侧栏服务) | **不受支持**:除设置页的一条提示外**不提供任何入口** | 无(设置 → 插件 → Code Server 显示升级提示) |
 
 - 检测方式:先 `ctx.get('sidebarRightTabs') / ctx.get('sidebarRight')` 同步探测;
@@ -417,7 +417,7 @@ seq,并且 `/sync` 回应里带 `lastSeq`(高水位),扩展据此自查游标是
 > **Code Server** — 当前 DSH 版本不受支持(缺少右侧栏服务)
 > 本插件自 0.2.3 起不再兼容旧版 DSH。
 > 未检测到右侧栏插件服务 sidebarRightTabs / sidebarRight,因此插件不提供任何入口(旧版的悬浮球与浮动窗口已移除),
-> 也不会后台启动 IDE。升级 DSH 到带右侧栏的版本(≥ 0.1.5-alpha.1)后,Code Server 会出现在右侧栏标签里,
+> 也不会后台启动 IDE。升级 DSH 到 rc 线(0.1.5-rc.x)或 0.1.6-alpha.2 起的 alpha 线后,Code Server 会出现在右侧栏标签里,
 > 本页同时显示完整设置项;升级后无需重装本插件,刷新页面即可。
 
 - **没有任何其他 UI**:不注册 `shell.overlay`(悬浮球)、不认领文件地址、不做常驻预热。
@@ -433,8 +433,8 @@ seq,并且 `/sync` 回应里带 `lastSeq`(高水位),扩展据此自查游标是
 
 - code-server 服务目录**跟随活动工作区/会话**:打开期间切换 DSH 会话/工作区,code-server 自动切到新目录
   (解析优先级:当前会话 cwd → 会话所属 `workspace.path` → 最近活跃会话所属 workspace → 首个 workspace.path;
-  **"当前会话"的信源随 DSH 版本而变**:≥ 0.1.6-alpha.2 读会话作用域标准 prop `sessionId`,
-  ≤ 0.1.6-alpha.1 退回会话列表快照上的 `current` —— 详见下面 0.3.48 那条;纯逻辑内联在 `lib/client.js`
+  **"当前会话"的信源随支持线而变**:alpha 线(≥ 0.1.6-alpha.2)读会话作用域标准 prop `sessionId`,
+  rc 线(≤ 0.1.5-rc.3)退回会话列表快照上的 `current` —— 详见下面 0.3.48 那条;纯逻辑内联在 `lib/client.js`
   的"工作区解析"段,两版形状的契约由 `scripts/test-client-bundle-cwd.mjs` 直接对**入口**钉住);
   打开目录显示在 code-server 页面内(`?folder=<cwd>`,跟随切换时页面自动重新加载);
   实现要点:iframe src 必须带 `?folder=<cwd>`——code-server 前端会记住“最近工作区”并自行恢复,
@@ -550,12 +550,12 @@ pnpm test:bridge-extension   # 编辑器桥扩展侧纯逻辑:未保存缓冲区
 pnpm test:ask-dialog         # 「问 DSH」对话框的接线:没有产物/构建链了、宿主 4 条 ask 路由、扩展只上报编辑器状态、授权四条、桥的安全不变式
 pnpm test:launcher-routes    # launcher 的 HTTP 面(起真进程,较慢)
 pnpm test:workspace-switch   # 切工作区不重启进程
-pnpm test:workspace-cwd      # "当前工作区目录"解析:DSH 0.1.6-alpha.2(sessionId)与旧版(current)两套形状
+pnpm test:workspace-cwd      # "当前工作区目录"解析:alpha 线(≥0.1.6-alpha.2,sessionId)与 rc 线(≤0.1.5-rc.3,current)两套形状
 pnpm test:client-cwd         # 同一件事但直接对**客户端入口** lib/client.js 验(注册出来的 body 真发不发 cwd、URL 带不带 folder)
 pnpm test:client-tabs        # "DSH 侧只留一个 code-server 标签页":新标签挂载时收掉同窗格旧标签(跨窗格/不可见时不动)
 pnpm test:client-entry       # 客户端入口守卫:经典脚本+工厂包装、require 白名单(= DSH 模块表种子词)、src/ 已消失、与 lib/claim-types.js 逐字一致
 pnpm test:ask-panel          # 「问 DSH」对话框面板(0.3.59 起手写):注入机制已下线、视图白名单、注入 CSS 的选择器/var() 安全、六种条目与授权卡片、三条消息落点、拿不到官方部件时的降级
-pnpm test:client-seat        # 设置卡住哪个座位:插件页 plugins.bundle.config(DSH ≥ 0.1.6-alpha.2)vs settings.plugin.item(≤ alpha.1;新版已退役)
+pnpm test:client-seat        # 设置卡住哪个座位:alpha 线用插件页 plugins.bundle.config(≥ 0.1.6-alpha.2)vs rc 线用 settings.plugin.item(≤ 0.1.5-rc.3;alpha 线已退役)
 pnpm test:fullscreen         # 打开标签即全屏
 pnpm test:vendored           # 重打包表 ↔ 插件依赖表一致(无 npm: 别名 / 无聚合包 / vendored.json 进了 files)
 pnpm test:dsh-resolve        # 部署位置表:各平台全局装布局(npm --prefix / nvm / pnpm global / %APPDATA%)都能找到 DSH 部署
@@ -1019,8 +1019,8 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 
 | DSH | 座位 | 长什么样 |
 |---|---|---|
-| **≥ 0.1.6-alpha.2** | `plugins.bundle.config`,**键 = 包名** `dsh-code-server-app` | 插件页 → 找到 `dsh-code-server-app` → 打开该插件页面,设置区在**描述与各行之间**(页面自己画标题/图标/面包屑,我们只出表单 + 保存控件) |
-| ≤ 0.1.6-alpha.1 | `settings.plugin.item`(key `code-server`) | 设置 → 插件 → Code Server 的自绘可折叠卡片(该插槽在新版**已退役**) |
+| **alpha 线 ≥ 0.1.6-alpha.2**(最新 0.1.7-alpha.1) | `plugins.bundle.config`,**键 = 包名** `dsh-code-server-app` | 插件页 → 找到 `dsh-code-server-app` → 打开该插件页面,设置区在**描述与各行之间**(页面自己画标题/图标/面包屑,我们只出表单 + 保存控件) |
+| **rc 线 ≤ 0.1.5-rc.3**(最新 rc 仍是这一支) | `settings.plugin.item`(key `code-server`) | 设置 → 插件 → Code Server 的自绘可折叠卡片(该插槽在新版**已退役**) |
 
 > 为什么必须跟着搬:上游 agent note《插件页上的插件配置》把配置从设置页搬到插件页,并**删掉了
 > `settings.plugin.item`**;插件页只在 `ledger.bundles.has(包名)` 时才渲染那块区域 —— 键写错或还用旧座位,
@@ -1215,6 +1215,7 @@ FIM(Beta)端点,提示词形态由其官方文档与本机实测确定)。标准
   `loopback` 模式跨源,`sandbox` 作为真防护保留。
 - **跨会话单实例**:host 级共享一份 IDE;切换 cwd 只换 workbench 目录(0.2.12 起不重启进程,旧目录的后台终端不会被收走)。
 - **旧版 DSH 不受支持(0.2.3 起)**:没有 `sidebarRightTabs`/`sidebarRight` 的 DSH 上,除设置页一条升级提示外无任何入口;
+  支持范围**只有两条线**(2026-09-22 收敛):rc 线 `0.1.5-rc.x`(旧座位 + 快照上的 `current`)与 alpha 线 `≥ 0.1.6-alpha.2`(新座位 + `sessionId` 标准 prop);更早的 alpha(`0.1.5-alpha.x`、`0.1.6-alpha.1`)**不单独支持** —— 形状与 rc 线相同,所以代码走得通,但不作为验证目标。
   旧版用户请留在 `0.2.2`(`dsh plugin --profile web add dsh-code-server-app@0.2.2`)。
 - **侧栏标签切换**(0.2.2 起不再重载):DSH 右侧栏只渲染当前激活标签的 body,React 卸载会移走 iframe;
   插件把 iframe 收成单例常驻面,用 `Element.moveBefore()`(状态保持型原子移动)在停靠位与文档级停放区之间搬,

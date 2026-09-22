@@ -2,7 +2,7 @@
 //
 // 为什么值得单独一个模块:插件真正的契约在**浏览器侧** —— 它注册到哪些插槽、拿什么 props 渲染、
 // 发什么请求。这些既不是纯函数也不是 host 行为,只有把入口加载起来、喂进一段假 prop/假 ctx 才能
-// 钉住。0.3.48(DSH 0.1.6-alpha.2 去掉 SessionListState.current)与 0.3.50(设置卡从
+// 钉住。0.3.48(alpha 线 DSH 0.1.6-alpha.2 去掉 SessionListState.current)与 0.3.50(设置卡从
 // settings.plugin.item 搬到插件页 plugins.bundle.config)两次都是"本机看不出、一升级就静默失效",
 // 所以回归必须落在这一层。
 //
@@ -87,7 +87,7 @@ function createFakeReact() {
 /**
  * 官方 UI primitives 的桩(模块表种子词 `@deepseek-ai/dsh-client-ui-primitives`)。
  *
- * 形状照着 0.1.6-alpha.2 的 `.d.ts` 来 —— 面板只用到这五个名字,桩也只提供这五个:
+ * 形状照着 alpha 线(0.1.6-alpha.2 起,最新 0.1.7-alpha.1)的 `.d.ts` 来 —— 面板只用到这五个名字,桩也只提供这五个:
  * 多给会让"面板用了不存在的导出"这种错误在测试里查不出来。
  *
  * **`MarkdownText` 刻意做成 `React.memo` 对象而不是函数**:官方就是

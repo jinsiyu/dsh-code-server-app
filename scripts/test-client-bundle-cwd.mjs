@@ -1,7 +1,7 @@
 // scripts/test-client-bundle-cwd.mjs —— 直接对**客户端入口** lib/client.js 验"工作区跟随"这条链
 //
 // 为什么不能只测那个纯函数:0.3.46 的坑不在解析函数里,而在**入口怎么拿输入** ——
-// 它从 `useSessions(s => s).current` 里读"当前会话",而 DSH 0.1.6-alpha.2 把这个字段从
+// 它从 `useSessions(s => s).current` 里读"当前会话",而 DSH 0.1.6-alpha.2(alpha 线)把这个字段从
 // SessionListState 移除了 ⇒ 客户端不再发 cwd ⇒ IDE 以空工作区启动(实测 pid.json 里 cwd 双空)。
 // 纯函数测试对"喂什么形状"是无感的,只有真跑一遍注册出来的 React 组件、喂进两版 DSH 的
 // 标准 prop 形状,才能钉住这条契约。
@@ -10,7 +10,7 @@
 // fetch/react/slots 桩与渲染),拿到注册到 `sidebar.right.pane.tab` 的 body 与 `shell.overlay` 的
 // 预热面,然后看两件事:① 它以什么 cwd 打 `POST /api/code-server/start`(0.3.46 漏掉的那一步);
 // ② 它交给常驻 iframe 的 pageUrl(决定 workbench 用哪个 `?folder=` 打开)。
-// 场景:DSH ≥ 0.1.6-alpha.2(sessionId 标准 prop)、≤ 0.1.6-alpha.1(快照上的 current)、换会话、
+// 场景:alpha 线(DSH ≥ 0.1.6-alpha.2,sessionId 标准 prop)、rc 线(DSH ≤ 0.1.5-rc.3,快照上的 current)、换会话、
 // 文件 tab(地址里的会话)、两版信源都没有(不得猜目录)、根作用域预热面。
 //
 // 0.3.58 起 lib/client.js 就是**手写源码**(客户端不再构建),所以这里没有"产物缺失/过期就 SKIP"
@@ -48,8 +48,8 @@ const tabProps = ({ sessionId, sessions, workspaces, address }) => ({
   }),
 });
 
-const ALPHA2 = { ids: ['b'], byId: { b: { id: 'b', cwd: 'C:/work/beta' } }, phase: 'ready', subagentsByParent: {}, jobsBySession: {} };
-const ALPHA1 = { ids: ['a'], byId: { a: { id: 'a', cwd: 'C:/work/alpha' } }, current: 'a', phase: 'ready' };
+const LATEST_LINE = { ids: ['b'], byId: { b: { id: 'b', cwd: 'C:/work/beta' } }, phase: 'ready', subagentsByParent: {}, jobsBySession: {} };
+const RC_LINE = { ids: ['a'], byId: { a: { id: 'a', cwd: 'C:/work/alpha' } }, current: 'a', phase: 'ready' };
 const NO_WS = { items: [], state: 'idle', phase: 'ready', error: null };
 const folderOf = (cwd) => '&folder=' + encodeURIComponent('/' + cwd.replace(/\\/g, '/'));
 
@@ -63,16 +63,16 @@ await test('注册面:body 挂在 sidebar.right.pane.tab,预热面挂在 shell.o
   assert.ok(bundle.calls.some((c) => c.url.includes('/api/code-server/status')), 'apply 期应先拉一次 status');
 });
 
-await test('DSH 0.1.6-alpha.2 形状:sessionId 标准 prop → /start 带 cwd 且 pageUrl 带 ?folder=', async () => {
-  bundle.render(bodyReg.component, tabProps({ sessionId: 'b', sessions: ALPHA2, workspaces: NO_WS }));
+await test('alpha 线形状(DSH ≥ 0.1.6-alpha.2):sessionId 标准 prop → /start 带 cwd 且 pageUrl 带 ?folder=', async () => {
+  bundle.render(bodyReg.component, tabProps({ sessionId: 'b', sessions: LATEST_LINE, workspaces: NO_WS }));
   assert.equal(bundle.lastStartCwd(), 'C:/work/beta', '必须把该会话的工作区交给宿主(0.3.46 在这里漏了)');
   const src = bundle.surfaceSrc();
   assert.match(src, /\?s=9600/, '实例标记要在');
   assert.ok(src.includes(folderOf('C:/work/beta')), `folder 应是 /C:/work/beta,实际:${src}`);
 });
 
-await test('DSH 0.1.6-alpha.1 形状:快照上的 current 仍然认(向后兼容)', async () => {
-  bundle.render(bodyReg.component, tabProps({ sessionId: undefined, sessions: ALPHA1, workspaces: NO_WS }));
+await test('rc 线形状(DSH ≤ 0.1.5-rc.3):快照上的 current 仍然认(向后兼容)', async () => {
+  bundle.render(bodyReg.component, tabProps({ sessionId: undefined, sessions: RC_LINE, workspaces: NO_WS }));
   assert.equal(bundle.lastStartCwd(), 'C:/work/alpha');
   assert.ok(bundle.surfaceSrc().includes(folderOf('C:/work/alpha')), `实际:${bundle.surfaceSrc()}`);
 });

@@ -23,7 +23,7 @@ A static profile plugin (npm package with host + client bundle) that ships the *
 
 | DSH version | Carrier | Entry points |
 |---|---|---|
-| **>= 0.1.5-alpha.1** (has `sidebarRight` / `sidebarRightTabs`) | **Right-sidebar tab** (kind `code-server`, chip `Code Server`), which also **claims file addresses** (see below) | ① DSH's own **produced-file chips / presented-file card previews / inline file names in prose** (since 0.2.5, via the official `openFile` → file address → this tab); ② the **Code Server box** on the sidebar's guide ("开始") page; ③ Settings → Plugins → Code Server → **"Open in right sidebar"** |
+| **rc line** `0.1.5-rc.x` (latest `0.1.5-rc.3` = npm `latest`/`next`)**and alpha line** `>= 0.1.6-alpha.2` (latest `0.1.7-alpha.1`) — detected by the presence of `sidebarRight` / `sidebarRightTabs`, never by version comparison | **Right-sidebar tab** (kind `code-server`, chip `Code Server`), which also **claims file addresses** (see below) | ① DSH's own **produced-file chips / presented-file card previews / inline file names in prose** (since 0.2.5, via the official `openFile` → file address → this tab); ② the **Code Server box** on the sidebar's guide ("开始") page; ③ Settings → Plugins → Code Server → **"Open in right sidebar"** |
 | older (no sidebar service) | **Unsupported**: nothing but one notice on the settings page | none (Settings → Plugins → Code Server shows an upgrade notice) |
 
 - Detection: first a synchronous `ctx.get('sidebarRightTabs') / ctx.get('sidebarRight')` probe; because the services may come up after this plugin, `ctx.inject(['sidebarRightTabs','sidebarRight'], …)` is awaited and a **2.5 s timeout marks the DSH as legacy** (no version comparison, and the plugin's own activation is never blocked).
@@ -465,7 +465,7 @@ data call changes; the caller stays as it is).
 > Since 0.2.3 this plugin no longer supports older DSH versions.
 > The right-sidebar plugin services `sidebarRightTabs` / `sidebarRight` were not detected, so the plugin exposes no
 > entry point at all (the old floating ball and floating window have been removed) and will not start the IDE in the
-> background. Upgrade DSH to a version with the right sidebar (>= 0.1.5-alpha.1): Code Server then appears as a
+> background. Upgrade DSH to the rc line (0.1.5-rc.x) or the alpha line from 0.1.6-alpha.2 on: Code Server then appears as a
 > right-sidebar tab, this page shows the full settings again, and no reinstall is needed — a page refresh is enough.
 
 - **No other UI**: no `shell.overlay` registration (floating ball), no file-address claim, no resident preload.
@@ -481,8 +481,8 @@ data call changes; the caller stays as it is).
 
 - code-server's workspace **follows the active DSH session/workspace**: switching sessions/workspaces while the IDE is open moves code-server to the new directory
   (resolution order: current session cwd → session's `workspace.path` → workspace of the most recently active session → first workspace.path;
-  **where "the current session" comes from depends on the DSH version**: ≥ 0.1.6-alpha.2 reads the session-scoped standard prop `sessionId`,
-  ≤ 0.1.6-alpha.1 falls back to `current` on the session-list snapshot — see the 0.3.48 bullet below; the logic is inlined in `lib/client.js`
+  **where "the current session" comes from depends on the DSH version**: the alpha line (≥ 0.1.6-alpha.2) reads the session-scoped standard prop `sessionId`,
+  the rc line (≤ 0.1.5-rc.3) falls back to `current` on the session-list snapshot — see the 0.3.48 bullet below; the logic is inlined in `lib/client.js`
   (the "workspace resolution" section) and the contract for both shapes is pinned by `scripts/test-client-bundle-cwd.mjs` directly against the entry file);
   the opened directory is shown inside code-server (`?folder=<cwd>`, the page reloads when following a switch);
   implementation note: the iframe `src` must carry `?folder=<cwd>` — code-server's front-end remembers the "last workspace" and restores it by itself;
@@ -692,11 +692,11 @@ pnpm test:bridge-extension   # extension-side pure logic (dirty buffers, diagnos
 pnpm test:ask-dialog         # ask-dialog wiring: no artifacts/build chain left, the host's four ask routes, the extension only reporting editor state, the four approval constraints, the bridge's safety invariants
 pnpm test:launcher-routes    # launcher HTTP surface (spawns a real process; slow)
 pnpm test:workspace-switch   # switching workspaces does not restart the process
-pnpm test:workspace-cwd      # "current workspace directory" resolution (DSH 0.1.6-alpha.2 sessionId vs. the older current)
+pnpm test:workspace-cwd      # "current workspace directory" resolution (alpha line: sessionId vs. rc line: the snapshot's current)
 pnpm test:client-cwd         # the same contract, but asserted against the **client entry** lib/client.js
 pnpm test:client-tabs        # "one code-server tab on the DSH side": a new tab closes the old one in the same pane
 pnpm test:client-entry       # client-entry guard: classic script + factory wrapper, require whitelist, src/ gone, parity with lib/claim-types.js
-pnpm test:client-seat        # which seat the settings card uses: plugins.bundle.config (DSH ≥ 0.1.6-alpha.2) vs settings.plugin.item (≤ alpha.1)
+pnpm test:client-seat        # which seat the settings card uses: plugins.bundle.config (alpha line >= 0.1.6-alpha.2) vs settings.plugin.item (rc line <= 0.1.5-rc.3)
 pnpm test:fullscreen         # opening the tab goes fullscreen
 pnpm test:vendored           # repack table ↔ plugin dependency table (no npm: aliases, no aggregator)
 pnpm test:installed          # install smoke: assert on what was **installed into a profile**
@@ -1259,7 +1259,7 @@ in. Apache-2.0 grants no trademark rights; this project does not use "Continue" 
 - **`serve: dsh` shares DSH's origin**, so the iframe is not sandboxed there (same-origin plus `allow-same-origin` is
   escapable by the frame itself); in `loopback` mode the iframe is cross-origin and `sandbox` stays as real protection.
 - **Single instance across sessions**: one shared IDE per host; switching cwd only re-navigates the workbench (since 0.2.12 no process restart, so the old directory's background terminals are not collected).
-- **Older DSH versions are unsupported (since 0.2.3)**: on a DSH without `sidebarRightTabs` / `sidebarRight` the plugin
+- **Older DSH versions are unsupported (since 0.2.3).** Exactly two lines are supported (converged 2026-09-22): the **rc line** `0.1.5-rc.x` (old seat + `current` on the snapshot) and the **alpha line** `>= 0.1.6-alpha.2` (new seat + the `sessionId` standard prop). Earlier alphas (`0.1.5-alpha.x`, `0.1.6-alpha.1`) are **not separate targets** — they share the rc line's shapes, so the code happens to work, but they are not verified. Detail: on a DSH without `sidebarRightTabs` / `sidebarRight` the plugin
   offers nothing but an upgrade notice on the settings page; older-DSH users should stay on `0.2.2`
   (`dsh plugin --profile web add dsh-code-server-app@0.2.2`).
 - **Sidebar tab switching** (no longer reloads since 0.2.2): DSH's right sidebar renders only the active tab's body, and

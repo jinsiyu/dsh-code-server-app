@@ -82,7 +82,7 @@ function fixture(overrides = {}) {
     sessionId: 's1',
     available: true,
     threadError: null,
-    uiVersion: '0.1.6-alpha.2',
+    uiVersion: '0.1.7-alpha.1',
     ...overrides,
   };
 }
