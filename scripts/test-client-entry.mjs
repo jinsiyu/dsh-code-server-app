@@ -214,7 +214,9 @@ await test('E3:入口可加载,导出 apply/inject/name;未开钩子时没有 __
   const plain = loadClientBundle({ declaredSlots: ['sidebar.right.pane.tab'] });
   assert.equal(typeof plain.exports.apply, 'function', 'apply 必须是函数');
   assert.equal(plain.exports.name, 'code-server');
-  assert.deepEqual(plain.exports.inject, ['slots', 'settingsScope']);
+  assert.deepEqual(plain.exports.inject, ['slots'],
+    'inject 只留两条线都必然存在的 slots:配置通道(configForms / settingsScope)必须运行时探测,'
+    + '写进 inject 会让条目在没有那个服务的 DSH 上永远 pending(0.3.66 修的线上故障)');
   assert.equal(plain.internals, null, '没设 window.__dshcsTestHooks 时不许导出内部函数(生产路径零影响)');
   assert.equal(Object.prototype.hasOwnProperty.call(plain.exports, '__internals'), false);
 

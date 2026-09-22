@@ -440,7 +440,12 @@ await test('停顿夹取:非法值回落默认,越界夹到 [100, 3000]', () => 
 
 await test('默认关:宿主 Config 里 fim 默认 false;对照 editorBridge 仍默认 true', async () => {
   const plugin = await import(pathToFileURL(join(pkgRoot, 'lib', 'index.js')).href);
-  const resolved = plugin.Config({});
+  // 0.3.66 起 Config 的字段在 alpha 线是 **volatile 活引用**(`{get()}`,schemastery 3.18.3 才有),
+  // 在 rc 线(3.18.2)是普通值 —— 默认值两种形状都要断得出来。
+  const resolved = {};
+  for (const [key, value] of Object.entries(plugin.Config({}))) {
+    resolved[key] = value !== null && typeof value === 'object' && typeof value.get === 'function' ? value.get() : value;
+  }
   assert.equal(resolved.fim, false, '实验性功能必须默认关闭');
   assert.equal(resolved.fimDebounceMs, 250, '停顿默认 250ms');
   assert.equal(resolved.fimMultiline, true, '默认允许多行(与 Continue 的默认一致)');

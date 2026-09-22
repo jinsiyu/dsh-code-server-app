@@ -21,10 +21,14 @@ A static profile plugin (npm package with host + client bundle) that ships the *
 
 ## UI carrier and required DSH version (0.2.3: right-sidebar DSH only)
 
+Every verdict is a **capability probe**, never a version comparison. The two lines differ in two independent
+places: the **right-sidebar session scope** (`sessionId` standard prop ↔ the snapshot's `current`, see
+"Workspace") and the **settings surface** (seat × data channel, see the "Settings" section):
+
 | DSH version | Carrier | Entry points |
 |---|---|---|
-| **rc line** `0.1.5-rc.x` (latest `0.1.5-rc.3` = npm `latest`/`next`)**and alpha line** `>= 0.1.6-alpha.2` (latest `0.1.7-alpha.1`) — detected by the presence of `sidebarRight` / `sidebarRightTabs`, never by version comparison | **Right-sidebar tab** (kind `code-server`, chip `Code Server`), which also **claims file addresses** (see below) | ① DSH's own **produced-file chips / presented-file card previews / inline file names in prose** (since 0.2.5, via the official `openFile` → file address → this tab); ② the **Code Server box** on the sidebar's guide ("开始") page; ③ Settings → Plugins → Code Server → **"Open in right sidebar"** |
-| older (no sidebar service) | **Unsupported**: nothing but one notice on the settings page | none (Settings → Plugins → Code Server shows an upgrade notice) |
+| **rc line** `0.1.5-rc.x` (latest `0.1.5-rc.3` = npm `latest`/`next`)**and alpha line** `>= 0.1.6-alpha.2` (latest `0.1.7-alpha.1`) — detected by the presence of `sidebarRight` / `sidebarRightTabs`, never by version comparison | **Right-sidebar tab** (kind `code-server`, chip `Code Server`), which also **claims file addresses** (see below) | ① DSH's own **produced-file chips / presented-file card previews / inline file names in prose** (since 0.2.5, via the official `openFile` → file address → this tab); ② the **Code Server box** on the sidebar's guide ("开始") page; ③ the settings block (location per "Settings") → **"Open in right sidebar"** |
+| older (no sidebar service) | **Unsupported**: nothing but one notice in the settings block | none (the settings block shows an upgrade notice) |
 
 - Detection: first a synchronous `ctx.get('sidebarRightTabs') / ctx.get('sidebarRight')` probe; because the services may come up after this plugin, `ctx.inject(['sidebarRightTabs','sidebarRight'], …)` is awaited and a **2.5 s timeout marks the DSH as legacy** (no version comparison, and the plugin's own activation is never blocked).
   Since 0.2.4 that verdict is **reversible** and registration no longer relies on `ctx` property access (which on desktop silently skipped registration — the symptom was "settings card looks normal but the sidebar has no entry"):
@@ -34,9 +38,9 @@ A static profile plugin (npm package with host + client bundle) that ships the *
   - services arriving late automatically revoke the legacy verdict, register the sidebar, and report `{sidebar:true}` so the host re-enables;
   - a failed registration is no longer silent: it logs an error and the card's entry row says "right-sidebar services were found but the tab could not be registered".
 - **0.2.3 dropped legacy-DSH compatibility**: the floating ball and the internal floating window are **deleted**. When the DSH is detected as legacy the plugin
-  - registers only the settings card (an upgrade notice) — no ball, no floating window, **no file-address claim**, no IDE preload;
+  - registers only the settings notice (seat per "Settings") — no ball, no floating window, **no file-address claim**, no IDE preload;
   - reports `/api/code-server/ui-mode { sidebar:false }` to the host (after the 10 s grace above); the host then **recycles an instance it auto-prestarted** and stops prestarting (a user-started/adopted instance is never touched), and `{sidebar:true}` reverses that if the services show up later;
-  - upgrading DSH needs **no reinstall** — refresh the page and the card turns back into the full settings card.
+  - upgrading DSH needs **no reinstall** — refresh the page and the notice turns back into the full settings form.
 - The sidebar tab hosts the code-server page (iframe) and follows the current session workspace; the panel can be collapsed/split/floated/fullscreened by DSH's right sidebar.
 - **Fullscreen on open (0.2.9, on by default)**: opening the Code Server tab (including clicking a produced-file chip / delivered-file preview / inline file name) switches the right sidebar from "side by side with the conversation" to **fullscreen** (fills the window) — an IDE is cramped in a narrow column.
   It only affects that moment of opening: clicking the sidebar's own "Exit fullscreen" is never fought back; switching away and back, or opening another file tab, goes fullscreen again.
@@ -684,7 +688,6 @@ The regression suite (also the single list CI uses) is:
 
 ```powershell
 pnpm test                    # runs them all: scripts/run-all-tests.mjs
-pnpm test:apply              # apply() under a stub ctx
 pnpm test:claim-types        # claim-type syntax and defaults
 pnpm test:bridge-routes      # bridge route whitelist (read-only + /approve + /old) / Origin-vs-token order / token header agreement
 pnpm test:edit-snapshot      # pre-write snapshots: value.before from tools/post-execute, session-cwd path resolution, triple-bounded cache, /old's 400-404-200
@@ -696,7 +699,9 @@ pnpm test:workspace-cwd      # "current workspace directory" resolution (alpha l
 pnpm test:client-cwd         # the same contract, but asserted against the **client entry** lib/client.js
 pnpm test:client-tabs        # "one code-server tab on the DSH side": a new tab closes the old one in the same pane
 pnpm test:client-entry       # client-entry guard: classic script + factory wrapper, require whitelist, src/ gone, parity with lib/claim-types.js
-pnpm test:client-seat        # which seat the settings card uses: plugins.bundle.config (alpha line >= 0.1.6-alpha.2) vs settings.plugin.item (rc line <= 0.1.5-rc.3)
+pnpm test:apply              # apply() under a stub ctx (ReferenceError regressions) + both settings data lines: the new one reads volatile leaves and follows settings/document-updated, the legacy one registers a **non-volatile** schema and subscribes scope.watch
+pnpm test:client-seat        # settings **seat × data channel**: seat (plugin page plugins.bundle.config ≥ 0.1.6-alpha.2 / settings page settings.plugin.item ≤ 0.1.5-rc.3) × channel (configForms ≥ 0.1.7-alpha.1 / settingsScope earlier)
+                             # all eight combinations must apply (injection guard) + behaviour for the three real ones: the new line has **mutate** as its only write path, registration is gated by whileServed, the rc line still uses the old seat
 pnpm test:fullscreen         # opening the tab goes fullscreen
 pnpm test:vendored           # repack table ↔ plugin dependency table (no npm: aliases, no aggregator)
 pnpm test:installed          # install smoke: assert on what was **installed into a profile**
@@ -1050,10 +1055,31 @@ Host probe order: `@jinsiyu/dshcs-vscode-server/vscode` (**the real layout since
 `@jinsiyu/dshcs-code-server-<platform>-<arch>/code-server` (the 0.1.37 platform sub-packages) >
 the in-package `vendor/vscode` > the in-package `vendor/code-server` (development). The old install root
 `<profile>\.code-server-app` is only mentioned in a startup log line; nothing writes to it any more.
-## Settings card (Settings → Plugins → Code Server)
+## Settings (since 0.3.50: the plugin page; earlier: Settings → Plugins → Code Server)
 
-Modeled after dsh-auto-open-web's custom card, registered on the `settings.plugin.item` slot,
-persisted via the official settings domain (`settingsScope`, namespace `code-server`) into the official settings document:
+The settings surface is decided by **two independent axes** — the **seat** (where the UI is drawn) and the
+**data channel** (where values are read from and written to). Their break points are **not the same release**,
+so three real combinations must all work:
+
+| DSH | Seat (declaration-driven: `slots.inject` only fires for a declared slot, so both legs are registered) | Data channel (capability probe) |
+|---|---|---|
+| **rc line ≤ 0.1.5-rc.3** (latest rc is still this one) | `settings.plugin.item` (key `code-server`) — the self-drawn collapsible card in Settings → Plugins → Code Server | `ctx.settingsScope` (namespace `code-server`), per-field `set/unset` |
+| **0.1.6-alpha.2** | `plugins.bundle.config`, **key = package name** `dsh-code-server-app` — plugin page → `dsh-code-server-app` → the settings block sits **between the description and the rows** | same as above (`settingsScope` still exists in this release) |
+| **alpha line ≥ 0.1.7-alpha.1** (latest 0.1.7-alpha.1) | as above (the page draws title/icon/crumb itself; we only render the form + save control) | `ctx.configForms.get('code-server')` — the configuration **is the plugin entry's own `Config`**, and the only write path is one atomic `mutate(ops, revision)` |
+
+> Why both legs stay: `settings.plugin.item` retired in ≥ 0.1.6-alpha.2 (the plugin page only renders that
+> block when `ledger.bundles.has(packageName)` — a wrong key or the old seat makes the settings block
+> **silently disappear**), while `settingsScope` was **deleted in 0.1.7-alpha.1** (renamed/re-modelled to
+> `configForms`). Declaring such a service in the client `inject` costs even more: the entry stays **pending
+> forever**, and the right-sidebar tab, the settings block and the resident preload **all vanish together**,
+> leaving only `web boot: 1 entry did not activate` / `pending (waiting for service: settingsScope)` in the log.
+> So the client `inject` keeps only the universally present `['slots']`, and both channels are **probed at
+> runtime** (`ctx.get`); the host half does the same (`typeof settings.register === 'function'` → legacy path,
+> otherwise read the volatile leaves). Regressions: `pnpm test:client-seat` (injection guard over the eight
+> seat × channel combinations plus behaviour for the three real ones) and `pnpm test:apply` (both host lines).
+
+**Configurable fields** (one shared list for both channels; these fields carry `.volatile()` in the host
+`Config`, so saving re-resolves that leaf **in place** without remounting the plugin):
 
 | Key | Default | Description |
 |---|---|---|
@@ -1065,13 +1091,19 @@ persisted via the official settings domain (`settingsScope`, namespace `code-ser
 | `fimMultiline` | `true` | **FIM · allow multi-line completions** (0.3.62): off means the host returns the first line only (an empty first line = no completion this time). The model does invent insertions where none are needed, and multi-line amplifies that noise |
 | `fimDisableGlobs` | empty | **FIM · disable by glob** (0.3.62): semicolon/newline separated. `*` does not cross directories, `**` does, a pattern without `/` matches the basename, a pattern with `/` matches any path suffix, and a trailing `/` means `/**`. Examples: `*.md`, `vendor/**`, `**/dist/**`. **Checked on both sides**: the extension first (no request at all), the host again |
 
-(Since 0.2.9 the card keeps only those settings (0.3.61 added FIM completion, 0.3.62 its three sub-rows); `windowedOpen` and `reserveComposer` are gone — leftover keys in an old
-settings document neither fail nor apply. `serve` remains a key in the settings namespace (usable from a settings document) but
-has **no card row** — see "Serving mode".)
+Two more fields are **writable but have no row** (as before, so they can be driven from config/settings
+documents): `serve` (serving mode, see "Serving mode") and `editorBridge` (editor-bridge switch) — both are
+editable in the `cordis.patch.yml` `config` and in settings; changes apply immediately (`serve` on next start).
 
-> Card changes take effect immediately via `scope.watch` (the host status API returns `keepResident`, `claimExtensions` and
-> `fullscreenOnOpen`; the client applies them at once); no dsh restart needed. **After adding new setting keys, restart dsh web before first use**,
-> so the host re-registers the settings namespace (schema includes the new key); otherwise save/validation of the new key won't work.
+(Since 0.2.9 the card keeps only those settings (0.3.61 added FIM completion, 0.3.62 its three sub-rows); `windowedOpen` and `reserveComposer` are gone — leftover keys in an old
+settings document neither fail nor apply.)
+
+> Changes apply immediately, no dsh restart needed: the legacy channel goes through `scope.watch`, the new one
+> through the `settings/document-updated` event (both host lines land in the same commit function). The host
+> status API returns `keepResident`, `claimExtensions` and `fullscreenOnOpen`, and the client applies them at
+> once. **After adding new setting keys, restart dsh web before first use**: the new line only offers the
+> **volatile** fields of an active, uniquely locatable entry, and the legacy line must re-register the
+> settings namespace.
 
 Since 0.2.7 the card has **no** "Entry", "dependency install" or "environment check" rows: the entry lives in the sidebar's
 guide page (and in DSH's own file clicks), and diagnostics stay out of the UI — the `/api/code-server/status` `env` field still

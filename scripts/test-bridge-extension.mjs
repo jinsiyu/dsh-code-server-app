@@ -780,6 +780,24 @@ await test('投递方式:跟着 DSH 的 ui-conversation.busyEnter 走(steer / qu
   assert.equal(pickBusyEnter({ get: () => undefined }), 'queue', '没有 settings 服务 ⇒ 默认 queue');
   assert.equal(pickBusyEnter({}), 'queue');
 
+  // ①-b 新线(alpha ≥ 0.1.7-alpha.1):SettingsForms **没有 get**,只有 describe()(条目 id 就是命名空间)。
+  // 这条通道漏了的话,用户在「设置 → 对话」里选的 steer 会**静默无效**(面板永远 queue)。
+  const describeOf = (forms, { throws = false } = {}) => ({
+    describe: () => { if (throws) throw new Error('boom'); return forms; },
+  });
+  const withForms = (settings) => ({ get: (n) => (n === 'settings' ? settings : undefined) });
+  assert.equal(pickBusyEnter(withForms(describeOf([{ ns: 'ui-conversation', value: { busyEnter: 'steer' } }]))), 'steer',
+    '新线:要从 describe() 的 descriptor.value 里读到 steer');
+  assert.equal(pickBusyEnter(withForms(describeOf([{ ns: 'ui-conversation', value: { busyEnter: 'queue' } }]))), 'queue');
+  assert.equal(pickBusyEnter(withForms(describeOf([{ ns: 'other-entry', value: { busyEnter: 'steer' } }]))), 'queue',
+    '别的条目同名值不算(命名空间必须对上)');
+  assert.equal(pickBusyEnter(withForms(describeOf([{ ns: 'ui-conversation' }]))), 'queue', '值缺失 ⇒ 默认 queue');
+  assert.equal(pickBusyEnter(withForms(describeOf([{ ns: 'ui-conversation', value: { busyEnter: 'whatever' } }]))), 'queue', '未知值 ⇒ 默认 queue');
+  assert.equal(pickBusyEnter(withForms(describeOf([], {}))), 'queue', '条目未加载 ⇒ 默认 queue');
+  assert.equal(pickBusyEnter(withForms(describeOf(null, { throws: true }))), 'queue', 'describe 抛错 ⇒ 默认 queue');
+  assert.equal(pickBusyEnter(withForms(describeOf('not-an-array'))), 'queue', '形状不对 ⇒ 默认 queue');
+  assert.equal(pickBusyEnter(withForms({})), 'queue', '既没有 get 也没有 describe ⇒ 默认 queue');
+
   // ② 投递:忙碌时按设置选 API;空闲时一律 followup(两者等价,但语义最直白)。
   const makeCtx = (agent, busyEnter) => ({
     get: (name) => {

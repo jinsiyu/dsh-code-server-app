@@ -339,7 +339,7 @@ GET /          → 200 text/html len=4222
 
 | 侧 | 行为 |
 |---|---|
-| 客户端 | 只注册 `settings.plugin.item`(提示卡,`noticeOnly` 模式:无只读条、无"保存/放弃"按钮,默认展开);**不注册** `shell.overlay`(悬浮球/预热)、`conversation.chat.turnTail`(产物按钮)、`sidebar.right.pane.tab`(侧栏 body) |
+| 客户端 | 只注册一条升级提示(座位随 DSH 版本:`settings.plugin.item` 或 `plugins.bundle.config`;`noticeOnly` 模式:无只读条、无"保存/放弃"按钮,默认展开);**不注册** `shell.overlay`(悬浮球/预热)、`conversation.chat.turnTail`(产物按钮)、`sidebar.right.pane.tab`(侧栏 body) |
 | 客户端 → host | `POST /api/code-server/ui-mode { sidebar:false }` |
 | host | 记录 `state.sidebarUi=false`;`maybePrestart()` 直接返回(**不再预启动**);若当前实例是"本插件刚自动预启动且未被 adopt",则 `stop('legacy-ui')` **回收**,避免留下用不上的 IDE 进程与端口 |
 
@@ -1707,3 +1707,74 @@ node .spike/verify-runtime.mjs .spike/verify-install2/node_modules/dsh-code-serv
 **结论:根因在 desktop 的「装完就校验」顺序,我们这边能做的是让自己不再依赖那个 pnpm 行为。**
 桌面应用侧的根治办法(改包的 mutation 也走完整安装)记在
 `docs/desktop-first-install-root-cause.md` 第三节,由用户决定是否改那份检出。
+
+## 26. 0.3.66:配置数据面从 `settingsScope` 迁到 `configForms`(并保留 rc 线)
+
+### 26.1 现场(DSH 0.1.7-alpha.1)
+
+启动即:
+
+```
+Failed to load plugins
+web boot: 1 entry did not activate
+dsh-code-server-app: pending (waiting for service: settingsScope)
+```
+
+**右侧栏标签、设置区、常驻预热一起消失**,而且只有这一行日志 —— 因为客户端条目的静态
+`inject = ['slots','settingsScope']` 在 0.1.7-alpha.1 上永远等不到那个服务(条目 pending ⇒ `apply` 根本没跑)。
+
+### 26.2 三个事实(逐条读源码/包得到的,不是版本号推测)
+
+| 事实 | 证据 |
+|---|---|
+| **座位**与**数据通道**的分界点**不在同一版** | `@deepseek-ai/dsh-cordis-client-runner` 词汇表命中数:`0.1.5-rc.3` = `settingsScope`×1 + `settings.plugin.item`×3;`0.1.6-alpha.2` = `settingsScope`×1 + `plugins.bundle.config`×4;`0.1.7-alpha.1` = `configForms`×1 + `plugins.bundle.config`×4(**`settingsScope` 0 命中**) |
+| 客户端新通道是 `ctx.configForms.get(entryId)` | `dsh-client-ui-settings/lib/types/client/config-form.d.ts`:`get(entryId)` 内部就是 `new ConfigFormController(owner, { namespace: entryId }, …)` ⇒ **entryId 即设置命名空间**;`ConfigFormSnapshot` = `{status:'loading'\|'ready'\|'unavailable', value, base, user, revision, writable, mode}`;写只有 `mutate(ops, expectedRevision)`(另有 `set`/`unset`);注册经 `whileServed(namespaces, register)` 门禁 |
+| 宿主新模型是"**条目自己的 Config**" | `dsh-settings@0.1.7-alpha.1` 不再有 `register/get/watch`,只有 `describe/update/replace/mutate/configure`;`lib/index.js` 里对非 volatile 路径直接抛 `Config field "x" is not volatile`,对没有 volatile 字段的条目抛 `Plugin entry "ns" has no volatile fields` |
+
+### 26.3 两条线(三种真实组合)
+
+| # | DSH | 座位 | 数据通道 | 宿主半行为 |
+|---|---|---|---|---|
+| ① | rc `0.1.5-rc.x` | `settings.plugin.item` | `settingsScope` | `settings.register('code-server', SettingsSchema)` + `scope.get()/watch()` |
+| ② | `0.1.6-alpha.2` | `plugins.bundle.config` | `settingsScope`(这一版还在) | 同 ① |
+| ③ | alpha `≥ 0.1.7-alpha.1` | `plugins.bundle.config` | `configForms` | 读 `config.<field>.get()` 活叶子 + `settings/document-updated` |
+
+- **座位用声明驱动**(两条腿都 `slots.inject`,谁被声明谁生效),**通道用能力探测**
+  (`typeof settings.register === 'function'` / `ctx.get('configForms')`)—— 判据全是能力,不做版本比较。
+- 客户端 `inject` 收敛成 `['slots']`:两个通道服务都**不能**写进 inject(写进去就让另一条线上的条目 pending)。
+  探测只走 `ctx.get`(未声明的服务**属性访问会抛**,这是 0.3.6 那类事故的同一根因,见 §15.8)。
+- **宿主两套 schema 来自同一份字段表**(`SETTING_FIELDS` + `settingShape(wrap)`):`Config` 带 `.volatile()`,
+  旧线注册的 `SettingsSchema` **不带**。原因:schemastery 3.18.3 起 volatile 是**解析期**行为
+  (`createVolatile(value)` 在 schema 里完成),旧的 settings 域会把活引用直接交给线路(JSON 化后是 `{}`)
+  ⇒ 卡片读到的全是空值;而 rc 线的 schemastery 是 **3.18.2,根本没有 `.volatile()`**(实测 0 命中),
+  无条件调用会在模块求值期抛错、整棵插件树加载失败。故 `vol()` 先探测能力再包。
+- **自带配置页要显式声明**:`ctx.inject(['settings'], child => child.effect(() => child.settings.configure({auto:false}, ctx.fiber)))`
+  —— 子级是**可选**的(业务插件无 Settings 也能跑),策略只关掉"按 schema 自动生成页面",不移除配置读写。
+
+### 26.4 回归(都在 `scripts/`,进 `run-all-tests.mjs`)
+
+- `test-client-settings-seat.mjs`:座位 × 通道 **8 种组合**的**注入守卫**(`missingInject` 为空 + 真 apply)、
+  三种真实组合的行为;新线钉"注册只在 `whileServed` 之后""写路径**只有** `mutate`(带 revision 栅栏)""`unset` = 恢复默认"
+  "被拒时保留草稿";rc 线钉旧座位与 scope 注入;两条通道都缺时**侧栏标签与预热必须照旧**(第二层故障)。
+- `test-client-bundle-harness.mjs`:桩里补了 `configForms`(含 `whileServed` 门禁与 mutate 镜像)、
+  `@deepseek-ai/dsh-client-store` 模块表、`propsOf()`(像真壳层那样把注入面物化成 `use<Key>` hook)、
+  以及**与 DSH 同语义的 `ctx.inject`/静态 `inject` 门禁**("缺一个服务就不 apply" —— 故障形态因此能在测试里复现)。
+- `test-plugin-apply.mjs`:宿主两条线各一条用例(新线读 volatile 活叶子并随 `settings/document-updated`;
+  旧线注册**不带 volatile** 的 schema 并订阅 `scope.watch`),外加"两份 schema 字段一致 / volatile 只在有该能力时生效"。
+- 既有用例的期望随之更新:`test-fim.mjs` 与 `test-plugin-apply.mjs` 里 `plugin.Config({})` 的取值改为
+  "解活引用后再断言"(同一份断言在 schemastery 3.18.2 与 3.18.3 上都成立),`test-client-entry.mjs` 的
+  `inject` 断言改成 `['slots']`。
+
+### 26.5 顺带修掉的同一个旧契约:`pickBusyEnter` 读别人的命名空间
+
+`lib/bridge-session.mjs` 的 `pickBusyEnter` 读的是**另一个插件**的偏好(`ui-conversation.busyEnter`,
+决定「问 DSH」面板按 Enter 是 `steer` 还是 `queue`),用的也是同一批被删掉的 API:
+
+- 旧线:`ctx.settings.get('ui-conversation')`("Read one registered namespace's resolved value");
+- 新线:**`SettingsForms` 没有 `get`**,只有 `describe()` → `[{ns, value, …}]`,而 `ns` 就是条目 id
+  (官方 `dsh-client-ui-conversation` 客户端自己也是 `ctx.configForms.get('ui-conversation')`)。
+  漏了这条通道的表现是**静默的**:用户在「设置 → 对话」里选了 steer,面板永远按 queue 投递。
+
+修法与 `lib/index.js` 同构:先认 `get`(旧线),再认 `describe()`(新线),都拿不到/形状不对/抛错一律
+回 `'queue'`;回归在 `test-bridge-extension.mjs` 的"投递方式"那条(新旧两种形状各 8~9 个断言)。
+

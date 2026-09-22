@@ -14,12 +14,20 @@
 //   · 极简 react 桩:hook 按调用次数记账,effect **立即执行**(被测的正是 effect 里的请求与 iframe src);
 //     另有真的 Component(类组件/错误边界)+ Fragment;
 //   · 模块表桩:`react` / `react/jsx-runtime` / `react-dom/client` /
-//     `@deepseek-ai/dsh-client-ui-primitives` —— 「问 DSH」面板 0.3.59 起靠后两个渲染,所以
-//     `clientReactDom: false` / `clientPrimitives: false` 能模拟"异常宿主取不到种子词",
-//     用来钉住**降级路径**(正文 <pre>、按钮原生 button)而不是白屏;
+//     `@deepseek-ai/dsh-client-ui-primitives` / **`@deepseek-ai/dsh-client-store`** —— 「问 DSH」面板 0.3.59
+//     起靠前两者里的后两个渲染,配置表单 0.3.66 起靠 store 那一个;所以
+//     `clientReactDom: false` / `clientPrimitives: false` / `clientStore: false`
+//     能模拟"异常宿主取不到模块表",用来钉住**降级路径**(正文 <pre>、按钮原生 button、
+//     配置区退回旧通道)而不是白屏/整条客户端不加载;
 //   · slots 桩:`inject(name, factory)` **只在声明的插槽列表里回调**(复刻 DSH "插槽未被声明就不回调"
 //     的语义);register 把每个 entry 的 desc 与组件留下来;
+//   · 服务集桩:`services` 决定这个宿主有哪些服务(`settingsScope` 旧通道 / `configForms` 新通道),
+//     `ctx.inject(deps, cb)` **只在该声明的服务都在时才回调**(与 DSH 一致),入口的静态 `inject`
+//     同理 —— 缺一个服务就**不 apply**(复刻"条目 pending"),`applied` / `missingInject` 报出来。
+//     `configForms` 与 `settingsScope` **刻意不做成 ctx 的属性**(只经 ctx.get 可见):未在 inject 里
+//     声明的服务,属性访问在 DSH 里会抛错,而这两个服务正是不能写进 inject 的那两个。
 //   · 渲染:调一次组件(可选沿"函数子组件"下钻一层层调;类组件实例化后取 render()),返回元素树;
+//     另有 `propsOf(desc)`:像真壳层那样把注入面物化成 props(`hooks` 表的键 → `use<Key>` 选择器 hook);
 //   · `testHooks: true` 时先设 `window.__dshcsTestHooks = true`,于是入口会额外导出 `__internals`,
 //     让"纯函数单元套件"(工作区解析、全屏动作、问 DSH 面板)不必为了可测而把模块拆出去
 //     (拆出去 = 又要有构建)。
@@ -28,6 +36,7 @@
 //   import { loadClientBundle } from './client-bundle-harness.mjs'
 //   const h = loadClientBundle({ declaredSlots: ['sidebar.right.pane.tab', 'shell.overlay'] })
 //   const reg = h.registrations.find(r => r.desc.name === 'plugins.bundle.config')
+//   h.render(reg.component, h.propsOf(reg, { view: 'page' }))
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -149,16 +158,124 @@ const DEFAULT_STATUS = {
   fullscreenOnOpen: true, claimExtensions: '*',
 };
 
+/** 壳层把注入面的 hooks 键派生成 props 名(`hooks.gowinToolchainForm` → `useGowinToolchainForm`)。 */
+export function standardHookPropName(name) {
+  return `use${name.charAt(0).toUpperCase()}${name.slice(1)}`;
+}
+
+/**
+ * `@deepseek-ai/dsh-client-store` 的桩:只实现入口真正用到的工厂 `createSnapshotStore(init)`
+ * (真品是 zustand vanilla + immer 的引擎,这里只要 getSnapshot/subscribe/set 三件套够用)。
+ */
+function createFakeClientStore() {
+  return {
+    createSnapshotStore(init) {
+      let snapshot = init;
+      const listeners = new Set();
+      return {
+        getSnapshot: () => snapshot,
+        subscribe(fn) { listeners.add(fn); return () => { listeners.delete(fn) } },
+        set(next) { snapshot = next; [...listeners].forEach((fn) => fn()) },
+        update(mutator) { const next = { ...snapshot }; mutator(next); snapshot = next; [...listeners].forEach((fn) => fn()) },
+      };
+    },
+  };
+}
+
+/**
+ * `configForms` 服务桩(新通道)。语义照上游 `dsh-client-ui-settings` 的 `.d.ts` 与实现:
+ *   · `get(entryId)` → 该条目的表单模型:`getSnapshot()`({status,writable,revision,value,base,user})、
+ *     `subscribe(cb)`、**唯一写路径** `mutate(ops, revision)`、`dispose()`(另有 set/unset:入口不该用,
+ *     用例会断言"没被调");
+ *   · `whileServed(namespaces, register)` → 门禁:只要列出的命名空间**有一个正被服务**,
+ *     `register(服务集合)` 就被调用一次并返回它的 disposer;全都不被服务时调用那个 disposer。
+ *
+ * @param options.servedNamespaces 初始"宿主正在服务"的命名空间集合
+ * @param options.snapshot 初始表单快照(status/writable/revision/value/base/user 可覆盖)
+ * @param options.applyMutate=false 让 mutate 只记账、不更新镜像(用来验"被拒时保留草稿")
+ */
+function createFakeConfigForms(options = {}) {
+  const formListeners = new Set();
+  const servedListeners = new Set();
+  const calls = { get: [], mutate: [], set: [], unset: [], whileServed: [] };
+  let served = new Set(options.servedNamespaces ?? []);
+  const snapshot = {
+    status: 'ready', writable: true, revision: 7, value: {}, base: undefined, user: {}, mode: 'host',
+    ...(options.snapshot ?? {}),
+  };
+  const form = {
+    getSnapshot: () => snapshot,
+    subscribe(fn) { formListeners.add(fn); return () => { formListeners.delete(fn) } },
+    dispose() { formListeners.clear() },
+    async mutate(ops, revision) {
+      calls.mutate.push({ ops, revision });
+      if (options.applyMutate === false) return options.mutateLands !== false;
+      // 复刻宿主"接受后把应答折回镜像":值层与用户层都更新,revision 前进,订阅者被通知。
+      const value = { ...snapshot.value };
+      const user = { ...(snapshot.user ?? {}) };
+      for (const op of ops) {
+        const field = Array.isArray(op.path) ? op.path[0] : undefined;
+        if (op.op === 'unset') delete user[field];
+        else { value[field] = op.value; user[field] = op.value }
+      }
+      snapshot.value = value;
+      snapshot.user = user;
+      snapshot.revision += 1;
+      [...formListeners].forEach((fn) => fn());
+      return true;
+    },
+    async set(field, value) { calls.set.push({ field, value }); return true },
+    async unset(field) { calls.unset.push({ field }); return true },
+  };
+  const service = {
+    get(entryId) { calls.get.push(entryId); return form },
+    whileServed(namespaces, register) {
+      calls.whileServed.push([...namespaces]);
+      let off;
+      const sync = () => {
+        const watched = namespaces.some((ns) => served.has(ns));
+        if (watched && off === undefined) off = register(new Set(served));
+        else if (!watched && off !== undefined) { off(); off = undefined }
+      };
+      servedListeners.add(sync);
+      sync();
+      return () => { servedListeners.delete(sync); if (off !== undefined) { off(); off = undefined } };
+    },
+  };
+  return {
+    service,
+    form,
+    calls,
+    snapshot,
+    /** 测试用:改"宿主正在服务哪些命名空间"并通知 whileServed(门禁用例)。 */
+    setServed(namespaces) { served = new Set(namespaces); [...servedListeners].forEach((sync) => sync()) },
+    servedNamespaces: () => new Set(served),
+  };
+}
+
 /**
  * 加载产物并 apply 一次。
  * @param options.declaredSlots 已声明的插槽名(不在此列 ⇒ inject 不回调,与 DSH 行为一致)
  * @param options.status `/api/code-server/status` 的返回体
- * @param options.scopeSnapshot settingsScope.bind(...).getSnapshot() 的返回体
+ * @param options.scopeSnapshot 旧通道:`settingsScope.bind(...).getSnapshot()` 的返回体
+ * @param options.settingsScope=false 拿掉旧通道(模拟 0.1.7-alpha.1)
+ * @param options.configForms=true 装上**新通道**(configForms + @deepseek-ai/dsh-client-store)
+ * @param options.configServed=false 让新通道的门禁先不通过(宿主还没在服务这个条目),之后用
+ *   `h.setConfigServed(true)` 放行 —— 用来钉"只在 whileServed 之后注册"
+ * @param options.clientStore=false 让模块表里没有 `@deepseek-ai/dsh-client-store`(异常宿主)
  */
 export function loadClientBundle(options = {}) {
   const declared = new Set(options.declaredSlots ?? []);
   const statusPayload = options.status ?? DEFAULT_STATUS;
   const scopeSnapshot = options.scopeSnapshot ?? { status: 'ready', value: {}, user: {}, writable: true };
+  const forms = options.configForms === true
+    ? createFakeConfigForms({
+      servedNamespaces: options.configServed === false ? [] : ['code-server'],
+      snapshot: options.formSnapshot,
+      applyMutate: options.applyMutate,
+      mutateLands: options.mutateLands,
+    })
+    : null;
   const fake = createFakeReact();
   const loaded = [];
   globalThis.window = {
@@ -194,6 +311,7 @@ export function loadClientBundle(options = {}) {
   /** 面板挂载时建过的 React 根(断言"挂到哪、渲染了什么")。 */
   const roots = [];
   const primitives = createFakePrimitives(fake.React);
+  const clientStore = createFakeClientStore();
   const mod = entry.factory((name) => {
     if (name === 'react') return fake.React;
     if (name === 'react/jsx-runtime') return { jsx: fake.React.createElement, jsxs: fake.React.createElement };
@@ -220,6 +338,12 @@ export function loadClientBundle(options = {}) {
       }
       return primitives;
     }
+    if (name === '@deepseek-ai/dsh-client-store') {
+      if (options.clientStore === false) {
+        throw new Error('client-modules: require("@deepseek-ai/dsh-client-store") missed the module table(测试:模拟异常宿主)');
+      }
+      return clientStore;
+    }
     throw new Error(`未知模块:${name}`);
   });
   assert.equal(typeof mod.apply, 'function');
@@ -236,22 +360,49 @@ export function loadClientBundle(options = {}) {
       return typeof out === 'function' ? out : () => {};
     },
   };
-  const ctx = {
-    get: (name) => (name === 'slots' ? slots : undefined),
+  /** 这位"宿主"有哪些服务(名字 → 服务对象)。 */
+  const services = {
+    slots,
     sidebarRightTabs: { register: () => () => {}, guide: () => [], entries: () => [], subscribe: () => () => {} },
     sidebarRight: { bind: () => {}, openTab: () => {}, closeIn: () => {}, isExpanded: () => false, toggleExpanded: () => {} },
-    slots,
-    settingsScope: {
+  };
+  if (options.settingsScope !== false) {
+    services.settingsScope = {
       bind: () => ({
         getSnapshot: () => scopeSnapshot,
         subscribe: () => () => {},
         set: async () => {}, unset: async () => {},
       }),
-    },
-    inject: (deps, cb) => { cb(ctx); return () => {}; },
-    effect: (fn) => { const out = fn(); return typeof out === 'function' ? out : () => {}; },
+    };
+  }
+  if (forms !== null) services.configForms = forms.service;
+  const ctx = {
+    get: (name) => services[name],
+    slots,
+    sidebarRightTabs: services.sidebarRightTabs,
+    sidebarRight: services.sidebarRight,
+    effect: (fn) => { const out = fn(); return typeof out === 'function' ? out : () => {} },
   };
-  mod.apply(ctx);
+  // 两个**通道**服务永远不做成属性(cordis 只把"声明在 inject 里的服务"暴露成属性):
+  // 它们不能进 inject —— 写进去会让另一条线上的条目 pending —— 所以只能经 `ctx.get` 拿。
+  // 这里让属性访问当场抛,写法一错就在测试里炸,而不是在用户机器上静默取不到/整条 UI 消失。
+  for (const name of ['configForms', 'settingsScope']) {
+    Object.defineProperty(ctx, name, {
+      get() { throw new Error(`${name} 只能经 ctx.get 拿(它不能进 inject:会让另一条 DSH 上的条目 pending)`) },
+    });
+  }
+  /** `ctx.inject(deps, cb)`:与 DSH 一致,**声明的服务都在**才回调(缺一个就永远 pending)。 */
+  const injectWaits = [];
+  ctx.inject = (deps, cb) => {
+    const missing = deps.filter((name) => services[name] === undefined);
+    if (missing.length > 0) { injectWaits.push({ deps, missing }); return () => {} }
+    const out = cb(ctx);
+    return typeof out === 'function' ? out : () => {};
+  };
+  // 入口的静态 inject 决定"这条目会不会激活":缺一个服务就不 apply(复刻 pending),并记下来。
+  const missingInject = mod.inject.filter((name) => services[name] === undefined);
+  const applied = missingInject.length === 0;
+  if (applied) mod.apply(ctx);
 
   /** 渲染一次:重置 hook 记账,再把**整棵树的函数组件都调用掉**(深度上限 8),
    *  直到剩下宿主元素与字符串 —— 断言才看得到真正的控件(如 textarea)与全部文案。
@@ -287,13 +438,53 @@ export function loadClientBundle(options = {}) {
     return renderTree(component(props), 0);
   }
 
+  /** 复刻壳层"注入面 → props"的物化:面里的 `hooks` 表按 `use<Key>` 派生成选择器 hook,
+   *  其余键原样成为 props(`view` 这类由页面给的用 `extra` 传)。
+   *  参数可以是 `registrations` 里那一项,也可以是它的 `.desc`(两种都常见)。 */
+  function propsOf(registration, extra = {}) {
+    const desc = registration !== null && registration !== undefined && registration.desc !== undefined
+      ? registration.desc : registration;
+    const face = desc !== null && desc !== undefined && typeof desc.inject === 'function' ? (desc.inject() ?? {}) : {};
+    const out = { ...extra };
+    for (const [key, value] of Object.entries(face)) {
+      if (key === 'hooks') {
+        for (const [name, source] of Object.entries(value ?? {})) {
+          out[standardHookPropName(name)] = (selector) => fake.React.useSyncExternalStore(
+            (cb) => source.subscribe(cb),
+            () => (typeof selector === 'function' ? selector(source.getSnapshot()) : source.getSnapshot()),
+          );
+        }
+      } else if (key === 'keyedHooks') {
+        // 本插件不用 keyed 源(照实跳过,免得"用了不存在的形状"在测试里查不出来)
+      } else {
+        out[key] = value;
+      }
+    }
+    return out;
+  }
+
   return {
     registrations,
     injects,
     calls,
     render,
+    propsOf,
     statusPayload,
     scopeSnapshot,
+    /** 这位"宿主"提供的服务名集合(用例据此断言入口的静态 inject 能被满足)。 */
+    services: new Set(Object.keys(services)),
+    /** 喂给入口的那个 ctx(用例可断言"未声明的服务属性访问会抛"这类契约)。 */
+    ctx,
+    /** 入口静态 inject 里缺的服务(非空 = 条目永远 pending,DSH 的 "N entries did not activate")。 */
+    missingInject,
+    /** `ctx.inject(deps, cb)` 里因为服务缺失而**没**回调的记录。 */
+    injectWaits,
+    /** 条目是否真的 apply 了(缺服务 = false,复刻 pending)。 */
+    applied,
+    /** 新通道的服务桩句柄(`configForms: true` 时非 null):`{calls, snapshot, setServed, ...}`。 */
+    forms,
+    /** 测试用:改"宿主正在服务哪些命名空间"并通知 whileServed 门禁。 */
+    setConfigServed: (namespaces) => { if (forms !== null) forms.setServed(namespaces) },
     /** 面板挂载建过的 React 根(`{container, rendered}`);`rendered` 就是面板元素树。 */
     roots,
     /** 官方 UI primitives 的桩(面板用它渲染 MarkdownText / DisclosureRow / Button)。 */
