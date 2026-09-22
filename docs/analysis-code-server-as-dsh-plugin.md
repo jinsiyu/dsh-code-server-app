@@ -1778,3 +1778,48 @@ dsh-code-server-app: pending (waiting for service: settingsScope)
 修法与 `lib/index.js` 同构:先认 `get`(旧线),再认 `describe()`(新线),都拿不到/形状不对/抛错一律
 回 `'queue'`;回归在 `test-bridge-extension.mjs` 的"投递方式"那条(新旧两种形状各 8~9 个断言)。
 
+## 27. 0.3.67:插件页的图标与文案 —— 走宿主的包元数据契约
+
+### 27.1 现象与目标
+
+插件页那一行/那张卡一直是**占位图形 + 2000 字的描述**:标题落在 `manifest.name`,描述直接取
+`package.json` 的 `description`(那段是给 npm 页面写的完整说明,README 里也说清了它是"包说明"不是"界面文案")。
+目标是插件页显示**真图标**与**一句话本地化文案**,且中英文各一套。
+
+### 27.2 契约(逐行读 `@deepseek-ai/dsh-app-boot` 的 `readPluginMeta` 得到,不是版本号推测)
+
+| 项 | 规则 | 失败模式 |
+|---|---|---|
+| 图标 | package.json 顶层 `icon`:必须**相对路径**(绝对路径或带 scheme 抛错)、扩展名 ∈ {svg,png,jpg,jpeg,webp}、realpath 后仍在 manifest 目录内、常规文件、**≤ 256 KiB**;宿主转 `data:<mediaType>;base64` 交给前端 `<img src>` | **静默**:丢图标(只记 `meta.error`)⇒ 退化成占位图形 |
+| 文案 | 先解析 `<包>/locale/en.json` 作**锚点**,再枚举同目录下所有 `*.json`;每份读 `meta.title` / `meta.description`(非空字符串,其它键忽略);语言名 = 文件名(`/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/`,按小写去重);返回 `{en: <manifest 兜底>, ...各语言}` | ① **缺 `en.json`** ⇒ 词典集合为空、完全不本地化;② 词典**没在 `exports` 里** ⇒ 模块解析器报 `ERR_PACKAGE_PATH_NOT_EXPORTED`,被当成"没有词典"⇒ 与 ① 同一后果:英文界面继续显示 manifest 长描述 |
+
+`localizedText` 返回 `{ en: fallback ?? finalFallback, ...Object.fromEntries(entries) }` —— 展开在 `en` 之后,
+所以 **`en` 会被 `en.json` 的值覆盖**:en.json 必须同时给 title 与 description,否则英文界面照样是长文。
+前端只渲染 `meta.title` / `meta.description`(`packageText()`;行、卡片、详情页共用),manifest 的
+`description` 虽仍被台账携带,但**不进插件页**。
+
+官方范式:`@deepseek-ai/dsh-experimental-voice-input-bundle`(`"icon": "./icon.svg"` + `locale/{en,zh}.json`,
+且 `files` 与 `exports` 两处都列了它们)。语言名跟随官方先例用 `zh`(不是 `zh-cn`)。
+
+### 27.3 落地
+
+- `package.json`:`"icon": "./assets/favicon.svg"`(复用侧栏标签已在用的那个 favicon:0.7 KB、无外链、
+  内嵌 `prefers-color-scheme` 深色自适应);`exports` 加 `./locale/*.json`;`files` **逐条**列
+  `locale/en.json` 与 `locale/zh.json`(不用 glob:`test-package-files.mjs` 的存在性检查是字面 `existsSync`,
+  写成 `locale/*.json` 会被判"幽灵条目")。
+- `locale/en.json` / `locale/zh.json`:`title = "Code Server"`(与侧栏标签、设置座位标题一致)+ 一句话描述。
+- `lib/client.js` 的 guide 入口描述与 `zh.json` 统一口径(只改字符串)。
+
+### 27.4 回归
+
+新增 `scripts/test-plugin-metadata.mjs`(`pnpm test:metadata`,已进 `run-all-tests.mjs`):
+
+- 图标:存在、相对、无 scheme、扩展名白名单、realpath 在包内、常规文件、≤ 256 KiB、被 `files` 覆盖、
+  SVG 无 `<script>`/无外链且有 `viewBox`(它是要被内联成 `data:` 用的);
+- 词典:`en.json` 锚点必须存在;每份语言 id 合法且大小写不重复;`meta` 的键集**恰好** `title` + `description`
+  且各语言一致;标题 ≤ 40、描述 ≤ 140(插件页一行放不下就该改文案,而不是被截断);
+- **通道守卫**:`exports` 必须暴露 `./locale/*.json`(否则静默不本地化)、`en.json` 的描述不得等于
+  `manifest.description`、`package.json` 里不许写顶层 `title`(宿主不读它 ⇒ 写了会让人误以为生效)。
+
+结论:上面两个**静默失败**模式现在都在本地测试里直接报错,而不是在界面上悄悄退化。
+

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Code Server",
+    "description": "VS Code in DSH's right sidebar, following the session workspace; the agent reads unsaved buffers, diagnostics and the active selection."
+  }
+}

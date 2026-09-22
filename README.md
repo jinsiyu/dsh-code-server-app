@@ -572,6 +572,8 @@ pnpm test:package-files      # 发布物白名单守卫:files 里的模块**递�
 pnpm test:installed          # 安装冒烟:对**已装进 profile 的产物**做断言(默认 <DSH_HOME>/profiles/web)
                              # files 白名单每条都在 / 重打包包在当前平台齐全 / 原生模块无缺失 /
                              # 已安装副本能 import / 树在位 —— 仓库回归看不出这一类
+pnpm test:metadata           # 插件页图标与文案守约:icon 的相对性/格式白名单/包内 realpath/≤256 KiB/files 覆盖,
+                             # 词典的 en.json 锚点/语言 id/键集一致/长度上限,以及"词典必须在 exports 里"这条静默失败守卫
 ```
 
 > `test:bridge-routes` 会把 `DSH_HOME` 指向临时目录(否则它会 adopt 开发机上正在跑的那个实例,
@@ -1067,6 +1069,19 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 > (宿主两条线都落到同一个 commit 函数);host 端 status API 同步返回 `keepResident`、`claimExtensions`
 > 与 `fullscreenOnOpen`,客户端立即生效。**新增设置键后首次使用前需重启 dsh web**:
 > 新线的表单只展示**活动且可唯一定位**的条目里的 **volatile** 字段,旧线要重新注册设置命名空间。
+
+### 插件页的图标与文案(0.3.67 起)
+
+插件页那一行/那张卡的**图标与标题描述由宿主从包元数据解析**,不是我们画在客户端里的:
+
+| 项 | 来源 | 硬约束(宿主 `readPluginMeta` / `iconOf`) |
+|---|---|---|
+| 图标 | `package.json` 顶层 `"icon": "./assets/favicon.svg"` | 必须**相对路径**(绝对路径或带 scheme 一律抛错);扩展名只认 **svg / png / jpg / jpeg / webp**;realpath 后必须留在包目录内;必须是常规文件;**≤ 256 KiB**。宿主转成 `data:…;base64` 交给前端 `<img src>` |
+| 标题 / 描述 | `locale/en.json`(锚点)+ `locale/zh.json`,格式 `{"meta":{"title":…,"description":…}}` | 文件名必须是语言 id 且按小写去重;**`en.json` 缺了就等于没有词典**;词典经**模块解析器**定位 ⇒ `exports` 里必须有 `./locale/*.json` |
+
+两个**静默失败**模式(界面上什么都不说,只退化):图标非法/缺失 ⇒ 退回占位图形;词典没导出 ⇒
+英文界面继续显示 `package.json` 里那段 2000 字的 `description`(那段是给 npm 页面看的,插件页文案一律走词典)。
+回归:`pnpm test:metadata`(`scripts/test-plugin-metadata.mjs`,含"词典必须在 `exports` 里""文案长度上限"两条陷阱守卫)。
 
 ## 配置(cordis.patch.yml 的 `config`,均有默认值)
 

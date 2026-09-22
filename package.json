@@ -1,6 +1,6 @@
 {
   "name": "dsh-code-server-app",
-  "version": "0.3.66",
+  "version": "0.3.67",
   "description": "VS Code (from a code-server release) inside DSH: a right-sidebar tab driven by the plugin's own launcher over the in-process VS Code server (lib/launcher.mjs), plus an editor bridge (assets/extensions/dshcs-editor-bridge) that gives the agent what only the editor knows (unsaved buffers, language-server diagnostics, the active selection) and lets editor gestures drive the session. The bridge is completely read-only: all four of its routes (/health, /sync, /old, /event) are reads. Asking DSH from the editor opens a floating dialog inside the DSH page (draggable, resizable, bottom-right): the plugin's client half sends the question as user input (POST /api/code-server/ask/send) and renders that session's new content with DSH's own Markdown renderer - the same @deepseek-ai/dsh-client-ui-primitives instance the UI uses, required from the page's module table, so typography, highlighting and math match the interface and a renderer version mismatch is impossible. Thinking appears as collapsed rows and approval requests (writing outside the workspace / running commands) can be answered in place: whole-plugin write route POST /api/code-server/ask/approve, constrained to pending in-process requests and the outcomes allowed-once/rejected; dialog-first for 5 minutes, handed back to the official card the moment the dialog closes, never auto-approved. There is no build step anywhere: lib/client.js (client half including the dialog panel) and the extension are committed hand-written source, devDependencies holds a single test-only entry, and the published package carries no frontend bundle. Also: the tab claims DSH file addresses (dsh-resource://file/**) by file type (setting claimExtensions), so produced-file chips, delivered-file previews and inline prose mentions open in the workbench; the IDE is a resident surface moved with Element.moveBefore instead of being remounted, so switching sidebar tabs does not reload it; opening the tab switches the right sidebar to fullscreen by default (setting fullscreenOnOpen); a workspace switch re-navigates the workbench with the new ?folder= without restarting the IDE process. Requires a DSH with the right-sidebar services (sidebarRightTabs/sidebarRight, >= 0.1.5-alpha.1); older DSH versions only get an upgrade notice on the settings page. Two serving modes: loopback port (default) or same-origin mount on DSH's own webServer (/code-server, protected by ctx.connection.requestRejection). The diff the bridge opens always has the real pre-write text on the left, taken from result.value.before in tools/post-execute into a bounded snapshot cache and fetched by opaque key over the read-only GET /old, so files that are not open in the editor work too. No code-server Node layer, no argon2, no C++ toolchain.",
   "homepage": "https://github.com/jinsiyu/dsh-code-server-app",
   "repository": {
@@ -9,9 +9,11 @@
   },
   "type": "module",
   "main": "lib/index.js",
+  "icon": "./assets/favicon.svg",
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
   "dsh": {
@@ -57,6 +59,8 @@
     "lib/vendored.json",
     "assets/favicon.ico",
     "assets/favicon.svg",
+    "locale/en.json",
+    "locale/zh.json",
     "assets/extensions/dshcs-open-file",
     "assets/extensions/dshcs-editor-bridge",
     "scripts/vendor-vscode-server.mjs",
@@ -97,6 +101,7 @@
     "test:dsh-resolve": "node scripts/test-dsh-resolve.mjs",
     "test:child-node": "node scripts/test-child-node.mjs",
     "test:package-files": "node scripts/test-package-files.mjs",
+    "test:metadata": "node scripts/test-plugin-metadata.mjs",
     "test:bridge-routes": "node scripts/test-bridge-routes.mjs",
     "test:edit-snapshot": "node scripts/test-edit-snapshot.mjs",
     "test:bridge-extension": "node scripts/test-bridge-extension.mjs",

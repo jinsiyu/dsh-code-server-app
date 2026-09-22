@@ -43,6 +43,7 @@ const SUITE = [
   'test-fim.mjs',
   'test-child-node.mjs',
   'test-package-files.mjs',
+  'test-plugin-metadata.mjs',
   'test-bridge-routes.mjs',
   'test-edit-snapshot.mjs',
   'test-bridge-extension.mjs',

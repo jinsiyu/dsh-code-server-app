@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Code Server",
+    "description": "在 DSH 右侧栏运行 VS Code 网页版，跟随会话工作区；agent 可读未保存缓冲区、诊断与选区，编辑器手势可驱动会话。"
+  }
+}

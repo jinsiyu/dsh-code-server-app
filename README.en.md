@@ -708,6 +708,10 @@ pnpm test:installed          # install smoke: assert on what was **installed int
                              # (default <DSH_HOME>/profiles/web): every `files` entry present, repack
                              # packages complete for this platform, no missing natives, the installed
                              # copy imports, the tree is in place — nothing the repo suite can see
+pnpm test:metadata           # plugin-page icon & copy contract: icon relativeness / media-type whitelist /
+                             # realpath inside the package / ≤256 KiB / covered by `files`; dictionary
+                             # en.json anchor, language ids, identical key sets, copy length caps, and the
+                             # silent "dictionaries must be exported" guard
 ```
 
 **The dist-tag policy is unchanged**: `release.yml` only publishes `next` and never touches `latest`; `latest` is
@@ -1109,6 +1113,22 @@ Since 0.2.7 the card has **no** "Entry", "dependency install" or "environment ch
 guide page (and in DSH's own file clicks), and diagnostics stay out of the UI — the `/api/code-server/status` `env` field still
 reports the tree version / `productPath` / server entry, VS Code inner dependencies and **prebuilt native packages**
 (platform aggregator name + resolved module count) for scripts, and the DSH host log carries the `[code-server]` lines.
+
+### Plugin-page icon and copy (since 0.3.67)
+
+The **icon and the title/description of the plugin row and card are resolved by the host from package metadata** —
+they are not drawn by our client half:
+
+| Item | Source | Hard constraints (host `readPluginMeta` / `iconOf`) |
+|---|---|---|
+| Icon | `package.json` top-level `"icon": "./assets/favicon.svg"` | must be a **relative path** (absolute paths or any scheme throw); extension must be **svg / png / jpg / jpeg / webp**; must stay inside the package directory after realpath; must be a regular file; **≤ 256 KiB**. The host inlines it as `data:…;base64` for the client's `<img src>` |
+| Title / description | `locale/en.json` (the anchor) plus `locale/zh.json`, shaped `{"meta":{"title":…,"description":…}}` | filenames must be language ids and are de-duplicated case-insensitively; **without `en.json` there are no dictionaries at all**; dictionaries are located through the **module resolver**, so `exports` must expose `./locale/*.json` |
+
+Two **silent failure modes** (the UI says nothing, it just degrades): an illegal or missing icon falls back to the
+placeholder artwork; dictionaries that are not exported leave the English UI showing the 2000-character
+`description` from `package.json` (that one is for the npm page — plugin-page copy always comes from the
+dictionaries). Regression: `pnpm test:metadata` (`scripts/test-plugin-metadata.mjs`, which also pins the
+"dictionaries must be exported" and "copy length caps" traps).
 
 ## Config (`config` in cordis.patch.yml; all have defaults)
 
