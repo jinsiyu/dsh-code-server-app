@@ -255,19 +255,38 @@ await test('命名空间白名单:四条只读 + 一条有界的模型调用(/co
   }
 });
 
-await test('/complete(0.3.61):默认关 ⇒ 403(不开就不外发任何内容);只接受 POST', async () => {
+await test('/complete(0.3.61):默认关 ⇒ 拒绝且不外发(桥未启用时守卫先 503);只接受 POST', async () => {
   // 桩 ctx 的 settingsValue 里没有 fim 键 ⇒ 走默认 false。这条路由必须**拒绝**而不是
   // "可用但补全为空":拒绝才是"没开就不发请求"的证据(扩展侧也据此不注册 provider)。
   const disabled = await callBridge('/code-server-bridge/complete', {
     method: 'POST', body: JSON.stringify({ prompt: 'const a =', suffix: '' }),
   });
   if (skipIfUnreachable(disabled, '/complete')) return;
-  assert.equal(disabled.status, 403, `未开启 FIM 时必须 403(实际 ${disabled.status})`);
+  // 状态码取决于**桥守卫**这一步(2026-09-22 ubuntu/windows runner 上实测抓到的坑):
+  //   每条桥路由的**第一句**都是 bridgeRejection(request),而守卫用的令牌来自"接管一个正在跑的
+  //   实例"(adoptBridgeRuntime)。本测试**不启动 IDE** ⇒ 桩里 bridgeMeta 为 null ⇒ 守卫先给
+  //   503「编辑器桥未启用」,FIM 那道 403 在**这个环境里根本不可达**(同文件里 /old 期望 503
+  //   也是同一个原因)。
+  // 两种都接受 —— 守卫在 handler 之前,所以两条路都是"拒绝且一个字节都不外发";但**必须**是我们
+  // 认得的拒绝理由:401(令牌不对)/404/405/200 一律不许出现。
+  // 注意本机看不到这段:沙箱连命名管道 EPERM ⇒ 这条用例在本机一直 SKIP,本地 pass 从不代表它绿。
+  if (disabled.status === 503) {
+    assert.match(disabled.text, /编辑器桥未启用/u,
+      `503 只能来自桥守卫(lib/bridge.mjs 的 bridgeGuard),实际:${disabled.text}`);
+  } else {
+    assert.equal(disabled.status, 403, `未开启 FIM 时必须 403(实际 ${disabled.status}:${disabled.text})`);
+    assert.match(disabled.text, /fim-disabled/u, `403 必须是 fim-disabled(不是被 glob 拦下),实际:${disabled.text}`);
+  }
   const wrongMethod = await callBridge('/code-server-bridge/complete');
   assert.equal(wrongMethod.status, 405, 'GET 应 405(只接受 POST)');
   const source = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
   assert.match(source, /if \(!fimSetting\) return jsonResponse\(\{ ok: false, error: 'fim-disabled' \}, 403\)/,
     '启用判定必须在读请求体/发请求之前');
+  // 上面那个 403 分支只在"桥正在跑"时才执行得到 ⇒ 把**顺序**在这里钉死,否则这条测试在
+  // "桥没起来"的环境里等于什么都没验:守卫 → FIM 开关(403)→ 适配器可用性(503)→ 读 body → 发请求。
+  assert.match(source,
+    /async function handleBridgeComplete\(request\) \{[\s\S]*?bridgeRejection\(request\)[\s\S]*?error: 'fim-disabled'[\s\S]*?\n  \}/u,
+    '/complete 必须**先过守卫**再判 FIM 开关(顺序反了就是在鉴权前泄露功能状态),且 FIM 判定在发请求之前');
   assert.match(source, /fimBudget\.acquire\(\)/, '必须有速率与并发闸(这条链路由击键触发)');
   assert.match(source, /provider: FIM_PROVIDER/, '取数必须走 ctx.llm(注册我们自己的适配器路由),不是裸 fetch');
 });
