@@ -106,6 +106,9 @@ Continue 是"**自带 agent 的 IDE 插件**";我们是"**把 IDE 搬进 agent �
 - **上游**:`util/AutocompleteDebouncer.ts`(1058B,`90c436b8…`)、`util/AutocompleteLruCache.ts`(6760B,`5bb637fe…`)、
   `util/processSingleLineCompletion.ts`(2046B,`a8a3353c…`)、`generation/GeneratorReuseManager.ts`(2598B)。
 - **落点**:扩展侧 `lib/inline-completion.js`(击键取消 + 静止窗口 + LRU)。
+- **已落地**:0.3.63 起 FIM 走 `lib/fim-completion.js` 的 `createCompletionCache`
+  (**严格精确键**,max 24 / TTL 120 s)。`AutocompleteLruCache` 是**前缀键**、`GeneratorReuseManager`
+  是**同一次生成的复用** —— 这两块我们**还没做**,对照见 `docs/analysis-fim-prior-art.md` 第三节第 1 条。
 
 ### B4 片段选择(光标附近代码之外的上下文)
 
