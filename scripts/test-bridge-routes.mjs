@@ -136,18 +136,32 @@ async function waitForEndpoint(timeoutMs = 3000) {
   }
 }
 
-/** 直接驱动本机 IPC 监听口:真实传输(命名管道 / unix socket)→ 真实 Node 路由 → Fetch 适配器
- *  → 分发 → guard 这条**完整**链。0.3.13 起这就是扩展走的那条路。
+/** 驱动桥请求。**两条路,任一条通就真跑**(0.3.64):
+ *  ① 真实传输:本机 IPC(命名管道 / unix socket)→ 真实 Node 路由 → Fetch 适配器 → 分发 → guard,
+ *     0.3.13 起这就是扩展走的那条路;
+ *  ② 进程内分发:host 侧钩子 lib/index.js 的 `bridgeRequestForTests` —— 同一条 dispatchBridge、
+ *     同样把 body 收成 Buffer、同样把 Response 摊平,**缺的只有 socket 本身**。
  *
- *  沙箱说明:workspace-write 下**连接**命名管道会 EPERM(监听是允许的,这是本机沙箱边界,
- *  与代码正确性无关;真实部署没有这个问题)。遇到 EPERM 时把 `unreachable` 置位,
- *  由调用方报 SKIP 而不是假装通过。 */
+ *  为什么必须有②(2026-09-22 的教训):沙箱下**连接**命名管道会 EPERM(监听是允许的,这是本机
+ *  沙箱边界,不是代码问题),于是本文件所有走 IPC 的用例在本机一律 SKIP —— "本地 pass=30" 里
+ *  **不含**桥的状态码断言,0.3.63 的 `/complete` 403 就是这么在本地假绿、推到 runner 才红的。
+ *  传输可以是本机的,断言不能是本机的。 */
 let ipcUnreachable = null;
-async function callBridge(path, { method = 'GET', headers = {}, body = null } = {}) {
-  const endpoint = (await waitForEndpoint()).endpoint;
-  if (endpoint === null) return { status: 0, headers: {}, text: '', json: () => null, unreachable: 'no endpoint' };
-  if (ipcUnreachable !== null) return { status: 0, headers: {}, text: '', json: () => null, unreachable: ipcUnreachable };
-  const payload = body === null ? null : Buffer.from(body, 'utf8');
+/** 实际用到的那条传输(打给 SUMMARY 上面那行看,避免"到底验没验"再靠猜)。 */
+let transport = null;
+
+/** 进程内分发(钩子缺失时返回 unreachable,由调用方判失败 —— 本文件不再接受"跳过")。 */
+async function inprocRequest(path, method, headers, payload) {
+  const hook = plugin.bridgeRequestForTests;
+  if (typeof hook !== 'function') {
+    return { status: 0, headers: {}, text: '', json: () => null, unreachable: 'host 没有 bridgeRequestForTests 钩子' };
+  }
+  const res = await hook({ path, method, headers, body: payload === null ? '' : payload });
+  return { status: res.status, headers: res.headers, text: res.text, json: () => JSON.parse(res.text), unreachable: null };
+}
+
+/** ① 真实 IPC 传输。EPERM 时返回 unreachable(由 callBridge 回落到②)。 */
+async function ipcRequest(endpoint, path, method, headers, payload) {
   try {
     return await new Promise((resolve, reject) => {
       const req = http.request({
@@ -178,13 +192,32 @@ async function callBridge(path, { method = 'GET', headers = {}, body = null } = 
   }
 }
 
-/** 传输类用例的统一入口:沙箱里 EPERM → 记 SKIP(不静默通过)。 */
-function skipIfUnreachable(result, name) {
-  if (result !== undefined && result.unreachable !== null && result.unreachable !== undefined) {
-    console.log(`SKIP ${name}:${result.unreachable}`);
-    return true;
+async function callBridge(path, { method = 'GET', headers = {}, body = null } = {}) {
+  const endpoint = (await waitForEndpoint()).endpoint;
+  const payload = body === null ? null : Buffer.from(body, 'utf8');
+  if (endpoint !== null && ipcUnreachable === null) {
+    const res = await ipcRequest(endpoint, path, method, headers, payload);
+    if (res.unreachable === null) {
+      transport ??= 'ipc';
+      return { ...res, via: 'ipc' };
+    }
+    console.log(`提示:本机 IPC 不可达(${res.unreachable})⇒ 桥请求改走**进程内分发**`
+      + '(同一条 dispatchBridge,缺的只有 socket);下面的断言照跑,不再 SKIP');
   }
-  return false;
+  const res = await inprocRequest(path, method, headers, payload);
+  if (res.unreachable === null) transport ??= 'inproc';
+  return { ...res, via: res.unreachable === null ? 'inproc' : null };
+}
+
+/** 传输类用例的统一入口。**这里不再有"跳过"**:两条传输都拿不到 = 断言根本没跑,不算绿 ——
+ *  这正是 0.3.63 "本地假绿"的根治点(以前这里返回 true 让整条用例 SKIP,本机 7 条全被跳掉)。 */
+function requireReachable(result, name) {
+  const reason = result !== undefined && result.unreachable !== null && result.unreachable !== undefined
+    ? result.unreachable
+    : null;
+  assert.equal(reason, null,
+    `${name}:桥请求没有任何可用传输(${reason})—— 断言没跑,不算通过`
+    + '(真实 IPC 与进程内分发都不可用时才会走到这里,见 callBridge)');
 }
 
 const BRIDGE_SUFFIXES = ['/health', '/sync', '/old', '/event', '/complete'];
@@ -211,7 +244,7 @@ await test('桥走本机 IPC(命名管道 / unix socket),既不在 /api 下、�
 
 await test('所有桥路由都可达,未知后缀 404(绝不落到 VS Code 那边)', async () => {
   const unknown = await callBridge('/code-server-bridge/nope');
-  if (skipIfUnreachable(unknown, '路由可达')) return;
+  requireReachable(unknown, '路由可达');
   assert.equal(unknown.status, 404, `未知后缀应 404(实际 ${unknown.status})`);
   const suffixWithPost = await callBridge('/code-server-bridge/health', { method: 'POST' });
   assert.equal(suffixWithPost.status, 405, '方法不符应 405');
@@ -228,7 +261,7 @@ await test('/old:只读、不消费、key 缺失 400、未启用 503(与 /sync �
   // 0.3.55:事件里只带不透明 key,写前原文走这条路由取。它是纯读的 —— 取不到(过期/淘汰/重启)
   // 返回 404,扩展据此回退到缓冲区,不重试。
   const noKey = await callBridge('/code-server-bridge/old');
-  if (skipIfUnreachable(noKey, '/old')) return;
+  requireReachable(noKey, '/old');
   assert.equal(noKey.status, 503, '桩 ctx 下桥未启用 ⇒ 503(与 /sync 同口径,不是 404)');
   const withKey = await callBridge('/code-server-bridge/old?key=whatever');
   assert.equal(withKey.status, 503, '鉴权/启用判定先于 key 解析');
@@ -250,7 +283,7 @@ await test('命名空间白名单:四条只读 + 一条有界的模型调用(/co
     // 桥这边**不再有**这两条 —— 它们必须 404,否则"桥完全只读"这条不变量就不成立。
     '/ask', '/approve']) {
     const res = await callBridge(`/code-server-bridge${bad}`, { method: 'POST', body: '{}' });
-    if (skipIfUnreachable(res, '命名空间只读')) return;
+    requireReachable(res, '命名空间只读');
     assert.equal(res.status, 404, `${bad} 必须 404(实际 ${res.status})`);
   }
 });
@@ -261,7 +294,10 @@ await test('/complete(0.3.61):默认关 ⇒ 拒绝且不外发(桥未启用时�
   const disabled = await callBridge('/code-server-bridge/complete', {
     method: 'POST', body: JSON.stringify({ prompt: 'const a =', suffix: '' }),
   });
-  if (skipIfUnreachable(disabled, '/complete')) return;
+  requireReachable(disabled, '/complete');
+  // 把**实际观测到**的那一支打出来(本机进程内分发 / runner 上真实 IPC 都会打):CI 的注解里
+  // 会原样带上这一行,以后再有人改守卫顺序,从日志就能看出本地与 runner 是不是同一支。
+  console.log(`     /complete(未开启)= ${disabled.status} via=${disabled.via} body=${disabled.text}`);
   // 状态码取决于**桥守卫**这一步(2026-09-22 ubuntu/windows runner 上实测抓到的坑):
   //   每条桥路由的**第一句**都是 bridgeRejection(request),而守卫用的令牌来自"接管一个正在跑的
   //   实例"(adoptBridgeRuntime)。本测试**不启动 IDE** ⇒ 桩里 bridgeMeta 为 null ⇒ 守卫先给
@@ -304,7 +340,7 @@ await test('写口令只在 /api/code-server/ask/approve 上,约束写死在实�
 
 await test('health 无需令牌(便于重启后一眼确认),且不返回任何编辑器数据', async () => {
   const res = await callBridge('/code-server-bridge/health');
-  if (skipIfUnreachable(res, 'health 探活')) return;
+  requireReachable(res, 'health 探活');
   assert.equal(res.status, 200, `实际 ${res.status}`);
   const body = res.json();
   assert.equal(body.ok, true);
@@ -322,7 +358,7 @@ await test('带 Origin 的请求 → 403(必须穿过适配器仍然成立)', as
   const res = await callBridge('/code-server-bridge/sync', {
     method: 'POST', headers: { origin: 'http://evil.example' }, body: '{}',
   });
-  if (skipIfUnreachable(res, 'Origin 403')) return;
+  requireReachable(res, 'Origin 403');
   assert.equal(res.status, 403, `实际 ${res.status}`);
   assert.match(res.json().error, /Origin/, '错误信息应说明是 Origin 被拒');
 });
@@ -331,7 +367,7 @@ await test('桥未启用 → 503(与 401 区分:扩展据此休眠而不是重�
   const res = await callBridge('/code-server-bridge/sync', {
     method: 'POST', headers: { [TOKEN_HEADER]: 'whatever-0123456789abcdef' }, body: '{}',
   });
-  if (skipIfUnreachable(res, '桥未启用 503')) return;
+  requireReachable(res, '桥未启用 503');
   assert.equal(res.status, 503, `实际 ${res.status}`);
 });
 
@@ -1005,5 +1041,9 @@ for (let attempt = 0; attempt < 5; attempt += 1) {
     }
   }
 }
+// 传输打在 SUMMARY 之前(harness 只把 SUMMARY 当诊断行读;顺序保持 SUMMARY 在最后)。
+console.log(`传输:${transport === 'ipc'
+  ? '本机 IPC(命名管道 / unix socket,与扩展同一条路)'
+  : '进程内分发(本机 IPC EPERM;同一条 dispatchBridge,缺的只有 socket)'}`);
 console.log(`SUMMARY pass=${pass} fail=${fail}`);
 process.exit(fail === 0 ? 0 : 1);
