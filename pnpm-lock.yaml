@@ -8,12 +8,12 @@ importers:
 
   .:
     dependencies:
+      '@devcontainers/cli':
+        specifier: 0.88.0
+        version: 0.88.0
       '@jinsiyu/dshcs-cpu-features':
         specifier: 0.0.10
         version: 0.0.10
-      '@jinsiyu/dshcs-koffi':
-        specifier: 3.1.2
-        version: 3.1.2
       '@jinsiyu/dshcs-microsoft-mxc-sdk':
         specifier: 0.8.0
         version: 0.8.0
@@ -33,8 +33,8 @@ importers:
         specifier: 0.44.0
         version: 0.44.0
       '@jinsiyu/dshcs-vscode-server':
-        specifier: 4.138.0
-        version: 4.138.0
+        specifier: 4.139.1
+        version: 4.139.1
       '@microsoft/1ds-core-js':
         specifier: 3.2.13
         version: 3.2.13(tslib@2.8.1)
@@ -244,6 +244,11 @@ packages:
   '@deepseek-ai/schemastery@3.18.2':
     resolution: {integrity: sha512-njDtZsznjYxok7KLLlHOPyuv2efdWVbSflAHgztSfbMsg+CVraEoRe2DjOCgClYv3ZCSm7WXoaUkbB/+RY7tWQ==}
 
+  '@devcontainers/cli@0.88.0':
+    resolution: {integrity: sha512-sMkruPy/icfov20mdQh2EjFYZogxvMEZptDEvg5/eMBIUOr2xr+8wlsI7nvDR6EJxoBjqoasXqgRGbiMqbaJ1w==}
+    engines: {node: '>=20.0.0'}
+    hasBin: true
+
   '@isaacs/fs-minipass@4.0.1':
     resolution: {integrity: sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w==}
     engines: {node: '>=18.0.0'}
@@ -275,9 +280,6 @@ packages:
     engines: {node: '>=12.9.0'}
     cpu: [x64]
     os: [win32]
-
-  '@jinsiyu/dshcs-koffi@3.1.2':
-    resolution: {integrity: sha512-dS5/uGfwMYjQEmS08ZqhKuIQtRdZkB8GMNqNKShPPSQbQWKiQr5MDyAzR9s5i5y/aen2Uni2bAhjKW18gjCyFw==}
 
   '@jinsiyu/dshcs-microsoft-mxc-sdk@0.8.0':
     resolution: {integrity: sha512-X/56BL6P2o7vLZc+WuSEaWUIQ8gNygoMLwXMkPk1GJMd8qP4g37TS2cdCPJUMpA1VvhGf7DmmXMWhzvF+rdWEw==}
@@ -342,8 +344,8 @@ packages:
     resolution: {integrity: sha512-3A97tpbV+WYymSpCiQgfjdHiodsEAiU9oWaXlVf3wpwvBH/nD2okzUBBSEnpV/Xa4WJIIdYg2029dIT8QdTH9Q==}
     engines: {node: '>=22.15.0'}
 
-  '@jinsiyu/dshcs-vscode-server@4.138.0':
-    resolution: {integrity: sha512-tfOSOAMNmCfls1Bvf7fGpyJYgRq1KR6+c1LCMhLVCvsC2FQeA3gVIjrIAFWppsQNRlQl7vTOWue1F7n7zAWAsQ==}
+  '@jinsiyu/dshcs-vscode-server@4.139.1':
+    resolution: {integrity: sha512-18N2sMWNxObooaI4eOw77AjRPiPNLlC0r7vYIutLxkbxqVr3iMJMZh7Ke6/Mm84cwwIZ9ZmFXx2ZJHY3U9tMmg==}
 
   '@jinsiyu/dshcs-vscode-spdlog-linux-arm64@0.15.8':
     resolution: {integrity: sha512-UE5kMgw5l7tDYHVPjg6RuQ13wnhT4Md5PdJPYYNMaH8sjNoGUEAThybg+KwHILGK6KpQRfZ/Fu5kqcG11/EC0g==}
@@ -412,81 +414,6 @@ packages:
 
   '@jinsiyu/dshcs-vscode-windows-registry-win32-x64@1.2.0':
     resolution: {integrity: sha512-bg4bXrPez0nLBeltek2/xYPkw/vYQ6V4AIuHD6M3eLiT4Y216GNvmi7/Mwf6ZjZ3EAl4kZsIqO4eK5B4aQU4Mw==}
-    cpu: [x64]
-    os: [win32]
-
-  '@koromix/koffi-darwin-arm64@3.1.2':
-    resolution: {integrity: sha512-32pU4pNZABIz+l9DNJl51Y+jur4vv+SF4Ip2CSF4OUg1xUyefoLpX0NttDmzGITIrneUEVSEN+dT22524ESKBw==}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@koromix/koffi-darwin-x64@3.1.2':
-    resolution: {integrity: sha512-S+H6LQgUoMj77BqDegwlRaxwLXDfwvSJGuceOqtH0I5V8rzKLmu/hC7NBlxOoAlvKlcV63FtdNiE2E9YSltffg==}
-    cpu: [x64]
-    os: [darwin]
-
-  '@koromix/koffi-freebsd-arm64@3.1.2':
-    resolution: {integrity: sha512-fD0ow2PBE60nw7K6xcbala6qwXxfcYeU62tduNeIPvx0KoWhU2rMKZiDNe+iI5TQb3rxYYjjP+aF2Sdm9y6EXQ==}
-    cpu: [arm64]
-    os: [freebsd]
-
-  '@koromix/koffi-freebsd-ia32@3.1.2':
-    resolution: {integrity: sha512-t8OmL+hoJGDLZDnuLjgLemSYrXX99M7Md+zJX8bMHOtiNbFtkGXn/mV21Pb1ik9JhBXjwK1r4hvBPNlqTMGrHg==}
-    cpu: [ia32]
-    os: [freebsd]
-
-  '@koromix/koffi-freebsd-x64@3.1.2':
-    resolution: {integrity: sha512-axbLgiM4Y2vyDOTqlXCI8vkg9wqjwSRsmoWXSKreA5YFJwnYA6Sc4aHMz+qZgUSfFei52Qrv1RGhDyo4kHvqhA==}
-    cpu: [x64]
-    os: [freebsd]
-
-  '@koromix/koffi-linux-arm64@3.1.2':
-    resolution: {integrity: sha512-f0hqAIlFcL9wlRGJ/uCfyfspqnGaASk2gLx1UAP3RBgMQl68D1e+fiHNdXa7g9d76ttmpA8/PGNAqc1X4Byy1Q==}
-    cpu: [arm64]
-    os: [linux]
-
-  '@koromix/koffi-linux-ia32@3.1.2':
-    resolution: {integrity: sha512-UGLPuqeOV/UArsK6oeB5yI/XjSWkFqFlBTC9rUbezBuHJhSibk1EMv7QC0cvtDMu18bo+ucqXWPzh42oT5yYlw==}
-    cpu: [ia32]
-    os: [linux]
-
-  '@koromix/koffi-linux-loong64@3.1.2':
-    resolution: {integrity: sha512-jI0+gM2oDsJ7reOt3XPyO7lyQtZ1CT6NR2uqGQcQVM43cyXBAVYYCUxEH3LHCbgumFaZ+LueIUgbMSwb9pHBxQ==}
-    cpu: [loong64]
-    os: [linux]
-
-  '@koromix/koffi-linux-riscv64@3.1.2':
-    resolution: {integrity: sha512-yB99adXBRd5T+xXG+f6nnUkC3jCI0iXvPU6RqD9Kx7aZP4Y4NNUWJ5Q4FaP9jb1XmZLY4pGBUiHt8u03Yl7NyA==}
-    cpu: [riscv64]
-    os: [linux]
-
-  '@koromix/koffi-linux-x64@3.1.2':
-    resolution: {integrity: sha512-Oxvo6F3Edzy/Jm2EtbHWkJ2xRB0mXDAe63k5+USL5uiGE5xZjwEUDOBKIhv2BpCZSOAJrfoojFFogj6+ICKQhw==}
-    cpu: [x64]
-    os: [linux]
-
-  '@koromix/koffi-openbsd-ia32@3.1.2':
-    resolution: {integrity: sha512-SSWzUhL8Ex84JTsO67+MdWZrdwgOzoOrQ0+ZbB+UsivHoAxmWLHKWZaSafNqyBZtxGY1EgtR8AIPouWE9U+Zfw==}
-    cpu: [ia32]
-    os: [openbsd]
-
-  '@koromix/koffi-openbsd-x64@3.1.2':
-    resolution: {integrity: sha512-0ZuI4St7chq3M0d3VivvKIqacZ7RhgohdR476V3HpJkaNdfIywsJIw+GBvqkQahu+4A2Rpu6yQJpWSrfk/Z+Jw==}
-    cpu: [x64]
-    os: [openbsd]
-
-  '@koromix/koffi-win32-arm64@3.1.2':
-    resolution: {integrity: sha512-8Wn6phw7y53uI52+aBPAqEfZ5pj/HCjg/YtdthqSWYHy+d0MhyASKlcmuP0B5raxQnnA1Bm9LC8UO3M3RojeBw==}
-    cpu: [arm64]
-    os: [win32]
-
-  '@koromix/koffi-win32-ia32@3.1.2':
-    resolution: {integrity: sha512-FkKaPBMawgHMNnp1FwLldXMNvEa139GXkxPi9JD9xU71Kh/ZmuEYHGSD6JwZDmDr4jekVrBrr+eGZ+j6C2mkXg==}
-    cpu: [ia32]
-    os: [win32]
-
-  '@koromix/koffi-win32-x64@3.1.2':
-    resolution: {integrity: sha512-FeFC59UU1XX4J3ZaqKrsrEzczzB5qksMJo7/R45vIg8mGNVSLMVE85JRiZpjcp9i5Lbav5Vw47QvwFzBgIfvlw==}
     cpu: [x64]
     os: [win32]
 
@@ -910,6 +837,8 @@ snapshots:
       '@deepseek-ai/cosmokit': 1.8.3
       '@standard-schema/spec': 1.1.0
 
+  '@devcontainers/cli@0.88.0': {}
+
   '@isaacs/fs-minipass@4.0.1':
     dependencies:
       minipass: 7.1.3
@@ -942,24 +871,6 @@ snapshots:
       bindings: 1.5.0
       node-addon-api: 6.1.0
     optional: true
-
-  '@jinsiyu/dshcs-koffi@3.1.2':
-    optionalDependencies:
-      '@koromix/koffi-darwin-arm64': 3.1.2
-      '@koromix/koffi-darwin-x64': 3.1.2
-      '@koromix/koffi-freebsd-arm64': 3.1.2
-      '@koromix/koffi-freebsd-ia32': 3.1.2
-      '@koromix/koffi-freebsd-x64': 3.1.2
-      '@koromix/koffi-linux-arm64': 3.1.2
-      '@koromix/koffi-linux-ia32': 3.1.2
-      '@koromix/koffi-linux-loong64': 3.1.2
-      '@koromix/koffi-linux-riscv64': 3.1.2
-      '@koromix/koffi-linux-x64': 3.1.2
-      '@koromix/koffi-openbsd-ia32': 3.1.2
-      '@koromix/koffi-openbsd-x64': 3.1.2
-      '@koromix/koffi-win32-arm64': 3.1.2
-      '@koromix/koffi-win32-ia32': 3.1.2
-      '@koromix/koffi-win32-x64': 3.1.2
 
   '@jinsiyu/dshcs-microsoft-mxc-sdk@0.8.0':
     dependencies:
@@ -1053,7 +964,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@jinsiyu/dshcs-vscode-server@4.138.0': {}
+  '@jinsiyu/dshcs-vscode-server@4.139.1': {}
 
   '@jinsiyu/dshcs-vscode-spdlog-linux-arm64@0.15.8':
     dependencies:
@@ -1131,51 +1042,6 @@ snapshots:
     optional: true
 
   '@jinsiyu/dshcs-vscode-windows-registry-win32-x64@1.2.0':
-    optional: true
-
-  '@koromix/koffi-darwin-arm64@3.1.2':
-    optional: true
-
-  '@koromix/koffi-darwin-x64@3.1.2':
-    optional: true
-
-  '@koromix/koffi-freebsd-arm64@3.1.2':
-    optional: true
-
-  '@koromix/koffi-freebsd-ia32@3.1.2':
-    optional: true
-
-  '@koromix/koffi-freebsd-x64@3.1.2':
-    optional: true
-
-  '@koromix/koffi-linux-arm64@3.1.2':
-    optional: true
-
-  '@koromix/koffi-linux-ia32@3.1.2':
-    optional: true
-
-  '@koromix/koffi-linux-loong64@3.1.2':
-    optional: true
-
-  '@koromix/koffi-linux-riscv64@3.1.2':
-    optional: true
-
-  '@koromix/koffi-linux-x64@3.1.2':
-    optional: true
-
-  '@koromix/koffi-openbsd-ia32@3.1.2':
-    optional: true
-
-  '@koromix/koffi-openbsd-x64@3.1.2':
-    optional: true
-
-  '@koromix/koffi-win32-arm64@3.1.2':
-    optional: true
-
-  '@koromix/koffi-win32-ia32@3.1.2':
-    optional: true
-
-  '@koromix/koffi-win32-x64@3.1.2':
     optional: true
 
   '@microsoft/1ds-core-js@3.2.13(tslib@2.8.1)':
