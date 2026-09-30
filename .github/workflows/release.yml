@@ -238,11 +238,15 @@ jobs:
           # (发布因此被挡:2026-09-22 的 release run 两条腿都挂在"全局安装 DSH CLI")。
           # 这轮 rc.3 是**分批**发布的(2026-09-22T05:38:20Z 起、到 05:55:31Z 共 205 个包),所以截断点必须落在
           # **最早一次之前**,否则会切到半个快照(实测 05:50 会报 dsh-native-command@^0.1.5-rc.3 无解)。
-          # 默认就用这个干净截断点 = "要 rc.2 那棵树"(闭包已单独验证可解);上游补齐那个子包之后,
-          # 把仓库变量 DSH_CLI_BEFORE 设为 off(或显式给 DSH_CLI_VERSION)即可回到 latest 的当前语义。
+          # 默认截断点 2026-09-22 已于 2026-09-30 退役:`latest` 标签移到了 2026-09-29 发布的 0.2.0-rc.2,
+          # 而「@latest + 更早的 --before」交集为空 ⇒ npm 直接 ETARGET,两条腿都挂在"全局安装 DSH CLI":
+          #   npm error notarget No matching version found for @deepseek-ai/dsh@latest with a date before 2026/9/22 13:38:00.
+          # 本地复现:npm install -g --prefix <tmp> --before=2026-09-22T05:38:00Z @deepseek-ai/dsh@latest
+          # 所以默认改成 off(= latest 的当前语义;上游那条线已补齐,0.2.0-rc.2 的闭包实测可装,
+          # 且插件在本机用它跑过一遍官方安装路径 + dump-config + test-installed 13/13)。
           $before = $null
           if (-not $env:DSH_CLI_VERSION) {
-            $before = if ($env:DSH_CLI_BEFORE) { $env:DSH_CLI_BEFORE } else { '2026-09-22T05:38:00Z' }
+            $before = if ($env:DSH_CLI_BEFORE) { $env:DSH_CLI_BEFORE } else { 'off' }
             if ($before -in @('off', 'none')) { $before = $null }
           }
           $npmArgs = @('install', '-g', '--prefix', $prefix)
@@ -351,12 +355,12 @@ jobs:
           # 于是 npm 去解析 rc.3 的依赖图并报 ETARGET ⇒ 此刻任何人 `npm i -g @deepseek-ai/dsh` 都装不上。
           # 这轮 rc.3 是**分批**发布的(2026-09-22T05:38:20Z 起、到 05:55:31Z 共 205 个包),所以截断点必须
           # 落在**最早一次之前**,否则会切到半个快照(实测 05:50 会报 dsh-native-command@^0.1.5-rc.3 无解)。
-          # 默认就用这个干净截断点 = "要 rc.2 那棵树"(闭包已单独验证可解);上游补齐后把 DSH_CLI_BEFORE 设为 off
-          # (或显式给 DSH_CLI_VERSION)即可回到 latest 的当前语义。
+          # 默认截断点已于 2026-09-30 退役(原因见 Windows 腿同处的注释:`latest` 前移后与旧 --before
+          # 交集为空 ⇒ ETARGET)。默认 off = latest 当前语义;要切回旧树设 DSH_CLI_BEFORE=<ISO 时间>。
           args_note=""
           before=""
-          if [ -z "${DSH_CLI_VERSION:-}" ] && [ "${DSH_CLI_BEFORE:-}" != "off" ]; then
-            before="--before=${DSH_CLI_BEFORE:-2026-09-22T05:38:00Z}"
+          if [ -z "${DSH_CLI_VERSION:-}" ] && [ "${DSH_CLI_BEFORE:-off}" != "off" ]; then
+            before="--before=${DSH_CLI_BEFORE}"
           fi
           echo "npm install -g --prefix $prefix $before $cli"
           npm install -g --prefix "$prefix" $before "$cli"
