@@ -14,7 +14,12 @@
     "optionalDependencies(不再盲目 × 全部目标)。",
     "",
     "targets 缺省 = 全部目标(见下一项 targets 列表);platform 缺省 = 由 analyze() 判断。",
-    "新增模块时把别名加进来(vendor-repacks.mjs 会在发现未声明模块时打印提醒)。"
+    "新增模块时把别名加进来(vendor-repacks.mjs 会在发现未声明模块时打印提醒)。",
+    "",
+    "版本钉法:modules[别名].version 覆盖「沿用 lib/vendored.json 里已发布版本」的政策",
+    "(见 vendor-repacks.mjs:applyPlatformPolicy 的三级规则)。改钉时的顺序:先钉这里 → 重跑",
+    "vendor-repacks.mjs → 发布新子包 → 插件依赖表才会跟着走(顺序反了 pnpm install 会解析不到)。",
+    "不再需要的模块用下面的 dropped(不是从 modules 里悄悄删掉 —— 删掉只会让「跨平台保留」把它从旧表复活)。"
   ],
   "targets": [
     "win32-x64",
@@ -37,6 +42,23 @@
     "linux-x64",
     "linux-arm64"
   ],
+  "dropped": [
+    "koffi"
+  ],
+  "_droppedNote": [
+    "dropped = 明确**不再依赖**的上游模块。生成器两处都认它:analyze() 不把它加进重打包集,",
+    "applyPlatformPolicy() 的「跨平台保留」分支也跳过它 —— 所以光从 modules 里删掉是不够的,",
+    "旧表里的条目会被保留逻辑复活(这是 2026-09-30 实测踩到的)。",
+    "",
+    "koffi(2026-09-30 丢弃,替换掉原先「升到 3.2.1」的计划):",
+    "  · 树里**没有任何代码 import/require 它** —— 精确核对过 out/**:'koffi' 只出现在内联的",
+    "    lib/vscode/package.json 副本里(overrides / allowScripts 两个 JSON 字段),不是调用;",
+    "  · 唯一声明依赖它的是 @github/copilot-sdk(精确 3.2.1),而 Copilot 整树已在 vendor-repacks.mjs",
+    "    的 EXCLUDE 里排除 ⇒ 运行时那个包根本解析不到,koffi 没有任何可达调用方;",
+    "  · 我们的重打包包本来也没有原生产物(cnoke 编译被 allowScripts:false 与 --ignore-scripts 禁掉),",
+    "    即 require('koffi') 即便解析成功也会在加载绑定时失败 ⇒ 留着只是养一个用不了的依赖图节点。",
+    "恢复办法:把别名从 dropped 删掉、重新登记进 modules,重跑 vendor-repacks.mjs 并发布子包。"
+  ],
   "modules": {
     "@vscode/windows-ca-certs": { "platform": true, "targets": ["win32-x64", "win32-arm64"] },
     "@vscode/windows-process-tree": { "platform": true, "targets": ["win32-x64", "win32-arm64"] },
@@ -53,7 +75,6 @@
     "@vscode/fs-copyfile": { "platform": false },
     "@vscode/proxy-agent": { "platform": false },
     "cpu-features": { "platform": false },
-    "koffi": { "platform": false },
     "node-pty": { "platform": false },
     "ssh2": { "platform": false }
   }

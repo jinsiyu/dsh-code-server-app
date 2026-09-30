@@ -229,6 +229,21 @@ await test('平台政策(scripts/repack-platforms.json)与重打包表一致', a
   }
 });
 
+await test('声明 dropped 的模块不出现在重打包表与插件依赖里', async () => {
+  const policy = readJson(join(root, 'scripts', 'repack-platforms.json'));
+  const dropped = Array.isArray(policy?.dropped) ? policy.dropped.filter((a) => typeof a === 'string') : [];
+  const flat = (alias) => (/^@/u.test(alias) ? alias.slice(1).replace('/', '-') : alias);
+  for (const alias of dropped) {
+    assert.ok(!(alias in (policy.modules ?? {})), `${alias} 同时出现在 dropped 与 modules 里,声明自相矛盾`);
+    assert.ok(!table.modules.some((m) => m.alias === alias),
+      `dropped 的 ${alias} 不该出现在 lib/vendored.json(生成器 analyze() 与「跨平台保留」两处都要认 dropped)`);
+    const pkg = `${table.scope}/dshcs-${flat(alias)}`;
+    assert.ok(!(pkg in deps), `${pkg} 已声明 dropped,不该写在 dependencies`);
+    const hit = Object.keys(optional).filter((n) => n.startsWith(`${pkg}-`));
+    assert.equal(hit.length, 0, `${pkg} 已声明 dropped,不该写在 optionalDependencies(${hit.join(', ')})`);
+  }
+});
+
 await test('readVendoredTable() 读得到 scope 与 targets', async () => {
   const live = readVendoredTable();
   assert.equal(live.scope, table.scope);

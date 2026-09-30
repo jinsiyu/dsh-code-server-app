@@ -125,11 +125,6 @@
       ]
     },
     {
-      "alias": "koffi",
-      "package": "@jinsiyu/dshcs-koffi",
-      "version": "3.1.2"
-    },
-    {
       "alias": "node-pty",
       "package": "@jinsiyu/dshcs-node-pty",
       "version": "1.2.0-beta.15"

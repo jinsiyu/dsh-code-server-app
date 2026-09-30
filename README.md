@@ -472,7 +472,7 @@ seq,并且 `/sync` 回应里带 `lastSeq`(高水位),扩展据此自查游标是
   (客户端半部与提问面板都是入库的手写源码 —— 整条链上**没有任何构建步骤**)。
 
 > 本机(BM: Windows 11 ARM64)实测:树/依赖全链路是"平台子包直挂插件依赖"供给 ——
-> 树包 `@jinsiyu/dshcs-vscode-server`(当前 4.139.1,44.4 MB tgz)、纯 JS 内部依赖与 8 个平台无关
+> 树包 `@jinsiyu/dshcs-vscode-server`(当前 4.139.1,44.4 MB tgz)、纯 JS 内部依赖与 7 个平台无关
 > 重打包包直接进插件 `dependencies`、8 个平台专属重打包包按 win32-arm64/x64 进
 > `optionalDependencies`(包自带 os/cpu 自动选),原始名字由 `lib/native.js` 补 junction 还原
 > → healthz 200 → 停止 → 回收全链路验证。
@@ -520,7 +520,7 @@ pnpm run promote -- <version>
 | 子包 | 内容 | os/cpu |
 |---|---|---|
 | `@jinsiyu/dshcs-vscode-server@<code-server 版本>` | 精简 VS Code 树(`lib/vscode` + `out/browser` + `src/browser`,**不含** code-server 的 `out/node` 与 136 个运行时依赖) | 平台无关 |
-| `@jinsiyu/dshcs-<名字>[-win32-<arch>]` ×16 | VS Code 内部依赖里需要构建的原生包(node-pty / @vscode/sqlite3 / kerberos / koffi / ssh2 / spdlog / …) | 平台专属带 os/cpu |
+| `@jinsiyu/dshcs-<名字>[-win32-<arch>]` ×15 | VS Code 内部依赖里需要构建的原生包(node-pty / @vscode/sqlite3 / kerberos / ssh2 / spdlog / …) | 平台专属带 os/cpu |
 | `lib/vendored.json`(**不是包**) | 「原名 → 重打包子包」表,随插件发布;运行时由 `lib/native.js` 据此补 junction。0.3.45 起**不再产出平台聚合包** | — |
 
 > argon2 已随 code-server 服务层一起移除(0.2.0):`auth` 固定 `none`,需要对外访问请用 `serve: dsh`。
@@ -801,7 +801,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
 - VS Code 内部依赖里**纯 JS 的部分**(35 个:xterm / katex / typescript / ws / tar …)也写在插件
   `dependencies`,由 pnpm 装到 profile 的 `node_modules`(hoisted);
 - **二进制部分**全部由 `@jinsiyu/dshcs-*` 子包提供,且**直接挂在插件依赖上**(0.3.45 起):
-  平台无关的 8 个(`node-pty` / `koffi` / `ssh2` / `cpu-features` / `@parcel/watcher` /
+  平台无关的 7 个(`node-pty` / `ssh2` / `cpu-features` / `@parcel/watcher` /
   `@vscode/fs-copyfile` / `@vscode/proxy-agent` / `@microsoft/mxc-sdk`)写进插件 `dependencies`(真名);
   平台专属的 8 个(`@vscode/sqlite3` / `spdlog` / `kerberos` / `deviceid` / `native-watchdog` /
   `windows-registry` / `windows-process-tree` / `windows-ca-certs`)**按 `scripts/repack-platforms.json`
@@ -1006,9 +1006,15 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 - **换版本后重新出子包并发布**(全部由同一个脚本):
   1. `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack` → 新的树包
      (`@jinsiyu/dshcs-vscode-server@<新版本>`)以及按新内部依赖重建的原生包
-     (脚本会把新的「纯 JS 直装集」写进插件 `dependencies`,并把 16 个重打包包按真名写进
+     (脚本会把新的「纯 JS 直装集」写进插件 `dependencies`,并把 15 个重打包包按真名写进
      `dependencies` / `optionalDependencies`、重写 `lib/vendored.json`);
   2. `pnpm run publish:repacks` → 发布;然后 bump 插件版本 → `pnpm pack` → 发布插件。
+- **上游把某个模块从依赖图里去掉时**:在 `scripts/repack-platforms.json` 的 **`dropped`** 里声明它 ——
+  **不能只从 `modules` 里删**:生成器的「跨平台保留」会把「本次分析看不到的条目」从旧表原样复活
+  (2026-09-30 丢 `koffi` 时实测)。`dropped` 两处都认(分析 + 保留分支),重跑一次即从
+  `lib/vendored.json` 与插件依赖表里消失;`test-vendored-table.mjs` 有守卫断言它不会再出现。
+  例:`koffi` 只有 `@github/copilot-sdk`(已被 EXCLUDE 排除)依赖它,树里没有任何代码 import 它,
+  而我们的重打包包本来也不含原生产物(`cnoke` 编译被 `allowScripts: false` 禁掉)⇒ 直接丢弃。
 - `productPath`(`<quality>-<commit>`,客户端 WS 路径的组成)**从 `lib/vscode/product.json` 现算**,
   升级树后无需改代码 —— 但也意味着切版本后必须重启 dsh web(路由在激活期注册)。
 - **不再有运行期自动升级**:不会在启动时联网取 latest;版本完全由内置产物决定。

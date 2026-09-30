@@ -129,6 +129,7 @@ function isPlatformSpecific(pkg) {
 
 /** 分析一棵树:返回 { repack: Map(name -> {dir,pkg,platformSpecific}), declare: [{name,version}] }。 */
 function analyze(tree) {
+  const { dropped } = readRepackPlatforms();
   const VS = join(tree, 'lib', 'vscode');
   const packages = collect(join(VS, 'node_modules'));
   const vsManifest = readJson(join(VS, 'package.json'));
@@ -155,6 +156,7 @@ function analyze(tree) {
   const declare = [];
   for (const name of Object.keys(vsManifest.dependencies ?? {})) {
     if (excluded(name)) { console.log(`  [排除 Copilot] ${name}`); continue; }
+    if (dropped.has(name)) { console.log(`  [不再依赖] ${name}(见 repack-platforms.json 的 dropped)`); continue; }
     const dir = resolveDep(VS, name);
     if (dir === null) { console.warn(`  ⚠ 找不到 ${name}`); continue; }
     if (needsRepack(dir)) {
@@ -165,7 +167,7 @@ function analyze(tree) {
     }
   }
   for (const [dir, pkg] of packages) {
-    if (excluded(pkg.name) || repack.has(pkg.name)) continue;
+    if (excluded(pkg.name) || dropped.has(pkg.name) || repack.has(pkg.name)) continue;
     if (needsRepack(dir)) repack.set(pkg.name, { dir, pkg, platformSpecific: isPlatformSpecific(pkg) });
   }
   const extNm = join(VS, 'extensions', 'node_modules');
@@ -593,6 +595,8 @@ function readRepackPlatforms() {
     console.warn('  ⚠ 读不到 scripts/repack-platforms.json 的 targets ⇒ 平台政策退化为「构建目标即全部目标」,'
       + '每模块白名单与跨平台保留都会失效');
   }
+  /** 明确不再依赖的模块(声明里的 dropped):既不进重打包集,也不许被「跨平台保留」复活。 */
+  const dropped = new Set(list(doc?.dropped) ?? []);
   const perModule = new Map();
   for (const [alias, spec] of Object.entries(doc?.modules ?? {})) {
     if (spec === null || typeof spec !== 'object') continue;
@@ -603,7 +607,7 @@ function readRepackPlatforms() {
       version: typeof spec.version === 'string' && spec.version !== '' ? spec.version : null,
     });
   }
-  return { allTargets, publishedTargets: list(doc?.publishedTargets), perModule };
+  return { allTargets, publishedTargets: list(doc?.publishedTargets), perModule, dropped };
 }
 
 /** 平台政策落到分析结果上:
@@ -657,6 +661,11 @@ function applyPlatformPolicy(modules, platforms, allTargets) {
   const kept = [];
   for (const e of [...previous.values()]) {
     if (e === null || typeof e !== 'object' || typeof e.alias !== 'string' || seen.has(e.alias)) continue;
+    // dropped:声明里明确不再依赖的模块 —— 保留分支必须让路,否则旧表条目会被原样复活(2026-09-30 实测)。
+    if (platforms.dropped.has(e.alias)) {
+      console.log(`  · ${e.alias}:按声明 dropped 丢弃,不再保留进表`);
+      continue;
+    }
     const decl = declared(e.alias);
     kept.push({
       alias: e.alias,
