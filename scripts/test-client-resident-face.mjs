@@ -174,5 +174,49 @@ await test('R4b:非桌面载体照旧预热(web 上"首次点开免等待"这个
   assert.equal(surface().snapshot().preloaded, true, 'web 上必须仍然预热');
 });
 
+/** 渲染一次 body(可指定 tab 身份与活跃性),用于"多个 body 同时存在"的仲裁用例。 */
+function renderBody(bundle, { tabId, active, visible }) {
+  const body = bundle.registrations.find((r) => r.desc.name === 'sidebar.right.pane.tab');
+  return bundle.render(body.component, {
+    sessionId: 's',
+    useSessions: (selector) => selector(SESSIONS),
+    useWorkspaces: (selector) => selector(NO_WS),
+    useTabInfo: () => ({
+      tab: {
+        id: tabId,
+        ...(visible === undefined ? {} : { visible }),
+        navigation: { address: 'sidebar://code-server', revision: 0 },
+        actions: { close: () => {} },
+      },
+      panel: { id: 'p1' },
+      sidebar: { fullscreen: true },
+      ...(active === undefined ? {} : { active }),
+    }),
+  });
+}
+
+await test('R5:后台保留的 body 不得抢走常驻面(0.2 的 keepMounted 会同时保留多个 body)', async () => {
+  const bundle = loadClientBundle({ declaredSlots: ['sidebar.right.pane.tab'], status: statusOf() });
+  await settle();
+  surface().preload({}); // 先建出常驻面(dock 在 frame 为 null 时是空操作,别把测试建在沙子上)
+  // 等价于"可见 body 已持有面"(不依赖 harness 是否真的走通 dock 那一步)
+  surface().dock(globalThis.document.createElement('div'), 'tab:tab-visible');
+  const before = surface().snapshot().owner;
+  assert.equal(before, 'tab:tab-visible');
+  renderBody(bundle, { tabId: 'tab-background', active: false, visible: false });
+  assert.equal(surface().snapshot().owner, before, '后台 body 重渲染后不得把面抢到自己名下');
+  assert.equal(surface().snapshot().docked, true, '面应仍停靠在可见 body 里');
+});
+
+await test('R5b:没有任何可见性信号的老形状 ⇒ 仍按"活跃"处理(不得被误判成后台而停放)', async () => {
+  const bundle = loadClientBundle({ declaredSlots: ['sidebar.right.pane.tab'], status: statusOf() });
+  await settle();
+  surface().preload({});
+  surface().dock(globalThis.document.createElement('div'), 'tab:code');
+  renderBody(bundle, { tabId: 'code', active: undefined, visible: undefined });
+  assert.equal(surface().snapshot().owner, 'tab:code', '拿不到 active/visible 时不许把它当后台停掉');
+  assert.equal(surface().snapshot().docked, true);
+});
+
 console.log(`SUMMARY pass=${pass} fail=${fail} skip=0`);
 process.exit(fail === 0 ? 0 : 1);
