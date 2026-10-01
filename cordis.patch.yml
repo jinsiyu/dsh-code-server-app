@@ -44,8 +44,7 @@
         editorBridge: true
         # 注:「认领类型」(claimExtensions,默认把 markdown/html/图片/PDF 留给 DSH 自带预览)与
         # 「打开即全屏」(fullscreenOnOpen)、「后台常驻」(keepResident)、「FIM 补全」(fim,实验性)
-        # 由设置区控制(座位随 DSH 版本:插件页 ≥0.1.6-alpha.2 / 设置页 ≤0.1.5-rc.3;
-        # 数据通道:configForms ≥0.1.7-alpha.1,更早是 settingsScope,命名空间 = 本行 id `code-server`),
+        # 由设置区控制(唯一座位 `plugins.bundle.config` + 唯一数据通道 configForms;命名空间 = 本行 id `code-server`),
         # 改动即时生效。服务方式(serve)与编辑器桥(editorBridge)**也在可写字段里,但没有卡片行**:
         # 改这里或设置里的 code-server.serve / code-server.editorBridge。
         # 另:不再兼容旧版 DSH(无 sidebarRightTabs/sidebarRight 服务),旧版上仅给一条升级提示。

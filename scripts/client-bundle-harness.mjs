@@ -18,14 +18,16 @@
 //     起靠前两者里的后两个渲染,配置表单 0.3.66 起靠 store 那一个;所以
 //     `clientReactDom: false` / `clientPrimitives: false` / `clientStore: false`
 //     能模拟"异常宿主取不到模块表",用来钉住**降级路径**(正文 <pre>、按钮原生 button、
-//     配置区退回旧通道)而不是白屏/整条客户端不加载;
+//     配置区不注册)而不是白屏/整条客户端不加载;
 //   · slots 桩:`inject(name, factory)` **只在声明的插槽列表里回调**(复刻 DSH "插槽未被声明就不回调"
 //     的语义);register 把每个 entry 的 desc 与组件留下来;
-//   · 服务集桩:`services` 决定这个宿主有哪些服务(`settingsScope` 旧通道 / `configForms` 新通道),
+//   · 服务集桩:`services` 决定这个宿主有哪些服务。0.2 起与设置有关的只剩 `configForms` 一条通道
+//     (旧通道 `settingsScope` 已随老版本线从入口删除,harness 也不再提供它);传 `configForms: true`
+//     才有,不传 = 宿主没在服务本条目配置(配置区不注册,其余照旧)。
 //     `ctx.inject(deps, cb)` **只在该声明的服务都在时才回调**(与 DSH 一致),入口的静态 `inject`
 //     同理 —— 缺一个服务就**不 apply**(复刻"条目 pending"),`applied` / `missingInject` 报出来。
-//     `configForms` 与 `settingsScope` **刻意不做成 ctx 的属性**(只经 ctx.get 可见):未在 inject 里
-//     声明的服务,属性访问在 DSH 里会抛错,而这两个服务正是不能写进 inject 的那两个。
+//     `configForms` **刻意不做成 ctx 的属性**(只经 ctx.get 可见):未在 inject 里声明的服务,
+//     属性访问在 DSH 里会抛错,而它正是不能写进 inject 的那一个。
 //   · 渲染:调一次组件(可选沿"函数子组件"下钻一层层调;类组件实例化后取 render()),返回元素树;
 //     另有 `propsOf(desc)`:像真壳层那样把注入面物化成 props(`hooks` 表的键 → `use<Key>` 选择器 hook);
 //   · `testHooks: true` 时先设 `window.__dshcsTestHooks = true`,于是入口会额外导出 `__internals`,
@@ -257,17 +259,15 @@ function createFakeConfigForms(options = {}) {
  * 加载产物并 apply 一次。
  * @param options.declaredSlots 已声明的插槽名(不在此列 ⇒ inject 不回调,与 DSH 行为一致)
  * @param options.status `/api/code-server/status` 的返回体
- * @param options.scopeSnapshot 旧通道:`settingsScope.bind(...).getSnapshot()` 的返回体
- * @param options.settingsScope=false 拿掉旧通道(模拟 0.1.7-alpha.1)
- * @param options.configForms=true 装上**新通道**(configForms + @deepseek-ai/dsh-client-store)
- * @param options.configServed=false 让新通道的门禁先不通过(宿主还没在服务这个条目),之后用
+ * @param options.configForms=true 装上设置通道(`configForms` + `@deepseek-ai/dsh-client-store`);
+ *   不传 = 宿主**没有**这条通道(0.2 宿主没在服务本条目配置时就是这样)⇒ 只跳过配置区
+ * @param options.configServed=false 让门禁先不通过(宿主还没在服务这个条目),之后用
  *   `h.setConfigServed(true)` 放行 —— 用来钉"只在 whileServed 之后注册"
  * @param options.clientStore=false 让模块表里没有 `@deepseek-ai/dsh-client-store`(异常宿主)
  */
 export function loadClientBundle(options = {}) {
   const declared = new Set(options.declaredSlots ?? []);
   const statusPayload = options.status ?? DEFAULT_STATUS;
-  const scopeSnapshot = options.scopeSnapshot ?? { status: 'ready', value: {}, user: {}, writable: true };
   const forms = options.configForms === true
     ? createFakeConfigForms({
       servedNamespaces: options.configServed === false ? [] : ['code-server'],
@@ -350,6 +350,8 @@ export function loadClientBundle(options = {}) {
 
   const registrations = [];
   const injects = [];
+  /** 右侧栏**标签类型**的登记记录(0.2 契约:body 之外还要登记类型,才能声明 keepMounted 之类的生命周期)。 */
+  const typeRegistrations = [];
   const slots = {
     register: (desc, component) => { registrations.push({ desc, component }); return () => {}; },
     inject: (name, factory) => {
@@ -363,18 +365,12 @@ export function loadClientBundle(options = {}) {
   /** 这位"宿主"有哪些服务(名字 → 服务对象)。 */
   const services = {
     slots,
-    sidebarRightTabs: { register: () => () => {}, guide: () => [], entries: () => [], subscribe: () => () => {} },
+    sidebarRightTabs: {
+      register: (desc) => { typeRegistrations.push(desc); return () => {}; },
+      guide: () => [], entries: () => [], subscribe: () => () => {},
+    },
     sidebarRight: { bind: () => {}, openTab: () => {}, closeIn: () => {}, isExpanded: () => false, toggleExpanded: () => {} },
   };
-  if (options.settingsScope !== false) {
-    services.settingsScope = {
-      bind: () => ({
-        getSnapshot: () => scopeSnapshot,
-        subscribe: () => () => {},
-        set: async () => {}, unset: async () => {},
-      }),
-    };
-  }
   if (forms !== null) services.configForms = forms.service;
   const ctx = {
     get: (name) => services[name],
@@ -383,12 +379,14 @@ export function loadClientBundle(options = {}) {
     sidebarRight: services.sidebarRight,
     effect: (fn) => { const out = fn(); return typeof out === 'function' ? out : () => {} },
   };
-  // 两个**通道**服务永远不做成属性(cordis 只把"声明在 inject 里的服务"暴露成属性):
-  // 它们不能进 inject —— 写进去会让另一条线上的条目 pending —— 所以只能经 `ctx.get` 拿。
-  // 这里让属性访问当场抛,写法一错就在测试里炸,而不是在用户机器上静默取不到/整条 UI 消失。
+  // `configForms`(**唯一**剩下的配置通道)永远不做成属性(cordis 只把"声明在 inject 里的服务"
+  // 暴露成属性):它不能进 inject —— 写进去会让没有这个服务的宿主上条目永远 pending —— 所以只能经
+  // `ctx.get` 拿。`settingsScope` 是 0.2 起已从入口删除的旧通道:harness 既不提供这个服务,也不许
+  // 任何代码经属性摸到它。两个名字都在这里当场抛,写法一错就在测试里炸,而不是在用户机器上静默
+  // 取不到/整条 UI 消失。
   for (const name of ['configForms', 'settingsScope']) {
     Object.defineProperty(ctx, name, {
-      get() { throw new Error(`${name} 只能经 ctx.get 拿(它不能进 inject:会让另一条 DSH 上的条目 pending)`) },
+      get() { throw new Error(`${name} 只能经 ctx.get 拿(它不能进 inject:会让没有这个服务的宿主上条目永远 pending)`) },
     });
   }
   /** `ctx.inject(deps, cb)`:与 DSH 一致,**声明的服务都在**才回调(缺一个就永远 pending)。 */
@@ -465,12 +463,13 @@ export function loadClientBundle(options = {}) {
 
   return {
     registrations,
+    /** 标签类型登记(见 typeRegistrations 的注释):断言 keepMounted 这类**声明**用。 */
+    typeRegistrations,
     injects,
     calls,
     render,
     propsOf,
     statusPayload,
-    scopeSnapshot,
     /** 这位"宿主"提供的服务名集合(用例据此断言入口的静态 inject 能被满足)。 */
     services: new Set(Object.keys(services)),
     /** 喂给入口的那个 ctx(用例可断言"未声明的服务属性访问会抛"这类契约)。 */

@@ -125,6 +125,16 @@ async function bridgeStatus() {
   return (await response.json()).bridge;
 }
 
+await test('status 带 htmlTag:客户端据此给常驻 iframe 拼 &v=(升级插件/换树后旧页面必须换掉)', async () => {
+  const route = routes.get('/api/code-server/status');
+  assert.ok(route !== undefined, '/api/code-server/status 必须注册');
+  const body = await (await route.fetch(new Request('http://127.0.0.1/api/code-server/status'))).json();
+  assert.equal(typeof body.htmlTag, 'string', 'status 必须带 htmlTag(客户端拿它拼 &v=)');
+  const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  assert.ok(body.htmlTag.startsWith(`${version}-`), `htmlTag 应以插件版本开头(版本-树):${body.htmlTag}`);
+  assert.match(body.htmlTag, /^[0-9A-Za-z._-]+$/, `htmlTag 必须是 URL 安全的一段:${body.htmlTag}`);
+});
+
 /** 等桥的本机 IPC 监听口起来(apply 里是异步起的)。 */
 async function waitForEndpoint(timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
