@@ -51,7 +51,7 @@
     {
       "alias": "@vscode/proxy-agent",
       "package": "@jinsiyu/dshcs-vscode-proxy-agent",
-      "version": "0.44.0"
+      "version": "0.45.0"
     },
     {
       "alias": "@vscode/spdlog",

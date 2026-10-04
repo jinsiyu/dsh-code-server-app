@@ -121,7 +121,7 @@
     "@jinsiyu/dshcs-parcel-watcher": "2.5.6",
     "@jinsiyu/dshcs-ssh2": "1.17.0",
     "@jinsiyu/dshcs-vscode-fs-copyfile": "2.0.0",
-    "@jinsiyu/dshcs-vscode-proxy-agent": "0.44.0",
+    "@jinsiyu/dshcs-vscode-proxy-agent": "0.45.0",
     "@jinsiyu/dshcs-vscode-server": "4.140.0",
     "@microsoft/1ds-core-js": "3.2.13",
     "@microsoft/1ds-post-js": "3.2.13",

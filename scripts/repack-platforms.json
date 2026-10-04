@@ -73,7 +73,7 @@
     "@microsoft/mxc-sdk": { "platform": false },
     "@parcel/watcher": { "platform": false },
     "@vscode/fs-copyfile": { "platform": false },
-    "@vscode/proxy-agent": { "platform": false },
+    "@vscode/proxy-agent": { "platform": false, "version": "0.45.0" },
     "cpu-features": { "platform": false },
     "node-pty": { "platform": false },
     "ssh2": { "platform": false }
