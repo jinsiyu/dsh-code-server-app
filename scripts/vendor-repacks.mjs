@@ -817,7 +817,11 @@ function main() {
     }
     byTarget.set(target, map);
   }
-  const hostMap = byTarget.get(hostKey) ?? byTarget.get(targets[0]);
+  // 宿主不在 --target 里时(例如 win32-arm64 机器上只建 x64 腿)退回**第一个被请求的目标**。
+  // 这里原来写的是 `targets[0]` —— 一个在这个作用域里从未定义的变量。因为 `??` 会短路,
+  // CI 上宿主(win32-x64)恰好总在 --target 里,右边永远不被求值,所以一直没暴露;
+  // 直到 2026-10-04 在 arm64 机器上跑 `--target win32-x64` 才炸出 ReferenceError: targets is not defined。
+  const hostMap = byTarget.get(hostKey) ?? byTarget.get(buildTargets[0]);
 
   // 1) 全平台重打包包(从 host 树)
   const buildDir = join(OUT, 'build');
