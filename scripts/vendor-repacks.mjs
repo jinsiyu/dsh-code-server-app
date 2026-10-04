@@ -825,6 +825,18 @@ function main() {
 
   // 1) 全平台重打包包(从 host 树)
   const buildDir = join(OUT, 'build');
+  // repository 必须改写成**本项目**:npm 在 GitHub Actions 里(工作流有 id-token: write)会**自动**附
+  // Sigstore provenance,而 provenance 会校验 package.json 的 repository.url 与"跑这次发布的工作流
+  // 所在仓库"一致。原样留着上游的地址(如 @vscode/proxy-agent 的
+  // git://github.com/microsoft/vscode-proxy-agent.git)会在 PUT 阶段被判 422:
+  //   Error verifying sigstore provenance bundle: Failed to validate repository information
+  // 树包从来没这个问题 —— buildVscodeServerPackage 本来就把 repository 写成我们自己的(见上面那段)。
+  // 只在 CI 上暴露:本地 `npm publish` 不生成 provenance,所以历次首发都不是在这里踩到的。
+  const ourRepository = readJson(join(pkgRoot, 'package.json'))?.repository ?? undefined;
+  if (ourRepository === undefined) {
+    console.warn('  ⚠ 仓库 package.json 里没有 repository ⇒ 重打包包不会带仓库地址,'
+      + 'CI 上带 provenance 的发布会以 422 失败(见本段注释)');
+  }
   const writeRepack = (srcDir, pkg, outName) => {
     const dir = join(buildDir, outName);
     mkdirSync(dirname(dir), { recursive: true });
@@ -845,6 +857,7 @@ function main() {
     }
     m.name = pkg.pkgName;
     m.version = pkg.version;
+    m.repository = ourRepository;
     if (pkg.platformSpecific) {
       const [platform, arch] = pkg.pkgName.match(/-(win32|darwin|linux)-(arm64|x64)$/).slice(1);
       m.os = [platform];
