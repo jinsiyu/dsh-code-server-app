@@ -30,11 +30,11 @@ importers:
         specifier: 2.0.0
         version: 2.0.0
       '@jinsiyu/dshcs-vscode-proxy-agent':
-        specifier: 0.44.0
-        version: 0.44.0
+        specifier: 0.45.0
+        version: 0.45.0
       '@jinsiyu/dshcs-vscode-server':
-        specifier: 4.139.1
-        version: 4.139.1
+        specifier: 4.140.0
+        version: 4.140.0
       '@microsoft/1ds-core-js':
         specifier: 3.2.13
         version: 3.2.13(tslib@2.8.1)
@@ -340,12 +340,12 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@jinsiyu/dshcs-vscode-proxy-agent@0.44.0':
-    resolution: {integrity: sha512-3A97tpbV+WYymSpCiQgfjdHiodsEAiU9oWaXlVf3wpwvBH/nD2okzUBBSEnpV/Xa4WJIIdYg2029dIT8QdTH9Q==}
+  '@jinsiyu/dshcs-vscode-proxy-agent@0.45.0':
+    resolution: {integrity: sha512-vxPYce3riS5eCnED8JRm5O1bQfLMLxJn4Pbj+Jz916GaheOMCVKrhrfA1y4EQ6eYv/jkBo3jI40t8K4naL+knA==}
     engines: {node: '>=22.15.0'}
 
-  '@jinsiyu/dshcs-vscode-server@4.139.1':
-    resolution: {integrity: sha512-18N2sMWNxObooaI4eOw77AjRPiPNLlC0r7vYIutLxkbxqVr3iMJMZh7Ke6/Mm84cwwIZ9ZmFXx2ZJHY3U9tMmg==}
+  '@jinsiyu/dshcs-vscode-server@4.140.0':
+    resolution: {integrity: sha512-5oGJJ6YvOJyGBol43KojmeDxTnfhhFTAYr4DDeaSvY7JCKTNdGVdazYYENxuLJDwSbOSqg2YYTJ5XY53RUksoQ==}
 
   '@jinsiyu/dshcs-vscode-spdlog-linux-arm64@0.15.8':
     resolution: {integrity: sha512-UE5kMgw5l7tDYHVPjg6RuQ13wnhT4Md5PdJPYYNMaH8sjNoGUEAThybg+KwHILGK6KpQRfZ/Fu5kqcG11/EC0g==}
@@ -950,7 +950,7 @@ snapshots:
   '@jinsiyu/dshcs-vscode-native-watchdog-win32-x64@1.4.6':
     optional: true
 
-  '@jinsiyu/dshcs-vscode-proxy-agent@0.44.0':
+  '@jinsiyu/dshcs-vscode-proxy-agent@0.45.0':
     dependencies:
       '@tootallnate/once': 3.0.1
       agent-base: 7.1.4
@@ -960,11 +960,11 @@ snapshots:
       socks-proxy-agent: 8.0.5
       undici: 7.29.1
     optionalDependencies:
-      '@vscode/windows-ca-certs': '@jinsiyu/dshcs-vscode-windows-ca-certs-win32-arm64@0.3.4'
+      '@vscode/windows-ca-certs': '@jinsiyu/dshcs-vscode-windows-ca-certs-win32-x64@0.3.4'
     transitivePeerDependencies:
       - supports-color
 
-  '@jinsiyu/dshcs-vscode-server@4.139.1': {}
+  '@jinsiyu/dshcs-vscode-server@4.140.0': {}
 
   '@jinsiyu/dshcs-vscode-spdlog-linux-arm64@0.15.8':
     dependencies:

@@ -31,4 +31,5 @@ minimumReleaseAgeExclude:
   - '@jinsiyu/dshcs-vscode-spdlog-linux-x64@0.15.8'
   - '@jinsiyu/dshcs-vscode-sqlite3-linux-arm64@5.1.12-vscode'
   - '@jinsiyu/dshcs-vscode-sqlite3-linux-x64@5.1.12-vscode'
-  - '@jinsiyu/dshcs-vscode-server@4.139.1'
+  - '@jinsiyu/dshcs-vscode-server@4.139.1 || 4.140.0'
+  - '@jinsiyu/dshcs-vscode-proxy-agent@0.45.0'
