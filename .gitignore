@@ -43,6 +43,8 @@ npm-debug.log*
 pnpm-debug.log*
 .pnpm-cache/
 .npm-cache/
+# 上游看门狗(scripts/watch-upstream.mjs)的提醒节流状态:本机状态,入库没有意义
+.upstream-watch.json
 
 # 本地 npm 凭据(发布用 token 等;绝不入库)
 .npmrc

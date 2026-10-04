@@ -19,15 +19,18 @@ A static profile plugin (npm package with host + client bundle) that ships the *
 > uses), so typography, highlighting and math match the UI and a renderer version mismatch is impossible.
 > There is **no build step anywhere on that chain**. See "Working with DSH: the editor bridge".
 
-## UI carrier and required DSH version (0.2.3: right-sidebar DSH only)
+## UI carrier and required DSH version (0.2.3: right-sidebar DSH only; converged 2026-10-01 to one generation, ≥ 0.2.0-rc.2)
 
-Every verdict is a **capability probe**, never a version comparison. The two lines differ in two independent
-places: the **right-sidebar session scope** (`sessionId` standard prop ↔ the snapshot's `current`, see
-"Workspace") and the **settings surface** (seat × data channel, see the "Settings" section):
+Every verdict is a **capability probe**, never a version comparison. Exactly **one generation** is supported:
+**DSH ≥ 0.2.0-rc.2** (web and desktop are the same generation — both UIs have moved to 0.2.0-rc.2). The
+compatibility branches written for the rc line `0.1.5-rc.x` and the alpha line
+`0.1.6-alpha.2…0.1.7-rc.x` have been **deleted**: the old seat `settings.plugin.item`, the old data channel
+`settingsScope`, the session-list snapshot's `current` fallback and the `recentWorkspaceId` fallback are all
+gone (see "Settings" and "Legacy DSH"):
 
 | DSH version | Carrier | Entry points |
 |---|---|---|
-| **rc line** `0.1.5-rc.x` (latest `0.1.5-rc.3` = npm `latest`/`next`)**and alpha line** `>= 0.1.6-alpha.2` (latest `0.1.7-alpha.1`) — detected by the presence of `sidebarRight` / `sidebarRightTabs`, never by version comparison | **Right-sidebar tab** (kind `code-server`, chip `Code Server`), which also **claims file addresses** (see below) | ① DSH's own **produced-file chips / presented-file card previews / inline file names in prose** (since 0.2.5, via the official `openFile` → file address → this tab); ② the **Code Server box** on the sidebar's guide ("开始") page; ③ the settings block (location per "Settings") → **"Open in right sidebar"** |
+| **≥ 0.2.0-rc.2** (web and desktop are the same generation) — detected by the presence of `sidebarRight` / `sidebarRightTabs`, never by version comparison | **Right-sidebar tab** (kind `code-server`, chip `Code Server`), which also **claims file addresses** (see below) | ① DSH's own **produced-file chips / presented-file card previews / inline file names in prose** (since 0.2.5, via the official `openFile` → file address → this tab); ② the **Code Server box** on the sidebar's guide ("开始") page; ③ the settings block (location per "Settings") → **"Open in right sidebar"** |
 | older (no sidebar service) | **Unsupported**: nothing but one notice in the settings block | none (the settings block shows an upgrade notice) |
 
 - Detection: first a synchronous `ctx.get('sidebarRightTabs') / ctx.get('sidebarRight')` probe; because the services may come up after this plugin, `ctx.inject(['sidebarRightTabs','sidebarRight'], …)` is awaited and a **2.5 s timeout marks the DSH as legacy** (no version comparison, and the plugin's own activation is never blocked).
@@ -38,7 +41,7 @@ places: the **right-sidebar session scope** (`sessionId` standard prop ↔ the s
   - services arriving late automatically revoke the legacy verdict, register the sidebar, and report `{sidebar:true}` so the host re-enables;
   - a failed registration is no longer silent: it logs an error and the card's entry row says "right-sidebar services were found but the tab could not be registered".
 - **0.2.3 dropped legacy-DSH compatibility**: the floating ball and the internal floating window are **deleted**. When the DSH is detected as legacy the plugin
-  - registers only the settings notice (seat per "Settings") — no ball, no floating window, **no file-address claim**, no IDE preload;
+  - registers only the settings notice (location per "Settings") — no ball, no floating window, **no file-address claim**, no IDE preload;
   - reports `/api/code-server/ui-mode { sidebar:false }` to the host (after the 10 s grace above); the host then **recycles an instance it auto-prestarted** and stops prestarting (a user-started/adopted instance is never touched), and `{sidebar:true}` reverses that if the services show up later;
   - upgrading DSH needs **no reinstall** — refresh the page and the notice turns back into the full settings form.
 - The sidebar tab hosts the code-server page (iframe) and follows the current session workspace; the panel can be collapsed/split/floated/fullscreened by DSH's right sidebar.
@@ -463,31 +466,39 @@ data call changes; the caller stays as it is).
 
 ## Legacy DSH (unsupported since 0.2.3)
 
-**Behaviour**: when `sidebarRightTabs` / `sidebarRight` cannot be found, the plugin registers a single settings card:
+**Behaviour**: when `sidebarRightTabs` / `sidebarRight` cannot be found, the plugin registers a single settings notice (location per "Settings"):
 
 > **Code Server** — this DSH version is unsupported (no right-sidebar service)
 > Since 0.2.3 this plugin no longer supports older DSH versions.
 > The right-sidebar plugin services `sidebarRightTabs` / `sidebarRight` were not detected, so the plugin exposes no
 > entry point at all (the old floating ball and floating window have been removed) and will not start the IDE in the
-> background. Upgrade DSH to the rc line (0.1.5-rc.x) or the alpha line from 0.1.6-alpha.2 on: Code Server then appears as a
+> background. Upgrade DSH to 0.2.0-rc.2 or newer: Code Server then appears as a
 > right-sidebar tab, this page shows the full settings again, and no reinstall is needed — a page refresh is enough.
 
+- **Where the notice lives**: it is a read-only block on the only settings seat (`plugins.bundle.config`,
+  driven by the `configForms` channel); an old-generation DSH has neither, so on those deployments all that is
+  left is the console warning `[code-server] 未探测到右侧栏服务…`. Behaviour is unchanged: **no IDE start,
+  no entry point at all**.
 - **No other UI**: no `shell.overlay` registration (floating ball), no file-address claim, no resident preload.
 - **Host side**: the client posts `/api/code-server/ui-mode { sidebar:false }`; the host then ① stops auto-prestarting
   the IDE (`maybePrestart` returns immediately) and ② **recycles** an instance it had just auto-prestarted (unless it
   was adopted), so no unusable IDE process or port is left behind. A user-started/adopted instance is never stopped.
 - **Why delete instead of keeping**: the internal floating window was a stopgap from the era of early-2026 DSH builds
   without right-sidebar services. The resident surface, clipboard handling, shortcuts and panel collapsing all build on
-  DSH's right sidebar, so maintaining two carriers costs more than it is worth. Older-DSH users should stay on `0.2.2`
-  (`dsh plugin --profile web add dsh-code-server-app@0.2.2`).
+  DSH's right sidebar, so maintaining two carriers costs more than it is worth. The old-generation compatibility
+  branches (the rc / alpha lines' seats, channels and the `current` fallback) were deleted on 2026-10-01 as well —
+  **users who still need an old-generation DSH (≤ 0.1.7-rc.x) should pin `dsh-code-server-app@0.3.69`**
+  (`dsh plugin --profile web add dsh-code-server-app@0.3.69`), the last version that still carries those branches.
+- **Rollback**: for an old-generation DSH, drop to `0.3.69`
+  (`dsh plugin --profile web add dsh-code-server-app@0.3.69`); on a 0.2-generation DSH no rollback is needed.
 
 ## code-server workspace and process lifecycle
 
 - code-server's workspace **follows the active DSH session/workspace**: switching sessions/workspaces while the IDE is open moves code-server to the new directory
   (resolution order: current session cwd → session's `workspace.path` → workspace of the most recently active session → first workspace.path;
-  **where "the current session" comes from depends on the DSH version**: the alpha line (≥ 0.1.6-alpha.2) reads the session-scoped standard prop `sessionId`,
-  the rc line (≤ 0.1.5-rc.3) falls back to `current` on the session-list snapshot — see the 0.3.48 bullet below; the logic is inlined in `lib/client.js`
-  (the "workspace resolution" section) and the contract for both shapes is pinned by `scripts/test-client-bundle-cwd.mjs` directly against the entry file);
+  **there is only one source for "the current session"**: the session-scoped standard prop `sessionId` (this 0.2 generation;
+  the session-list snapshot's `current` fallback used by the old rc line has been deleted with the old-generation branches) — see the 0.3.48 bullet below; the logic is inlined in `lib/client.js`
+  (the "workspace resolution" section) and the contract is pinned by `scripts/test-client-bundle-cwd.mjs` directly against the entry file);
   the opened directory is shown inside code-server (`?folder=<cwd>`, the page reloads when following a switch);
   implementation note: the iframe `src` must carry `?folder=<cwd>` — code-server's front-end remembers the "last workspace" and restores it by itself;
   a bare root URL only shows the previously opened directory and does not follow switches (verified locally).
@@ -500,8 +511,9 @@ data call changes; the caller stays as it is).
   to the host, and the IDE started with an **empty workspace** (measured locally: `cwd`/`launchCwd` both empty in
   `$DSH_HOME/code-server/pid.json`, with nothing visible in the UI). Since 0.3.48 it reads the session-scoped standard prop
   `sessionId` (the same source DSH's own right-sidebar tab uses — `ui-deliverables`' ReviewTab does
-  `useSessions(s => s.byId[sessionId]?.cwd)`), keeping the old `current` as a backward-compatible fallback; when neither
-  source resolves, it **does not guess a directory** (no cwd is sent, the workbench keeps its current one) and logs a
+  `useSessions(s => s.byId[sessionId]?.cwd)`); **the old-generation `current` fallback was deleted with the
+  old-generation branches** (2026-10-01), and when the source does not resolve it **does not guess a directory**
+  (no cwd is sent, the workbench keeps its current one) and logs a
   `[code-server] 未能解析当前工作区目录…` warning — the silence is exactly what made this bug hard to find.
 - **The switch is lightweight (since 0.2.12)**: a running instance is **not restarted** when the workspace changes — the host
   only updates `state.cwd` and the workbench re-navigates with the new `?folder=` (the workspace directory was always the
@@ -580,11 +592,71 @@ pnpm run promote -- <version>
 | **Publish the plugin itself** | `pnpm run publish:plugin` (publishes the exact tarball that was verified; no re-packing; default dist-tag `next`) |
 | **Promote `latest`** | `pnpm run promote -- <version>` (only after the user restarted and confirmed; `--dry-run` shows the current tags first) |
 | **Just report versions** | `pnpm run vendor:check` |
+| **Watch for upstream releases** | `pnpm run watch:upstream` (local watchdog: watches only `code-server`'s `latest` on npm and raises a Windows notification plus the upgrade chain when it moves; see the next section) |
 
-> `pnpm pack`'s `prepack` runs the vendor-code-server script once; when `vendor/code-server` already exists it is
+> `pnpm pack`'s `prepack` runs the vendor-vscode-server script once; when `vendor/vscode` already exists it is
 > a **no-op that takes seconds**, so after ordinary code changes you can just run `pnpm pack` (it will never
 > silently upgrade code-server). Upgrading code-server requires an explicit `pnpm run vendor:latest`
 > (or `--force` / `--version`) **plus** republishing the sub-packages.
+
+### Upstream update monitoring (a local automation task)
+
+The **start** of the upgrade chain is an upstream release — and nothing currently looks for one: all three
+workflows are push/PR/manual (**there is no `schedule` anywhere**), and the `vendor:check` step inside CI is
+`continue-on-error`. So "upstream shipped a release weeks ago while the bundled tree still sits on the previous
+one" is completely invisible inside an all-green run. `scripts/watch-upstream.mjs` closes exactly that gap.
+
+```powershell
+node scripts/watch-upstream.mjs            # one check; on a new version → report + Windows notification; otherwise one line
+pnpm run watch:upstream                    # same, but first goes through pnpm's dependency pre-flight (see the note below)
+node scripts/watch-upstream.mjs --json     # machine readable (what a DSH in-session reminder parses); human output goes to stderr
+node scripts/watch-upstream.mjs --no-notify # report only, no notification (regressions / unattended)
+node scripts/watch-upstream.mjs --fixture f.json # use a local JSON file as the registry response (offline)
+node scripts/watch-upstream.mjs --local 4.140.0  # override the local baseline for a dry run (does not read vendor/)
+node scripts/test-upstream-watch.mjs       # regression suite (offline, never notifies)
+```
+
+> **Why the docs lead with `node scripts/…` rather than `pnpm run …`**: `pnpm run` performs a dependency
+> status pre-flight first and runs `pnpm install` whenever things are out of sync. **Mid-upgrade that is
+> guaranteed to bite**: `package.json` pins the new `@jinsiyu/dshcs-vscode-server@<new version>` first, but
+> that version does not exist until `pnpm run publish:repacks` has run — and in the meantime `pnpm run` /
+> `pnpm test` fail right there with `ERR_PNPM_NO_MATCHING_VERSION`, never reaching the script (hit for real
+> while upgrading to 4.139.1 on 2026-09-30: the registry only had 4.136.2 / 4.137.0 / 4.138.0 then).
+> The watchdog must not be blocked by the state of the release flow, so the scheduled reminder invokes node
+> directly; the two forms are equivalent once dependencies are in sync.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Check succeeded — **a new upstream version is still success** (this reports, it does not gate) |
+| `1` | Check failed (network down / bad registry response / no local baseline). **Strictly distinct from "no update"** |
+| `2` | A new version exists *and* `--fail-on-update` was given (only if you want it as a gate) |
+
+Signal scope (**upstream version only**, deliberately narrow): `registry.npmjs.org/code-server/latest` against the
+local baseline, which falls back in three steps — `vendor/VENDOR.json` → `vendor/vscode/package.json` → the
+`@jinsiyu/dshcs-vscode-server` pin in `package.json` (a fresh CI clone has no `vendor/`, so it takes the third).
+It does **not** look at `@jinsiyu/*` sub-package drift, and does **not** decide whether *our* repack of the new
+version has been published — that belongs to the upgrade flow itself.
+
+Notifications go to the **Windows Action Center** (a system notification, not a popup window):
+
+- Signed as **`dsh-code-server-app 上游监控`**. On first use it writes a `DisplayName` under
+  `HKCU\SOFTWARE\Classes\AppUserModelId\dsh-code-server-app.UpstreamWatch` — the script's **only system side
+  effect**; disable it with `--no-register-notify-id`, and deleting that key undoes it completely.
+- **Delivery is verified**: right after showing the toast it reads the notification history back with
+  `History.GetHistory($AppId)`, so the report states *delivered* as evidence rather than "the command did not
+  error, so it probably went out". If the lookup misses, it says so plainly.
+  (Gotcha we hit: the **parameterless** `GetHistory()` overload resolves the *calling process's own* AUMID, so
+  inside `powershell.exe` it always fails with `0x80070490 ELEMENT_NOT_FOUND` — do not be misled by it.)
+- **Throttling**: each upstream version notifies once; after 7 days without an upgrade it reminds again (so
+  "we notified once" never decays into "never again"). State lives in `.upstream-watch.json` (gitignored).
+  State is recorded **only after a notification actually goes out** — a routine `--no-notify` run must not consume
+  the slot, or that version would never be announced at all, which is the "silent miss" failure mode.
+- **Transient network errors are retried** (3 attempts with backoff) so an occasional `ECONNRESET` is not reported
+  as a check failure; false alarms are what make people stop reading reminders.
+
+It also works as a DSH in-session reminder: when the reminder fires, run `pnpm run watch:upstream`, paste the
+report if there is an update, and answer with a single line if there is not.
+
 
 ## GitHub Actions (CI + tag-triggered release)
 
@@ -695,13 +767,13 @@ pnpm test:bridge-extension   # extension-side pure logic (dirty buffers, diagnos
 pnpm test:ask-dialog         # ask-dialog wiring: no artifacts/build chain left, the host's four ask routes, the extension only reporting editor state, the four approval constraints, the bridge's safety invariants
 pnpm test:launcher-routes    # launcher HTTP surface (spawns a real process; slow)
 pnpm test:workspace-switch   # switching workspaces does not restart the process
-pnpm test:workspace-cwd      # "current workspace directory" resolution (alpha line: sessionId vs. rc line: the snapshot's current)
+pnpm test:workspace-cwd      # "current workspace directory" resolution: the session-scoped standard prop `sessionId` is the only shape (the old rc line's snapshot `current` fallback is gone)
 pnpm test:client-cwd         # the same contract, but asserted against the **client entry** lib/client.js
 pnpm test:client-tabs        # "one code-server tab on the DSH side": a new tab closes the old one in the same pane
 pnpm test:client-entry       # client-entry guard: classic script + factory wrapper, require whitelist, src/ gone, parity with lib/claim-types.js
-pnpm test:apply              # apply() under a stub ctx (ReferenceError regressions) + both settings data lines: the new one reads volatile leaves and follows settings/document-updated, the legacy one registers a **non-volatile** schema and subscribes scope.watch
-pnpm test:client-seat        # settings **seat × data channel**: seat (plugin page plugins.bundle.config ≥ 0.1.6-alpha.2 / settings page settings.plugin.item ≤ 0.1.5-rc.3) × channel (configForms ≥ 0.1.7-alpha.1 / settingsScope earlier)
-                             # all eight combinations must apply (injection guard) + behaviour for the three real ones: the new line has **mutate** as its only write path, registration is gated by whileServed, the rc line still uses the old seat
+pnpm test:apply              # apply() under a stub ctx (ReferenceError regressions) + the settings data plane: volatile leaves are read and settings/document-updated is followed (the legacy line that registered a schema and subscribed scope.watch is gone)
+pnpm test:client-seat        # settings surface (**one seat** `plugins.bundle.config` + **one channel** `configForms`): seat declared × channel present/absent — all 4 combinations must apply (injection guard)
+                             # the only write path is mutate and registration is gated by whileServed, plus **anti-assertions**: the old seat `settings.plugin.item` / old channel `settingsScope` must not come back, and a missing channel must leave the sidebar tab and the resident preload untouched
 pnpm test:fullscreen         # opening the tab goes fullscreen
 pnpm test:vendored           # repack table ↔ plugin dependency table (no npm: aliases, no aggregator)
 pnpm test:installed          # install smoke: assert on what was **installed into a profile**
@@ -859,8 +931,8 @@ The main package is only **~110KB** (the plugin's own code plus the launcher); e
 
 - **the VS Code tree** (`lib/vscode` 196.9MB + `out/browser` + `src/browser`) is a **platform-independent package**
   `@jinsiyu/dshcs-vscode-server@<code-server version>` declared in the plugin's `dependencies`; it runs from
-  `<profile>\node_modules\@jinsiyu\dshcs-vscode-server\vscode` (the legacy full tree at
-  `@jinsiyu/dshcs-code-server/code-server` is still recognised as a fallback);
+  `<profile>\node_modules\@jinsiyu\dshcs-vscode-server\vscode` (the old full tree at
+  `@jinsiyu/dshcs-code-server/code-server` and the 0.1.37 platform sub-packages are **no longer recognised**);
 - the **pure-JS part** of VS Code's inner dependencies (35 packages: xterm / katex / typescript / ws / tar …) is
   declared in the plugin's `dependencies` and installed by pnpm into the profile's `node_modules` (hoisted);
 - the **binary part** comes entirely from `@jinsiyu/dshcs-*` sub-packages, declared **directly on the plugin's own
@@ -904,7 +976,8 @@ The main package is only **~110KB** (the plugin's own code plus the launcher); e
 - **resolution path**: the host finds the tree with `require.resolve('@jinsiyu/dshcs-vscode-server/package.json')`
   (then the inner `vscode/` directory) and the entry is `vscode/lib/vscode/out/server-main.js`; VS Code's inner deps are
   resolved upwards from that root (`vscode/lib/vscode/node_modules` → package `node_modules` → `<profile>/node_modules`).
-  The legacy full tree (`@jinsiyu/dshcs-code-server/code-server`) is still recognised as a fallback;
+  The old full tree (`@jinsiyu/dshcs-code-server`) and the in-package `vendor/code-server` are **no longer
+  recognised as fallbacks** — they were deleted with the old-generation branches;
 - **runtime layout self-healing** (`ensureRuntimeLayout()` in `lib/native.js`, idempotent, run **at activation before
   `envCheck` and again before every start**): the host adds two kinds of **junctions** (Windows junctions / POSIX dir
   symlinks) into the tree:
@@ -919,11 +992,27 @@ The main package is only **~110KB** (the plugin's own code plus the launcher); e
 > **Size note**: the plugin tarball is **~110KB**; `@jinsiyu/dshcs-vscode-server` is **~60MB** (~197MB unpacked);
 > the 16 native packages add ~250MB. A full install downloads roughly 310MB. Neither `vendor/` nor `repack/` is committed to git (see `.gitignore`).
 
-> **Upgrading from ≤ 0.1.43**: the tree package changed from `@jinsiyu/dshcs-code-server` (the full code-server tree with
-> `out/node` and 136 runtime deps) to `@jinsiyu/dshcs-vscode-server` (the trimmed tree). **The new code defaults to
-> `serve: loopback`, which behaves exactly like 0.1.43**; switch to `serve: dsh` for same-origin mounting. The install
-> command is unchanged (`dsh plugin --profile web add dsh-code-server-app@<version>`), and pnpm drops the old
-> `dshcs-code-server` sub-package.
+> **Upgrading from ≤ 0.1.43**: the tree package used to be `@jinsiyu/dshcs-code-server` (the full code-server tree with
+> `out/node` and 136 runtime deps) and is now `@jinsiyu/dshcs-vscode-server` (the trimmed tree); **the old package name
+> and the old platform sub-packages are no longer recognised as fallbacks** — only the current layout remains (see
+> "Tree and install-location resolution"). The install command is unchanged
+> (`dsh plugin --profile web add dsh-code-server-app@<version>`), and pnpm drops the old
+> `dshcs-code-server` sub-package. The current version still defaults to `serve: loopback` (equivalent to 0.1.43);
+> switch to `serve: dsh` for same-origin mounting.
+
+> **Upgrading from ≤ 0.1.35**: the old install root `<profile>\.code-server-app` (~1.4GB of inner dependencies) and the
+> "Install environment" step are both unnecessary — and that probing was **deleted with the old-generation branches**:
+> the plugin no longer detects the directory and no longer logs a "safe to delete" hint, so leaving it in place is
+> harmless. To clean it up, run
+> `Remove-Item -Recurse -Force <profile>\.code-server-app`. Old entries such as `dsh-code-server-app: false` left in
+> the profile's `pnpm-workspace.yaml` can go too (the current version needs no build approvals at all).
+
+> **Uninstall**: `dsh plugin --profile web remove dsh-code-server-app` is enough; the tree package and the native
+> packages are separate dependencies, so for a full cleanup also remove `@jinsiyu/dshcs-vscode-server`
+> (or `pnpm remove` it inside the profile). Only a profile that was upgraded from ≤ 0.1.43 can still carry the old
+> tree package `@jinsiyu/dshcs-code-server` and the old install root `<profile>\.code-server-app` — delete those by
+> hand (the plugin no longer recognises them).
+
 ### Why the client half has no build step (since 0.3.58)
 
 **`lib/client.js` *is* the source** — hand-written, committed, not minified. What was removed: `src/**`
@@ -984,8 +1073,9 @@ and `pnpm test:ask-dialog` (the wiring, plus "not one trace of the build chain m
 dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 ```
 
-> A source path installs via `link:`. On a dev machine without `vendor/code-server`, run
-> `pnpm run vendor:vscode -- --dev-links` first. Dependencies (inner JS deps + the platform aggregator) are installed by pnpm
+> A source path installs via `link:`. On a dev machine without `vendor/vscode`, run
+> `pnpm run vendor:vscode -- --dev-links` first (the old-generation fallback to an in-package
+> `vendor/code-server` is **gone**, so `vendor/vscode` must exist). Dependencies (inner JS deps + the platform aggregator) are installed by pnpm
 > too — but the not-yet-published local `@jinsiyu/*` packages must either be published first, or the
 > `repack/tgz/*.tgz` files must be installed into the profile as `file:` dependencies.
 >
@@ -1059,37 +1149,38 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 - **No runtime auto-upgrade anymore**: nothing fetches latest at startup; the version is fully determined by the bundled artifact.
 - Bundled locally right now: the tree of `code-server@4.139.1` (VS Code 1.139.1, `productPath=stable-53c2f325…`).
 
-### Compatibility with the old install locations
+### Tree and install-location resolution
 
-Host probe order: `@jinsiyu/dshcs-vscode-server/vscode` (**the real layout since 0.2.0**) >
-`@jinsiyu/dshcs-code-server/code-server` (the full tree, 0.1.40–0.1.43) >
-`@jinsiyu/dshcs-code-server-<platform>-<arch>/code-server` (the 0.1.37 platform sub-packages) >
-the in-package `vendor/vscode` > the in-package `vendor/code-server` (development). The old install root
-`<profile>\.code-server-app` is only mentioned in a startup log line; nothing writes to it any more.
-## Settings (since 0.3.50: the plugin page; earlier: Settings → Plugins → Code Server)
+**Only two candidates remain** (since 2026-10-01): `@jinsiyu/dshcs-vscode-server/vscode` (**the real layout since
+0.2.0**) > the in-package `vendor/vscode` (development). The old-generation fallbacks —
+`@jinsiyu/dshcs-code-server/code-server` (the full tree, 0.1.40–0.1.43),
+`@jinsiyu/dshcs-code-server-<platform>-<arch>/code-server` (the 0.1.37 platform sub-packages) and the in-package
+`vendor/code-server` — plus the old install root `<profile>\.code-server-app` (probing and the "safe to delete" log
+line alike) are **all deleted**: if the current layout is missing, startup fails instead of silently landing on an
+old directory.
 
-The settings surface is decided by **two independent axes** — the **seat** (where the UI is drawn) and the
-**data channel** (where values are read from and written to). Their break points are **not the same release**,
-so three real combinations must all work:
+## Settings (since 0.3.50: the plugin page)
 
-| DSH | Seat (declaration-driven: `slots.inject` only fires for a declared slot, so both legs are registered) | Data channel (capability probe) |
-|---|---|---|
-| **rc line ≤ 0.1.5-rc.3** (latest rc is still this one) | `settings.plugin.item` (key `code-server`) — the self-drawn collapsible card in Settings → Plugins → Code Server | `ctx.settingsScope` (namespace `code-server`), per-field `set/unset` |
-| **0.1.6-alpha.2** | `plugins.bundle.config`, **key = package name** `dsh-code-server-app` — plugin page → `dsh-code-server-app` → the settings block sits **between the description and the rows** | same as above (`settingsScope` still exists in this release) |
-| **alpha line ≥ 0.1.7-alpha.1** (latest 0.1.7-alpha.1) | as above (the page draws title/icon/crumb itself; we only render the form + save control) | `ctx.configForms.get('code-server')` — the configuration **is the plugin entry's own `Config`**, and the only write path is one atomic `mutate(ops, revision)` |
+The settings surface is **one seat + one data channel** (since 2026-10-01):
 
-> Why both legs stay: `settings.plugin.item` retired in ≥ 0.1.6-alpha.2 (the plugin page only renders that
-> block when `ledger.bundles.has(packageName)` — a wrong key or the old seat makes the settings block
-> **silently disappear**), while `settingsScope` was **deleted in 0.1.7-alpha.1** (renamed/re-modelled to
-> `configForms`). Declaring such a service in the client `inject` costs even more: the entry stays **pending
-> forever**, and the right-sidebar tab, the settings block and the resident preload **all vanish together**,
-> leaving only `web boot: 1 entry did not activate` / `pending (waiting for service: settingsScope)` in the log.
-> So the client `inject` keeps only the universally present `['slots']`, and both channels are **probed at
-> runtime** (`ctx.get`); the host half does the same (`typeof settings.register === 'function'` → legacy path,
-> otherwise read the volatile leaves). Regressions: `pnpm test:client-seat` (injection guard over the eight
-> seat × channel combinations plus behaviour for the three real ones) and `pnpm test:apply` (both host lines).
+| Seat (declaration-driven: `slots.inject` only fires for a declared slot) | Data channel (capability probe) |
+|---|---|
+| `plugins.bundle.config`, **key = package name** `dsh-code-server-app` — plugin page → `dsh-code-server-app` → the settings block sits **between the description and the rows** (the page draws title/icon/crumb itself; we only render the form + save control) | `ctx.configForms.get('code-server')` — the configuration **is the plugin entry's own `Config`**, and the only write path is one atomic `mutate(ops, revision)` |
 
-**Configurable fields** (one shared list for both channels; these fields carry `.volatile()` in the host
+> The old-generation lines (the rc line's old seat `settings.plugin.item` + old channel `ctx.settingsScope`, and
+> 0.1.6-alpha.2's {new seat, old channel} combination) were **deleted wholesale** with the old-generation branches —
+> both UIs (web and desktop) are on this 0.2 generation now, so the seat × channel matrix is no longer needed.
+> One rule still holds: **the channel is always probed at runtime, never declared in `inject`** — putting
+> `configForms` into `inject` leaves the entry **pending forever** on a host without that service, and the
+> right-sidebar tab, the settings block and the resident preload **all vanish together**, leaving only
+> `web boot: 1 entry did not activate` / `pending (waiting for service: …)` in the log. So the client `inject`
+> keeps only the universally present `['slots']`, and `configForms` is only reached through
+> `ctx.get('configForms')` (property access to an undeclared service throws in DSH).
+> Regression: `pnpm test:client-seat` (one seat × one channel: injection guard over the 4 seat-declared ×
+> channel-present combinations + anti-assertions that the old seat/channel must not come back + a missing channel
+> must leave the sidebar tab and the resident preload untouched).
+
+**Configurable fields** (these fields carry `.volatile()` in the host
 `Config`, so saving re-resolves that leaf **in place** without remounting the plugin):
 
 | Key | Default | Description |
@@ -1109,12 +1200,12 @@ editable in the `cordis.patch.yml` `config` and in settings; changes apply immed
 (Since 0.2.9 the card keeps only those settings (0.3.61 added FIM completion, 0.3.62 its three sub-rows); `windowedOpen` and `reserveComposer` are gone — leftover keys in an old
 settings document neither fail nor apply.)
 
-> Changes apply immediately, no dsh restart needed: the legacy channel goes through `scope.watch`, the new one
-> through the `settings/document-updated` event (both host lines land in the same commit function). The host
+> Changes apply immediately, no dsh restart needed: changes arrive through the `settings/document-updated` event
+> and land in the same commit function (the old channel's `scope.watch` was deleted with the old-generation
+> branches). The host
 > status API returns `keepResident`, `claimExtensions` and `fullscreenOnOpen`, and the client applies them at
-> once. **After adding new setting keys, restart dsh web before first use**: the new line only offers the
-> **volatile** fields of an active, uniquely locatable entry, and the legacy line must re-register the
-> settings namespace.
+> once. **After adding new setting keys, restart dsh web before first use**: the form only offers the
+> **volatile** fields of an active, uniquely locatable entry.
 
 Since 0.2.7 the card has **no** "Entry", "dependency install" or "environment check" rows: the entry lives in the sidebar's
 guide page (and in DSH's own file clicks), and diagnostics stay out of the UI — the `/api/code-server/status` `env` field still
@@ -1141,7 +1232,7 @@ dictionaries). Regression: `pnpm test:metadata` (`scripts/test-plugin-metadata.m
 
 | Key | Default | Description |
 |---|---|---|
-| `bin` | `code-server` (placeholder) | Launch priority: explicit `bin` in config > the tree package `@jinsiyu/dshcs-code-server/code-server/out/node/entry.js` > the old platform sub-packages `@jinsiyu/dshcs-code-server-<platform>-<arch>` > the in-package `vendor/code-server` > the old install root `.code-server-app` > plugin-internal `node_modules` > `code-server` on PATH. None present → startup error with troubleshooting hints |
+| `bin` | `''` (empty = use the bundled launcher) | Escape hatch: point at an external code-server executable / `out/node/entry.js` to fall back to the old model (bypassing `lib/launcher.mjs`) |
 | `host` | `127.0.0.1` | Bind address; `auth: none` only allows loopback (localhost/127.0.0.1/::1) |
 | `port` | `0` | Port for loopback mode; **`0` = a random free port assigned per start** (the actual one is written to `endpoint.json` and read back by the host). Give an explicit port to pin it; when that port is taken and no valid `pid.json` exists, startup fails with diagnostics instead of killing a stranger |
 | `auth` | `none` | `none` \| `password`; non-loopback host automatically requires password |
@@ -1171,15 +1262,19 @@ Host/Origin fence and browser auth); in the desktop profile `apps/desktop-host` 
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/code-server/status` | `{ ok, running, status, host, port, pid, cwd, url, version, error, logTail, adopted }` (also `env` environment check and the `setup` compatibility field) |
+| GET | `/api/code-server/status` | `{ ok, running, status, host, port, pid, cwd, url, version, error, logTail, adopted }` (also the `env` environment check) |
 | POST | `/api/code-server/start` | body `{ cwd? }` (omit cwd to keep the current workspace); idempotent; changing cwd while running only **switches the directory, without restarting the process** (0.2.12) |
 | POST | `/api/code-server/stop` | Stop and recycle the process tree |
-| POST | `/api/code-server/setup` | **Compatibility no-op**: since 0.1.36 dependencies are installed by the package manager, so this only re-runs the env self-check and returns |
 | POST | `/api/code-server/open-file` | body `{ file }` — writes the signal consumed by the built-in `dshcs-open-file` extension to open the file in code-server |
 | GET | `/code-server-bridge/health` | editor-bridge liveness (**unauthenticated**; no editor data). Runs over **local IPC** (named pipe / unix socket), not under `/api`, and needs no `webServer` |
 | POST | `/code-server-bridge/sync` | editor bridge: the extension pushes state (`{context, diagnostics, workspace, at}`) and takes back events; `?since=<seq>` is the event cursor. Requires `x-dshcs-bridge-token`, and **any Origin header is 403** |
 | POST | `/code-server-bridge/ask` | editor bridge: push an editor question into the current session (`{text, file?, lineStart?, lineEnd?, selection?, languageId?}`); **409** when no session can receive it |
 | POST | `/code-server-bridge/event` | editor bridge: extension reports open/close and similar (host log tail). Requires the token |
+
+> `/api/code-server/setup` (the 0.1.36 "Install environment" compatibility no-op) and the `status` `setup` field
+> are **deleted** (2026-10-01): now that dependencies are installed by the package manager they had no effect
+> left, and keeping them only suggested an "Install environment" step still existed. For the environment
+> self-check use `status.env` or the `[code-server]` lines in the host log.
 
 > All four bridge routes carry their own token check — they **cannot** rely on DSH's cookie fence, because the
 > extension host has no browser cookie — and they are read-only by construction. See "Working with DSH" above.
@@ -1318,9 +1413,14 @@ in. Apache-2.0 grants no trademark rights; this project does not use "Continue" 
 - **`serve: dsh` shares DSH's origin**, so the iframe is not sandboxed there (same-origin plus `allow-same-origin` is
   escapable by the frame itself); in `loopback` mode the iframe is cross-origin and `sandbox` stays as real protection.
 - **Single instance across sessions**: one shared IDE per host; switching cwd only re-navigates the workbench (since 0.2.12 no process restart, so the old directory's background terminals are not collected).
-- **Older DSH versions are unsupported (since 0.2.3).** Exactly two lines are supported (converged 2026-09-22): the **rc line** `0.1.5-rc.x` (old seat + `current` on the snapshot) and the **alpha line** `>= 0.1.6-alpha.2` (new seat + the `sessionId` standard prop). Earlier alphas (`0.1.5-alpha.x`, `0.1.6-alpha.1`) are **not separate targets** — they share the rc line's shapes, so the code happens to work, but they are not verified. Detail: on a DSH without `sidebarRightTabs` / `sidebarRight` the plugin
-  offers nothing but an upgrade notice on the settings page; older-DSH users should stay on `0.2.2`
-  (`dsh plugin --profile web add dsh-code-server-app@0.2.2`).
+- **Older DSH versions are unsupported (since 0.2.3; converged to one generation on 2026-10-01).** On a DSH without
+  `sidebarRightTabs` / `sidebarRight` the plugin
+  offers nothing but an upgrade notice on the settings page. Exactly **one generation** is supported:
+  **DSH ≥ 0.2.0-rc.2** (web and desktop are the same generation), and the verdict is still a capability probe
+  (`sidebarRight`/`sidebarRightTabs` present or not), never a version comparison. The old-generation compatibility
+  branches (the rc / alpha lines' seats, channels and the snapshot's `current`) are deleted;
+  **users who still need an old-generation DSH (≤ 0.1.7-rc.x) should pin `dsh-code-server-app@0.3.69`**
+  (`dsh plugin --profile web add dsh-code-server-app@0.3.69`) — the last version that still carries them.
 - **Sidebar tab switching** (no longer reloads since 0.2.2): DSH's right sidebar renders only the active tab's body, and
   a React unmount moves the iframe away; the plugin keeps it as a singleton resident surface and shuttles it between the
   dock slot and a document-level park container with `Element.moveBefore()` (a state-preserving atomic move), so

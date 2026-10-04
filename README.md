@@ -27,15 +27,17 @@
 > 公式都一致,而且**不可能**版本错配),授权也在同一个对话框里就地处理 —— 详见
 > 「与 DSH 的协同:编辑器桥」。整条链上**没有任何构建步骤**。
 
-## UI 载体与 DSH 支持范围(0.2.3 起只支持带右侧栏的 DSH;2026-09-22 收敛为下面两条线)
+## UI 载体与 DSH 支持范围(0.2.3 起只支持带右侧栏的 DSH;2026-10-01 收敛为一代:≥ 0.2.0-rc.2)
 
-判定一律是**能力是否被声明**,不做版本号比较。两条线上有两处独立的差别:**右侧栏会话作用域**
-(`sessionId` 标准 prop ↔ 列表快照上的 `current`,见「工作区」)与**设置面**
-(座位 × 数据通道,见「设置」一节):
+判定一律是**能力是否被声明**,不做版本号比较。支持范围**只有一代**:**DSH ≥ 0.2.0-rc.2**
+(web 与 desktop 同一代 —— 两套界面都已升到 0.2.0-rc.2)。此前为 rc 线 `0.1.5-rc.x` 与
+alpha 线 `0.1.6-alpha.2…0.1.7-rc.x` 并存而写的兼容分支**已全部删除**:旧座位 `settings.plugin.item`、
+旧数据通道 `settingsScope`、会话列表快照上的 `current` 兜底与 `recentWorkspaceId` 兜底都不再支持
+(见「设置」与「旧版 DSH」两节):
 
 | DSH 版本 | 载体 | 入口 |
 |---|---|---|
-| **rc 线** `0.1.5-rc.x`(最新 `0.1.5-rc.3` = npm `latest`/`next`)**与 alpha 线** `≥ 0.1.6-alpha.2`(最新 `0.1.7-alpha.1`)—— 判据是**有没有** `sidebarRight` / `sidebarRightTabs` 服务,不按版本号硬判 | **右侧栏标签**(kind=`code-server`,标签名 `Code Server`),并**认领文件地址**(见下) | ① **DSH 官方的产物 chip / 「交付」卡片预览 / 正文里的文件名**(0.2.5 起,走官方 `openFile` → 文件地址 → 本 tab);② 右侧栏「开始」页的 **Code Server 入口框**;③ 设置区(位置见「设置」)→ **「在右侧栏打开」** |
+| **≥ 0.2.0-rc.2**(web 与 desktop 同一代)—— 判据是**有没有** `sidebarRight` / `sidebarRightTabs` 服务,不按版本号硬判 | **右侧栏标签**(kind=`code-server`,标签名 `Code Server`),并**认领文件地址**(见下) | ① **DSH 官方的产物 chip / 「交付」卡片预览 / 正文里的文件名**(0.2.5 起,走官方 `openFile` → 文件地址 → 本 tab);② 右侧栏「开始」页的 **Code Server 入口框**;③ 设置区(位置见「设置」)→ **「在右侧栏打开」** |
 | 更早(无右侧栏服务) | **不受支持**:除设置区的一条提示外**不提供任何入口** | 无(设置区显示升级提示) |
 
 - 检测方式:先 `ctx.get('sidebarRightTabs') / ctx.get('sidebarRight')` 同步探测;
@@ -48,7 +50,7 @@
   - 服务晚到 → 自动撤销旧版判定、补注册侧栏,并上报 `{sidebar:true}` 让 host 恢复;
   - 注册失败不再静默:控制台报错,设置卡入口行显示"已探测到右侧栏服务,但标签注册失败"。
 - **0.2.3 起不再兼容旧版 DSH**:悬浮球与内部浮动窗口回退**已删除**。判定为旧版时:
-  - 只在设置区留一条升级提示(座位见「设置」),不注册悬浮球/浮窗/**文件地址认领**,也不预热 IDE;
+  - 只在设置区留一条升级提示(位置见「设置」),不注册悬浮球/浮窗/**文件地址认领**,也不预热 IDE;
   - 客户端向 host 上报 `/api/code-server/ui-mode { sidebar:false }`(在上面的 10 s 宽限之后),host 据此**回收自动预启动的实例**
     并停止预启动(用户手动启动的实例不受影响);服务随后才出现时会再上报 `{sidebar:true}` 撤销;
   - 升级 DSH 后**无需重装插件**,刷新页面即可,本页会恢复为完整设置表单。
@@ -416,31 +418,36 @@ seq,并且 `/sync` 回应里带 `lastSeq`(高水位),扩展据此自查游标是
 
 ## 旧版 DSH(0.2.3 起不再支持)
 
-**行为**:探测不到 `sidebarRightTabs` / `sidebarRight` 时,插件只注册一条升级提示(座位/位置同「设置」一节,
-两种座位各有一套外壳、同一段文案):
+**行为**:探测不到 `sidebarRightTabs` / `sidebarRight` 时,插件只注册一条升级提示(位置同「设置」一节):
 
 > **Code Server** — 当前 DSH 版本不受支持(缺少右侧栏服务)
 > 本插件自 0.2.3 起不再兼容旧版 DSH。
 > 未检测到右侧栏插件服务 sidebarRightTabs / sidebarRight,因此插件不提供任何入口(旧版的悬浮球与浮动窗口已移除),
-> 也不会后台启动 IDE。升级 DSH 到 rc 线(0.1.5-rc.x)或 0.1.6-alpha.2 起的 alpha 线后,Code Server 会出现在右侧栏标签里,
+> 也不会后台启动 IDE。升级 DSH 到 0.2.0-rc.2 及以上后,Code Server 会出现在右侧栏标签里,
 > 本页同时显示完整设置项;升级后无需重装本插件,刷新页面即可。
 
+- **提示挂在哪**:它是唯一的设置座位(`plugins.bundle.config`,经 `configForms` 通道)上的一块只读内容;
+  旧代 DSH 上座位与通道都不存在,所以在那类部署里实际只剩控制台的一条
+  `[code-server] 未探测到右侧栏服务…` 警告。行为不变:**不启动 IDE、不给任何入口**。
 - **没有任何其他 UI**:不注册 `shell.overlay`(悬浮球)、不认领文件地址、不做常驻预热。
 - **host 侧**:客户端会 `POST /api/code-server/ui-mode { sidebar:false }`;host 收到后
   ① 不再自动预启动 IDE(`maybePrestart` 直接返回),② 若 IDE 是本插件刚自动预启动且尚未被 adopt,则**回收**该进程,
   避免留下一个用不上的 IDE 与端口。用户手动启动的实例(`adopted`)不会被停。
 - **为什么删除而不是保留**:内部浮动窗口是 2026 年早期 DSH(无右侧栏服务)时代的临时载体,
   常驻面、剪贴板、快捷键、面板折叠等能力都建立在 DSH 右侧栏之上;维护两套载体的成本高于其残余价值。
-  旧版用户继续用 `0.2.2` 即可(`dsh plugin --profile web add dsh-code-server-app@0.2.2`)。
-- **回滚**:任何版本都能降级到旧版实现,例如 `dsh plugin --profile web add dsh-code-server-app@0.2.2`。
+  旧代兼容分支(rc 线 / alpha 线的座位、通道与 `current` 兜底)也在 2026-10-01 一并删除 ——
+  **还需要旧代 DSH(≤ 0.1.7-rc.x)的用户请钉 `dsh-code-server-app@0.3.69`**
+  (`dsh plugin --profile web add dsh-code-server-app@0.3.69`),那是最后一个还带旧代兼容分支的版本。
+- **回滚**:需要旧代 DSH 时降到 `0.3.69` 即可(`dsh plugin --profile web add dsh-code-server-app@0.3.69`);
+  在 0.2 这一代 DSH 上不需要任何回滚。
 
 ## code-server 服务目录与进程生命周期
 
 - code-server 服务目录**跟随活动工作区/会话**:打开期间切换 DSH 会话/工作区,code-server 自动切到新目录
   (解析优先级:当前会话 cwd → 会话所属 `workspace.path` → 最近活跃会话所属 workspace → 首个 workspace.path;
-  **"当前会话"的信源随支持线而变**:alpha 线(≥ 0.1.6-alpha.2)读会话作用域标准 prop `sessionId`,
-  rc 线(≤ 0.1.5-rc.3)退回会话列表快照上的 `current` —— 详见下面 0.3.48 那条;纯逻辑内联在 `lib/client.js`
-  的"工作区解析"段,两版形状的契约由 `scripts/test-client-bundle-cwd.mjs` 直接对**入口**钉住);
+  **"当前会话"只有一个信源**:会话作用域标准 prop `sessionId`(0.2 这一代;旧代 rc 线读的会话列表快照
+  `current` 兜底已随旧代分支删除)—— 详见下面 0.3.48 那条;纯逻辑内联在 `lib/client.js`
+  的"工作区解析"段,契约由 `scripts/test-client-bundle-cwd.mjs` 直接对**入口**钉住);
   打开目录显示在 code-server 页面内(`?folder=<cwd>`,跟随切换时页面自动重新加载);
   实现要点:iframe src 必须带 `?folder=<cwd>`——code-server 前端会记住“最近工作区”并自行恢复,
   仅用裸根 URL 只会显示上一次打开的目录、不会跟随切换(本机实测确认)。
@@ -452,8 +459,8 @@ seq,并且 `/sync` 回应里带 `lastSeq`(高水位),扩展据此自查游标是
   正是从 `useSessions(s => s).current` 里取"当前会话" ⇒ cwd 恒为 undefined ⇒ 客户端**不再向宿主发 cwd**
   ⇒ IDE 以**空工作区**启动(本机实测:`$DSH_HOME/code-server/pid.json` 里 `cwd`/`launchCwd` 双空,
   UI 上看不出任何报错)。0.3.48 起改读会话作用域标准 prop `sessionId`(与官方右侧栏标签
-  `ui-deliverables` 的 ReviewTab 同一信源:`useSessions(s => s.byId[sessionId]?.cwd)`),旧的 `current`
-  作为向后兼容兜底保留;两条信源都拿不到时**不猜目录**(不发 cwd,workbench 保持当前目录),
+  `ui-deliverables` 的 ReviewTab 同一信源:`useSessions(s => s.byId[sessionId]?.cwd)`);
+  **旧代那条 `current` 兜底已随旧代分支删除**(2026-10-01),拿不到时**不猜目录**(不发 cwd,workbench 保持当前目录),
   并在控制台留一条 `[code-server] 未能解析当前工作区目录…` 警告 —— 这个坑当初就是"静默"才难查。
 - **切换是"轻量"的(0.2.12 起)**:运行中切工作区**不重启 IDE 进程**,host 只把 `state.cwd` 改成新目录,
   由 workbench 拿新的 `?folder=` 重新导航(工作区目录本来就由客户端 URL 决定,进程 cwd 只影响它自己
@@ -537,17 +544,69 @@ pnpm run promote -- <version>
 | **发布插件本体** | `pnpm run publish:plugin`(发布**已验证过的那份 tarball**,不会重新打包;默认 dist-tag = `next`) |
 | **推进 latest** | `pnpm run promote -- <version>`(用户重启确认无误后;`--dry-run` 先看当前标签) |
 | **只报告版本** | `pnpm run vendor:check` |
+| **盯上游有没有发新版** | `pnpm run watch:upstream`(本机看门狗:只盯 npm 上 `code-server` 的 latest,有新版本就发 Windows 系统通知并打印升级链;见下一节) |
 
 > `pnpm pack` 的 `prepack` 会自动跑一次 `vendor-vscode-server` 脚本;`vendor/vscode` 已存在时它是
 > **秒级 no-op**,所以日常只改插件代码的话直接 `pnpm pack` 即可(不会偷偷升级 VS Code)。
 > 升级树必须显式 `pnpm run vendor:latest`(或 `--force`/`--version`),并重发子包。
+
+### 上游更新监控(本机自动化任务)
+
+升级链的**起点**是上游发版,而这件事没人会主动去查:仓库三个工作流全是 push/PR/手动触发(**没有 `schedule`**),
+CI 里那条 `vendor:check` 又是 `continue-on-error` —— 于是「上游早就发了新版、内置树还停在上一个」
+会在一整片绿灯里完全看不见。`scripts/watch-upstream.mjs` 就是补这个缺口的本机看门狗。
+
+```powershell
+node scripts/watch-upstream.mjs            # 检查一次;有新版本 → 报告 + Windows 系统通知;无更新 → 一行结论
+pnpm run watch:upstream                    # 同上,但会先过 pnpm 的依赖预检(见下面的注意)
+node scripts/watch-upstream.mjs --json     # 机器可读(DSH 会话内提醒解析这一份);人类输出转 stderr
+node scripts/watch-upstream.mjs --no-notify # 只报告、不发通知(回归 / 无人值守)
+node scripts/watch-upstream.mjs --fixture f.json # 用本地 JSON 当 registry 应答(离线)
+node scripts/watch-upstream.mjs --local 4.140.0  # 覆盖本地基线试算(不读 vendor/)
+node scripts/test-upstream-watch.mjs       # 回归(离线、不发通知)
+```
+
+> **为什么文档里主推 `node scripts/…` 而不是 `pnpm run …`**:`pnpm run` 会先做一次依赖状态预检,
+> 不同步就自动 `pnpm install`。**升级做到一半时这一定会咬人**:`package.json` 先钉上新的
+> `@jinsiyu/dshcs-vscode-server@<新版本>`,而那个版本要等 `pnpm run publish:repacks` 才真的存在 ——
+> 中间这段时间里 `pnpm run` / `pnpm test` 会在预检阶段直接 `ERR_PNPM_NO_MATCHING_VERSION` 失败,
+> 根本跑不到脚本(2026-09-30 升 4.139.1 时实际踩到:当时 registry 上只有 4.136.2 / 4.137.0 / 4.138.0)。
+> 看门狗不该被发布流程的状态卡住,所以定时提醒里用的是直接跑 node 的那条;依赖同步时两者等价。
+
+| 退出码 | 含义 |
+|---|---|
+| `0` | 检查成功 —— **有新版本也算成功**(它是"报告",不是"门禁") |
+| `1` | 检查失败(网络不通 / registry 应答异常 / 本地基线读不到)。**与"没有更新"严格区分** |
+| `2` | 有新版本,且显式给了 `--fail-on-update`(想拿它当门禁时才用) |
+
+信号口径(**只盯上游版本**,刻意收窄):`registry.npmjs.org/code-server/latest` 对比本地基线,
+基线三级回退 —— `vendor/VENDOR.json` → `vendor/vscode/package.json` → `package.json` 里的
+`@jinsiyu/dshcs-vscode-server` 钉版(CI 全新 clone 上 `vendor/` 不存在,走的就是第三条)。
+**不查** `@jinsiyu/*` 子包漂移,也**不判断**"我们的重打包是否已发布对应版本" —— 那是升级流程本身的事。
+
+通知走 **Windows 操作中心**(不是弹窗,是系统通知):
+
+- 署名 **`dsh-code-server-app 上游监控`**。首次运行会在
+  `HKCU\SOFTWARE\Classes\AppUserModelId\dsh-code-server-app.UpstreamWatch` 写一个 `DisplayName` ——
+  这是**本脚本唯一的系统副作用**,`--no-register-notify-id` 可关,删掉那个键即完全还原。
+- **送达是可核验的**:发完立刻用 `History.GetHistory($AppId)` 回读通知历史,报告里给的是"已送达"的实证,
+  而不是"命令没报错所以大概发出去了";查不到就如实写"已发出但未能核验到"。
+  (踩过的坑:不带参数的 `GetHistory()` 重载查的是"调用进程自己的 AUMID",在 `powershell.exe` 里必然报
+  `0x80070490 ELEMENT_NOT_FOUND` —— 别被它误导。)
+- **节流**:同一个上游版本只通知一次;7 天后仍未升级会再提醒一次(免得"提醒过一次"退化成"永远不再提")。
+  状态在 `.upstream-watch.json`(已 gitignore)。**只有真的发出去了才记账** —— `--no-notify` 的例行检查
+  不会把额度用掉,否则那个版本就再也不会被通知,而那正是"静默漏报"。
+- **网络抖动会重试**(3 次退避),避免把偶发 `ECONNRESET` 报成"检查失败"的假警报;假警报多了提醒就会被无视。
+
+也可以挂到 DSH 的会话内定时提醒上:按日唤起时跑 `pnpm run watch:upstream`,有更新就贴报告、无更新一句话带过。
+
 
 ### 回归脚本(改完跑一遍)
 
 ```powershell
 pnpm test                    # 一次跑完下面全部(scripts/run-all-tests.mjs;CI 与发布前用的也是它)
 # ↑ 是唯一清单:新增回归脚本只改 scripts/run-all-tests.mjs,CI/README 都跟着它走
-pnpm test:apply              # 桩 ctx 下跑通 apply(回归:apply 期的 ReferenceError)+ 设置数据面两条线:新线按 volatile 活叶子读值并随 settings/document-updated、旧线注册**不带 volatile** 的 schema 并订阅 scope.watch
+pnpm test:apply              # 桩 ctx 下跑通 apply(回归:apply 期的 ReferenceError)+ 设置数据面:按 volatile 活叶子读值并随 settings/document-updated 更新(旧线注册 schema + 订阅 scope.watch 已随旧代分支删除)
 pnpm test:claim-types        # 认领类型语法与默认值
 pnpm test:bridge-routes      # 编辑器桥:路由表白名单(只读 + /approve + /old)/ Origin 与令牌的判定顺序 / 令牌头三处一致
 pnpm test:edit-snapshot      # 写前原文快照:从 tools/post-execute 的 value 取完整 before / 路径按会话 cwd 绝对化 / 缓存三重有界 / /old 的 400-404-200
@@ -555,13 +614,13 @@ pnpm test:bridge-extension   # 编辑器桥扩展侧纯逻辑:未保存缓冲区
 pnpm test:ask-dialog         # 「问 DSH」对话框的接线:没有产物/构建链了、宿主 4 条 ask 路由、扩展只上报编辑器状态、授权四条、桥的安全不变式
 pnpm test:launcher-routes    # launcher 的 HTTP 面(起真进程,较慢)
 pnpm test:workspace-switch   # 切工作区不重启进程
-pnpm test:workspace-cwd      # "当前工作区目录"解析:alpha 线(≥0.1.6-alpha.2,sessionId)与 rc 线(≤0.1.5-rc.3,current)两套形状
+pnpm test:workspace-cwd      # "当前工作区目录"解析:会话标准 prop `sessionId` 一种形状(旧代 rc 线快照上的 `current` 兜底已删除)
 pnpm test:client-cwd         # 同一件事但直接对**客户端入口** lib/client.js 验(注册出来的 body 真发不发 cwd、URL 带不带 folder)
 pnpm test:client-tabs        # "DSH 侧只留一个 code-server 标签页":新标签挂载时收掉同窗格旧标签(跨窗格/不可见时不动)
 pnpm test:client-entry       # 客户端入口守卫:经典脚本+工厂包装、require 白名单(= DSH 模块表种子词)、src/ 已消失、与 lib/claim-types.js 逐字一致
 pnpm test:ask-panel          # 「问 DSH」对话框面板(0.3.59 起手写):注入机制已下线、视图白名单、注入 CSS 的选择器/var() 安全、六种条目与授权卡片、三条消息落点、拿不到官方部件时的降级
-pnpm test:client-seat        # 设置**座位 × 数据通道**:座位(插件页 plugins.bundle.config ≥ 0.1.6-alpha.2 / 设置页 settings.plugin.item ≤ 0.1.5-rc.3)× 通道(configForms ≥ 0.1.7-alpha.1 / settingsScope 更早)
-                             # 八种组合都要能 apply(注入守卫)+ 三种真实组合各自钉行为:新线**只有** mutate 一条写路径、注册受 whileServed 门禁、rc 线仍走旧座位
+pnpm test:client-seat        # 设置面(**单一座位** `plugins.bundle.config` + **单一通道** `configForms`):座位声明 × 通道有无 4 种组合都要能 apply(注入守卫)
+                             # 唯一写路径只有 mutate、注册受 whileServed 门禁,外加**反断言**:旧座位 `settings.plugin.item` / 旧通道 `settingsScope` 不许复活,通道缺失时侧栏标签与常驻预热必须照旧
 pnpm test:fullscreen         # 打开标签即全屏
 pnpm test:vendored           # 重打包表 ↔ 插件依赖表一致(无 npm: 别名 / 无聚合包 / vendored.json 进了 files)
 pnpm test:dsh-resolve        # 部署位置表:各平台全局装布局(npm --prefix / nvm / pnpm global / %APPDATA%)都能找到 DSH 部署
@@ -840,7 +899,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
 - **解析路径**:host 用 `require.resolve('@jinsiyu/dshcs-vscode-server/package.json')` 找到运行根
   (包内子目录 `vscode/`),入口 `vscode/lib/vscode/out/server-main.js`;VS Code 内部依赖从该运行根向上查找
   (`vscode/lib/vscode/node_modules` → 包 `node_modules` → `<profile>/node_modules`)。
-  (旧全量树 `@jinsiyu/dshcs-code-server/code-server` 仍作为回退被识别。)
+  (旧全量树 `@jinsiyu/dshcs-code-server`、0.1.37 平台专属子包与包内 `vendor/code-server` 的回退**已随旧代分支删除**。)
 - **运行时布局自愈**(`lib/native.js` 的 `ensureRuntimeLayout()`,**激活时(先于 envCheck)与每次启动前**幂等执行):
   host 会在 VS Code 树里补两类 **junction**(Windows junction / POSIX 目录软链):
   1. `ensureAliasLinks()`:按 `lib/vendored.json` 把 16 个**原始名字**补到 `<树>/node_modules`
@@ -857,19 +916,23 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app\dsh-code-
 > **体积提示**:插件 tarball 约 **110KB**;`@jinsiyu/dshcs-vscode-server` 约 **60MB**(解包 ≈197MB);
 > 16 个原生包合计约 250MB。全部合计安装下载约 310MB。`vendor/` 与 `repack/` 都不入 git(见 `.gitignore`)。
 
-> **从 ≤ 0.1.43 升级**:树包由 `@jinsiyu/dshcs-code-server`(全量 code-server,含 `out/node` 与 136 个依赖)
-> 换成 `@jinsiyu/dshcs-vscode-server`(精简树);**新代码默认 `serve: loopback`,行为与 0.1.43 等价**,
-> 需要同源挂载再切 `serve: dsh`。升级命令不变(一条
+> **从 ≤ 0.1.43 升级**:树包那时是 `@jinsiyu/dshcs-code-server`(全量 code-server,含 `out/node` 与
+> 136 个依赖),现已换成 `@jinsiyu/dshcs-vscode-server`(精简树);**旧包名与旧平台子包的回退已随
+> 旧代分支删除**,只剩现役布局(见「树与安装位的解析路径」)。升级命令不变(一条
 > `dsh plugin --profile web add dsh-code-server-app@<版本>`),旧的 `dshcs-code-server` 子包会被 pnpm 清掉。
+> 现版本默认仍是 `serve: loopback`(与 0.1.43 等价),需要同源挂载再切 `serve: dsh`。
 
 > **从 ≤ 0.1.35 升级**:旧版的安装根 `<profile>\.code-server-app`(含约 1.4GB 内部依赖)与
-> 「安装环境」步骤都不再需要 —— 新版本会检测到它并打一条日志提示可安全删除:
+> 「安装环境」步骤都不再需要 —— 相关探测**已随旧代分支删除**:现在不会检测它,也不会再打
+> "可安全删除"的日志提示,留着不影响使用;想清掉直接
 > `Remove-Item -Recurse -Force <profile>\.code-server-app`。profile 的 `pnpm-workspace.yaml` 里
 > 若还留着 `dsh-code-server-app: false` 之类的旧条目,也可以删掉(新版不再需要任何构建许可)。
 
 > **卸载**:`dsh plugin --profile web remove dsh-code-server-app` 即可;树包与原生包
-> 是独立依赖,若要彻底清干净可再 `dsh plugin --profile web remove @jinsiyu/dshcs-code-server`
-> (或直接在 profile 里 `pnpm remove`);若还残留旧安装根,再手动删除 `<profile>\.code-server-app`。
+> 是独立依赖,若要彻底清干净可再 `dsh plugin --profile web remove @jinsiyu/dshcs-vscode-server`
+> (或直接在 profile 里 `pnpm remove`)。仅当这个 profile 是从 ≤ 0.1.43 升级上来时,才可能还残留
+> 旧树包 `@jinsiyu/dshcs-code-server` 与旧安装根 `<profile>\.code-server-app`,一并手动清掉即可
+> (插件已不再识别它们)。
 
 > 安装/依赖变化后请**重启 `dsh web`**(静态插件行与 host 探测路径在启动时加载)。
 
@@ -933,8 +996,8 @@ DSH 永不设置该标志。
 dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 ```
 
-> 源码路径以 `link:` 安装。开发机上没有 `vendor/vscode` 时先 `pnpm run vendor:vscode -- --dev-links`;
-> 没有平台子包时 host 会回退到包内 `vendor/code-server`(两种布局都支持)。
+> 源码路径以 `link:` 安装。开发机上没有 `vendor/vscode` 时先 `pnpm run vendor:vscode -- --dev-links`
+> (旧代那种"回退到包内 `vendor/code-server`"的兜底**已删除**,开发机上必须有 `vendor/vscode`)。
 > 依赖(内部 JS 依赖 + 重打包子包)同样由 pnpm 安装 —— 本地未发布的 `@jinsiyu/*` 需先发布,
 > 或把 `repack/tgz/*.tgz` 以 `file:` 依赖临时装进 profile(见 `.tmp-verify.mjs`)。
 >
@@ -1020,35 +1083,33 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 - **不再有运行期自动升级**:不会在启动时联网取 latest;版本完全由内置产物决定。
 - 本机当前内置:`code-server@4.139.1` 的树(VS Code 1.139.1,`productPath=stable-53c2f325…`)。
 
-### 兼容旧安装位
+### 树与安装位的解析路径
 
-host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)> `@jinsiyu/dshcs-code-server/code-server`
-(0.1.40–0.1.43 全量树)> `@jinsiyu/dshcs-code-server-<平台>-<架构>/code-server`(0.1.37 平台专属子包)>
-插件包内 `vendor/vscode` > 插件包内 `vendor/code-server`(开发期)。旧安装根
-`<profile>\.code-server-app` 只在启动日志里提示可删除,不再被使用。
+host 的候选**只剩两条**(2026-10-01 起):`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
+> 插件包内 `vendor/vscode`(开发期)。旧代那三档回退 —— `@jinsiyu/dshcs-code-server/code-server`
+(0.1.40–0.1.43 全量树)、`@jinsiyu/dshcs-code-server-<平台>-<架构>/code-server`(0.1.37 平台专属子包)、
+包内 `vendor/code-server` —— 以及旧安装根 `<profile>\.code-server-app` 的探测与"可删除"日志提示
+**都已删除**:找不到现役布局就是启动报错,不再静默落在一个旧目录上。
 
-## 设置(0.3.50 起:插件页;更早:设置 → 插件 → Code Server)
+## 设置(0.3.50 起:插件页)
 
-设置面由**两条独立的轴**决定 —— **座位**(UI 画在哪)和**数据通道**(值从哪读写)。两者的分界点
-**不在同一版**,所以三种真实组合都要成立:
+设置面只有**一处座位 + 一条数据通道**(2026-10-01 起):
 
-| DSH | 座位(声明驱动:`slots.inject` 只在插槽被声明时才回调 ⇒ 两条腿都注册) | 数据通道(能力探测) |
-|---|---|---|
-| **rc 线 ≤ 0.1.5-rc.3**(最新 rc 仍是这一支) | `settings.plugin.item`(key `code-server`)—— 设置 → 插件 → Code Server 的自绘可折叠卡片 | `ctx.settingsScope`(命名空间 `code-server`),逐字段 `set/unset` |
-| **0.1.6-alpha.2** | `plugins.bundle.config`,**键 = 包名** `dsh-code-server-app` —— 插件页 → `dsh-code-server-app` → 设置区在**描述与各行之间** | 同上(`settingsScope` 这一版还在) |
-| **alpha 线 ≥ 0.1.7-alpha.1**(最新 0.1.7-alpha.1) | 同上一行(页面自己画标题/图标/面包屑,我们只出表单 + 保存控件) | `ctx.configForms.get('code-server')` —— 配置就是**插件条目自己的 `Config`**,写路径**只有** `mutate(ops, revision)` 一次原子提交 |
+| 座位(声明驱动:`slots.inject` 只在插槽被声明时才回调) | 数据通道(能力探测) |
+|---|---|
+| `plugins.bundle.config`,**键 = 包名** `dsh-code-server-app` —— 插件页 → `dsh-code-server-app` → 设置区在**描述与各行之间**(页面自己画标题/图标/面包屑,我们只出表单 + 保存控件) | `ctx.configForms.get('code-server')` —— 配置就是**插件条目自己的 `Config`**,写路径**只有** `mutate(ops, revision)` 一次原子提交 |
 
-> 为什么必须两条腿都留:`settings.plugin.item` 在 ≥ 0.1.6-alpha.2 已退役(插件页只在
-> `ledger.bundles.has(包名)` 时才渲染那块区域 —— 键写错或还用旧座位,表现是**设置卡静默消失**);
-> 而 `settingsScope` 在 **0.1.7-alpha.1 被删除**(改名/改模型为 `configForms`)。把服务写进客户端
-> `inject` 的代价更大:条目会**永远 pending**,右侧栏标签、设置卡、常驻预热**一起消失**,启动日志只有
-> `web boot: 1 entry did not activate` / `pending (waiting for service: settingsScope)`。
-> 所以客户端 `inject` 只留普遍存在的 `['slots']`,两个通道都**运行时探测**(`ctx.get`),
-> 宿主半同理:`typeof settings.register === 'function'` 走旧路,否则读 volatile 叶子。
-> 回归:`pnpm test:client-seat`(座位 × 通道八种组合的注入守卫 + 三种真实组合的行为)与
-> `pnpm test:apply`(宿主两条线)。
+> 旧代那两条线(rc 线的旧座位 `settings.plugin.item` + 旧通道 `ctx.settingsScope`,以及
+> 0.1.6-alpha.2 的 {新座位, 旧通道} 组合)已随旧代分支**整块删除** —— 两套 UI(web 与 desktop)
+> 现在都是 0.2 这一代,座位 × 通道的组合表不再需要。仍然成立的一条是**通道一律运行时探测、
+> 不写进 `inject`**:把 `configForms` 写进 inject,没有这个服务的宿主上条目会**永远 pending**,
+> 右侧栏标签、设置卡、常驻预热**一起消失**,启动日志只有 `web boot: 1 entry did not activate` /
+> `pending (waiting for service: …)`。所以客户端 `inject` 只留普遍存在的 `['slots']`,
+> `configForms` 只经 `ctx.get('configForms')` 探测(未声明服务的属性访问在 DSH 里会抛)。
+> 回归:`pnpm test:client-seat`(单一座位 × 单一通道:座位声明 × 通道有无 4 种组合的注入守卫 +
+> "旧座位/旧通道不许复活"的反断言 + 通道缺失时侧栏标签与常驻预热必须照旧)。
 
-**可配置字段**(两条通道共用同一份清单;宿主 `Config` 里这些字段带 `.volatile()`,
+**可配置字段**(宿主 `Config` 里这些字段带 `.volatile()`,
 所以保存只**就地重解析**该字段、不重挂插件):
 
 | 键 | 默认 | 说明 |
@@ -1071,10 +1132,10 @@ host 探测顺序:`@jinsiyu/dshcs-vscode-server/vscode`(**0.2.0+ 正式布局**)
 诊断信息不再进 UI —— `/api/code-server/status` 的 `env` 字段仍返回
 树版本 / `productPath` / server 入口、VS Code 内部依赖、**预编译原生包**(重打包子包名 + 已解析模块数),需要时用脚本查或看 host 日志。
 
-> 改动实时生效,无需重启 dsh:旧通道经 `scope.watch`,新通道经 `settings/document-updated` 事件
-> (宿主两条线都落到同一个 commit 函数);host 端 status API 同步返回 `keepResident`、`claimExtensions`
-> 与 `fullscreenOnOpen`,客户端立即生效。**新增设置键后首次使用前需重启 dsh web**:
-> 新线的表单只展示**活动且可唯一定位**的条目里的 **volatile** 字段,旧线要重新注册设置命名空间。
+> 改动实时生效,无需重启 dsh:改动经 `settings/document-updated` 事件落到同一个 commit 函数
+> (旧通道的 `scope.watch` 已随旧代分支删除);host 端 status API 同步返回 `keepResident`、
+> `claimExtensions` 与 `fullscreenOnOpen`,客户端立即生效。**新增设置键后首次使用前需重启 dsh web**:
+> 表单只展示**活动且可唯一定位**的条目里的 **volatile** 字段。
 
 ### 插件页的图标与文案(0.3.67 起)
 
@@ -1122,15 +1183,18 @@ desktop profile 由 `apps/desktop-host` 把 `/api/*` 交给同一个 `createShar
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/code-server/status` | `{ ok, running, status, host, port, pid, cwd, launchCwd, url, version, error, logTail, adopted }`(另含 `env` 环境检测与 `setup` 兼容字段;`cwd` = 当前 workbench 目录,`launchCwd` = 进程启动目录,loopback 下 `port` = **实际**端口、`url` = 含路径令牌的完整地址) |
+| GET | `/api/code-server/status` | `{ ok, running, status, host, port, pid, cwd, launchCwd, url, version, error, logTail, adopted }`(另含 `env` 环境检测;`cwd` = 当前 workbench 目录,`launchCwd` = 进程启动目录,loopback 下 `port` = **实际**端口、`url` = 含路径令牌的完整地址) |
 | POST | `/api/code-server/start` | body `{ cwd? }`(省略 cwd 不切换工作目录);幂等;运行中切 cwd = **只换目录不重启进程**(0.2.12);loopback 新启动会**轮换端口与路径令牌**(0.2.14) |
 | POST | `/api/code-server/stop` | 停止并回收进程树 |
-| POST | `/api/code-server/setup` | **兼容空操作**:0.1.36 起依赖由包管理器安装,调用只重新自检 `env` 并返回 |
 | POST | `/api/code-server/open-file` | body `{ file }` — 写信号文件,由内置扩展 `dshcs-open-file` 在 code-server 中打开 |
 | GET | `/code-server-bridge/health` | 编辑器桥探活(**无鉴权**;只回答"桥活着吗",不含任何编辑器数据)。走**本机 IPC**(命名管道 / unix socket),不在 `/api` 下、也不需要 `webServer` |
 | POST | `/code-server-bridge/sync` | 编辑器桥:扩展上报状态(`{context, diagnostics, workspace, at}`)并取回事件;`?since=<seq>` 是事件游标。需 `x-dshcs-bridge-token`,**带 Origin 一律 403** |
 | POST | `/code-server-bridge/ask` | 编辑器桥:把编辑器里的提问投进当前会话(`{text, file?, lineStart?, lineEnd?, selection?, languageId?}`);没有可投递的会话时回 **409** |
 | POST | `/code-server-bridge/event` | 编辑器桥:扩展上报打开/关闭文件等(进 host 日志尾)。需令牌 |
+
+> `/api/code-server/setup`(0.1.36 的「安装环境」兼容空操作)与 `status` 里的 `setup` 字段**已删除**
+> (2026-10-01):依赖既然由包管理器装好,它们就没有实际作用,留着只会让人以为还存在"安装环境"这一步。
+> 要看环境自检就用 `status.env` 或 host 日志里的 `[code-server]`。
 
 > 桥的四条路由都自带令牌鉴权(它们**不依赖** DSH 的 cookie fence —— 扩展宿主拿不到浏览器 cookie),
 > 且永远只读。传输是本机 IPC(0.3.13 起),所以 **web 与 desktop 同一套**:
@@ -1254,9 +1318,12 @@ FIM(Beta)端点,提示词形态由其官方文档与本机实测确定)。标准
 - **`serve: dsh` 的 iframe 与 DSH 同源** → 该模式不挂 `sandbox`(同源 + `allow-same-origin` 可被 frame 自行摘除);
   `loopback` 模式跨源,`sandbox` 作为真防护保留。
 - **跨会话单实例**:host 级共享一份 IDE;切换 cwd 只换 workbench 目录(0.2.12 起不重启进程,旧目录的后台终端不会被收走)。
-- **旧版 DSH 不受支持(0.2.3 起)**:没有 `sidebarRightTabs`/`sidebarRight` 的 DSH 上,除设置区一条升级提示外无任何入口;
-  支持范围**只有两条线**(2026-09-22 收敛):rc 线 `0.1.5-rc.x`(旧座位 + 旧通道 + 快照上的 `current`)与 alpha 线 `≥ 0.1.6-alpha.2`(新座位 + `sessionId` 标准 prop;数据通道在 0.1.7-alpha.1 换成 `configForms`);更早的 alpha(`0.1.5-alpha.x`、`0.1.6-alpha.1`)**不单独支持** —— 形状与 rc 线相同,所以代码走得通,但不作为验证目标。
-  旧版用户请留在 `0.2.2`(`dsh plugin --profile web add dsh-code-server-app@0.2.2`)。
+- **旧版 DSH 不受支持(0.2.3 起;2026-10-01 收敛为一代)**:没有 `sidebarRightTabs`/`sidebarRight` 的 DSH 上,
+  除设置区一条升级提示外无任何入口;支持范围**只有一代**:**DSH ≥ 0.2.0-rc.2**(web 与 desktop 同一代),
+  判据仍是"能力是否被声明"(`sidebarRight`/`sidebarRightTabs` 服务在不在),不做版本号比较。
+  旧代兼容分支(rc 线 / alpha 线的旧座位、旧通道与会话列表快照上的 `current`)已删除;
+  **需要旧代 DSH(≤ 0.1.7-rc.x)的用户请钉 `dsh-code-server-app@0.3.69`**
+  (`dsh plugin --profile web add dsh-code-server-app@0.3.69`)—— 那是最后一个还带旧代兼容分支的版本。
 - **侧栏标签切换**(0.2.2 起不再重载):DSH 右侧栏只渲染当前激活标签的 body,React 卸载会移走 iframe;
   插件把 iframe 收成单例常驻面,用 `Element.moveBefore()`(状态保持型原子移动)在停靠位与文档级停放区之间搬,
   切标签/收起侧栏再回来**不重载**。不支持 `moveBefore` 的浏览器退回旧行为(`appendChild` → 整页重载),

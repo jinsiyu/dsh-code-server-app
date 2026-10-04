@@ -80,6 +80,7 @@
     "vendor:vscode": "node scripts/vendor-vscode-server.mjs",
     "vendor:latest": "node scripts/vendor-vscode-server.mjs --force",
     "vendor:check": "node scripts/vendor-vscode-server.mjs --check",
+    "watch:upstream": "node scripts/watch-upstream.mjs",
     "vendor:code-server": "node scripts/vendor-code-server.mjs",
     "repack:build": "node scripts/vendor-repacks.mjs",
     "publish:repacks": "node scripts/publish-repacks.mjs",
@@ -105,7 +106,8 @@
     "test:edit-snapshot": "node scripts/test-edit-snapshot.mjs",
     "test:bridge-extension": "node scripts/test-bridge-extension.mjs",
     "test:ask-dialog": "node scripts/test-ask-dialog.mjs",
-    "test:vendored": "node scripts/test-vendored-table.mjs"
+    "test:vendored": "node scripts/test-vendored-table.mjs",
+    "test:upstream-watch": "node scripts/test-upstream-watch.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/schemastery": "3.18.2"
