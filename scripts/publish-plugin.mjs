@@ -37,6 +37,73 @@ if (!existsSync(tgz)) {
   process.exit(1);
 }
 
+// ── 发布前校验:根目录那份 tarball 必须**就是当前仓库的构建产物** ────────────────────────────
+// 为什么必须有:`*.tgz` 是 gitignore 的,上一次打包的残留会一直躺在仓库根目录,而 `npm publish`
+// 只认**文件名** —— 同名旧包会被原样发出去,一个字都不会报警。
+// 2026-10-04 差一点撞上:根目录那份 dsh-code-server-app-0.3.71.tgz 还是 10-01 的
+// (树包 4.139.1 + proxy-agent 0.44.0),而当时 package.json 已经是 4.140.0 / 0.45.0。
+//
+// 校验口径:解开包里的 package.json,比对 version 与**全部 @jinsiyu/\* 的精确钉版**。
+// 这几项都是打包期由 vendor/repack 流程写进去的 —— 它们对不上,就说明这份 tarball
+// 不是按当前 package.json 打出来的。不比对 files 清单/时间戳:npm 会按 files 规则重排,
+// 而时间戳只能证明"文件被碰过",证明不了"内容是对的"。
+function jinsiyuPins(pkg) {
+  const out = {};
+  for (const fld of ['dependencies', 'optionalDependencies']) {
+    for (const [name, spec] of Object.entries(pkg?.[fld] ?? {})) {
+      if (name.startsWith('@jinsiyu/')) out[name] = spec;
+    }
+  }
+  return out;
+}
+
+/** 读 tarball 里的 package/package.json(用系统 tar:Windows 10+ / Linux / macOS / CI 都有)。 */
+function readPackedManifest(tgzPath) {
+  const res = spawnSync('tar', ['-xzOf', tgzPath, 'package/package.json'], {
+    encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+  });
+  if (res.error !== undefined || res.status !== 0) {
+    // 读不出来就**拒绝发布**(fail closed):这道门禁的意义就是不让"没验过的包"出去,
+    // 环境坏了应当先修环境,而不是退回"不校验直接发"。
+    return { ok: false, why: `读不出包内 package.json(tar exit ${res.status}`
+      + `${res.error !== undefined ? `,${res.error.code}` : ''})` };
+  }
+  try {
+    return { ok: true, pkg: JSON.parse(res.stdout) };
+  } catch (error) {
+    return { ok: false, why: `包内 package.json 不是合法 JSON:${error.message}` };
+  }
+}
+
+function verifyPackedTarball(tgzPath, repoManifest) {
+  const read = readPackedManifest(tgzPath);
+  if (!read.ok) return read;
+  const inner = read.pkg;
+  const problems = [];
+  if (inner.version !== repoManifest.version) {
+    problems.push(`version 包内 ${inner.version} ≠ 仓库 ${repoManifest.version}`);
+  }
+  const packed = jinsiyuPins(inner);
+  const repo = jinsiyuPins(repoManifest);
+  for (const name of [...new Set([...Object.keys(packed), ...Object.keys(repo)])].sort()) {
+    if (packed[name] !== repo[name]) {
+      problems.push(`${name} 包内 ${packed[name] ?? '(无)'} ≠ 仓库 ${repo[name] ?? '(无)'}`);
+    }
+  }
+  if (problems.length > 0) return { ok: false, why: problems.join('; '), pins: Object.keys(repo).length };
+  return { ok: true, pins: Object.keys(repo).length };
+}
+
+const verified = verifyPackedTarball(tgz, manifest);
+if (!verified.ok) {
+  console.error(`[publish] ✗ 拒绝发布:${relative(pkgRoot, tgz)} 不是当前 package.json 的构建产物`);
+  console.error(`[publish]   ${verified.why}`);
+  console.error('[publish]   根目录的 *.tgz 是 gitignore 的,旧包会一直躺着,而 npm publish 只认文件名。');
+  console.error('[publish]   请重打一份并在输出里确认它真的写了文件(时间戳会变):pnpm pack');
+  process.exit(1);
+}
+console.log(`[publish] tarball 校验通过:${verified.pins} 个 @jinsiyu/* 钉版与 package.json 一致`);
+
 const args = ['publish', relative(pkgRoot, tgz), '--access', 'public', '--tag', TAG];
 if (existsSync(workspaceNpmrc)) args.push('--userconfig', workspaceNpmrc);
 if (PROVENANCE) args.push('--provenance');
