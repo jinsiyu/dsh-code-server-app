@@ -129,7 +129,7 @@ function isPlatformSpecific(pkg) {
 
 /** 分析一棵树:返回 { repack: Map(name -> {dir,pkg,platformSpecific}), declare: [{name,version}] }。 */
 function analyze(tree) {
-  const { dropped } = readRepackPlatforms();
+  const { dropped, perModule: declaredModules } = readRepackPlatforms();
   const VS = join(tree, 'lib', 'vscode');
   const packages = collect(join(VS, 'node_modules'));
   const vsManifest = readJson(join(VS, 'package.json'));
@@ -159,7 +159,14 @@ function analyze(tree) {
     if (dropped.has(name)) { console.log(`  [不再依赖] ${name}(见 repack-platforms.json 的 dropped)`); continue; }
     const dir = resolveDep(VS, name);
     if (dir === null) { console.warn(`  ⚠ 找不到 ${name}`); continue; }
-    if (needsRepack(dir)) {
+    // **声明即分类**:登记进 repack-platforms.json 的 modules 就一定会被重打包,不看构建信号。
+    // 与 applyPlatformPolicy() 同一条原则(那里也写「分类以声明为准」),原来这里漏了 —— 后果实测于
+    // 2026-10-09:pure-JS 的 @vscode/proxy-agent 没有任何构建信号(binding.gyp/.hooks/install 脚本全无,
+    // 0.44.0 与 0.45.0 两个 tarball 都核过),于是被判进「直装集」写成上游名,而「跨平台保留」分支
+    // 又把它的别名条目从旧表复活 ⇒ 同一个模块以两个名字进插件依赖表(CI 的宿主无关性比对因此恒报 1 处
+    // 差异,哨兵失效)。别名那条才是真的在用:树内清单的该条目已被重打包抹掉,运行时靠 lib/native.js
+    // 按 lib/vendored.json 补 junction 解析回别名包,所以上游名那份是纯死重量。
+    if (needsRepack(dir) || declaredModules.has(name)) {
       const pkg = packages.get(dir);
       repack.set(name, { dir, pkg, platformSpecific: isPlatformSpecific(pkg) });
     } else {
