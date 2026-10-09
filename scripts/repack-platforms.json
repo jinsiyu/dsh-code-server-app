@@ -19,6 +19,14 @@
     "版本钉法:modules[别名].version 覆盖「沿用 lib/vendored.json 里已发布版本」的政策",
     "(见 vendor-repacks.mjs:applyPlatformPolicy 的三级规则)。改钉时的顺序:先钉这里 → 重跑",
     "vendor-repacks.mjs → 发布新子包 → 插件依赖表才会跟着走(顺序反了 pnpm install 会解析不到)。",
+    "",
+    "已经钉过版本的模块(每次上钉都记一行,免得下一个人看不出这个号为什么和上游不一样):",
+    "  · @vscode/proxy-agent → 0.45.0(code-server 4.140.0 那轮:上游范围允许 0.44.0 漂到 0.45.0);",
+    "  · @vscode/windows-registry → 1.3.0(code-server 4.141.0 那轮:树清单从 ^1.2.0 抬到 ^1.3.0)。",
+    "    1.3.0 是 GetStringRegKey 的实现修复 —— 校验 dwType 必须是 REG_SZ/REG_EXPAND_SZ,并用",
+    "    strnlen(szBuffer, dwBufferSize) 夹住长度;1.2.0 直接 `result = szBuffer`,缓冲区不按 NUL",
+    "    结尾时会读进垃圾。dist/index.d.ts 只有 `export declare type` → `export type` 的写法差异,",
+    "    **API 面没有变化**,所以这次跟着 4.141.0 一起带上没有兼容性风险。",
     "不再需要的模块用下面的 dropped(不是从 modules 里悄悄删掉 —— 删掉只会让「跨平台保留」把它从旧表复活)。"
   ],
   "targets": [
@@ -62,7 +70,7 @@
   "modules": {
     "@vscode/windows-ca-certs": { "platform": true, "targets": ["win32-x64", "win32-arm64"] },
     "@vscode/windows-process-tree": { "platform": true, "targets": ["win32-x64", "win32-arm64"] },
-    "@vscode/windows-registry": { "platform": true, "targets": ["win32-x64", "win32-arm64"] },
+    "@vscode/windows-registry": { "platform": true, "targets": ["win32-x64", "win32-arm64"], "version": "1.3.0" },
 
     "@vscode/deviceid": { "platform": true },
     "@vscode/native-watchdog": { "platform": true },
