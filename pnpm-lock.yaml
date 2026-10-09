@@ -33,8 +33,8 @@ importers:
         specifier: 0.45.0
         version: 0.45.0
       '@jinsiyu/dshcs-vscode-server':
-        specifier: 4.140.0
-        version: 4.140.0
+        specifier: 4.141.0
+        version: 4.141.0
       '@microsoft/1ds-core-js':
         specifier: 3.2.13
         version: 3.2.13(tslib@2.8.1)
@@ -230,11 +230,11 @@ importers:
         specifier: 0.8.0
         version: 0.8.0
       '@jinsiyu/dshcs-vscode-windows-registry-win32-arm64':
-        specifier: 1.2.0
-        version: 1.2.0
+        specifier: 1.3.0
+        version: 1.3.0
       '@jinsiyu/dshcs-vscode-windows-registry-win32-x64':
-        specifier: 1.2.0
-        version: 1.2.0
+        specifier: 1.3.0
+        version: 1.3.0
 
 packages:
 
@@ -344,8 +344,8 @@ packages:
     resolution: {integrity: sha512-vxPYce3riS5eCnED8JRm5O1bQfLMLxJn4Pbj+Jz916GaheOMCVKrhrfA1y4EQ6eYv/jkBo3jI40t8K4naL+knA==}
     engines: {node: '>=22.15.0'}
 
-  '@jinsiyu/dshcs-vscode-server@4.140.0':
-    resolution: {integrity: sha512-5oGJJ6YvOJyGBol43KojmeDxTnfhhFTAYr4DDeaSvY7JCKTNdGVdazYYENxuLJDwSbOSqg2YYTJ5XY53RUksoQ==}
+  '@jinsiyu/dshcs-vscode-server@4.141.0':
+    resolution: {integrity: sha512-I/VJO0OjhuIKV3MqA2WwRINQ23HoPjtRw0ElGG4QEW9Cp63eKP873lxzDv7qGng0aI2O2HLooWtZhV46/P/gLg==}
 
   '@jinsiyu/dshcs-vscode-spdlog-linux-arm64@0.15.8':
     resolution: {integrity: sha512-UE5kMgw5l7tDYHVPjg6RuQ13wnhT4Md5PdJPYYNMaH8sjNoGUEAThybg+KwHILGK6KpQRfZ/Fu5kqcG11/EC0g==}
@@ -407,13 +407,13 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@jinsiyu/dshcs-vscode-windows-registry-win32-arm64@1.2.0':
-    resolution: {integrity: sha512-tqi7PYOVjlUP94Cs2tX3/NuGA/HYwhhSKX4dgFH5B53t8Zp6UBpIvlUXCqIXNZd8JNig1GhdSBBFggFtH/ZofQ==}
+  '@jinsiyu/dshcs-vscode-windows-registry-win32-arm64@1.3.0':
+    resolution: {integrity: sha512-kkjp6zW9k07f3YGf/jPCXJllFPz28iLOv74J5X7MKBFaLmHOVXbyFdK+0oETqFg3US/jbPppb5lyiJHaFA86aA==}
     cpu: [arm64]
     os: [win32]
 
-  '@jinsiyu/dshcs-vscode-windows-registry-win32-x64@1.2.0':
-    resolution: {integrity: sha512-bg4bXrPez0nLBeltek2/xYPkw/vYQ6V4AIuHD6M3eLiT4Y216GNvmi7/Mwf6ZjZ3EAl4kZsIqO4eK5B4aQU4Mw==}
+  '@jinsiyu/dshcs-vscode-windows-registry-win32-x64@1.3.0':
+    resolution: {integrity: sha512-sDmo57YlaLGzPQ/SSGhC2qLAjI5n2s2cgGufkN1rABLOEGh9xmi76M0gRrS0nBmcKWTnUi4Y4eExkPxvcUN3VQ==}
     cpu: [x64]
     os: [win32]
 
@@ -964,7 +964,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@jinsiyu/dshcs-vscode-server@4.140.0': {}
+  '@jinsiyu/dshcs-vscode-server@4.141.0': {}
 
   '@jinsiyu/dshcs-vscode-spdlog-linux-arm64@0.15.8':
     dependencies:
@@ -1038,10 +1038,10 @@ snapshots:
       node-addon-api: 7.1.0
     optional: true
 
-  '@jinsiyu/dshcs-vscode-windows-registry-win32-arm64@1.2.0':
+  '@jinsiyu/dshcs-vscode-windows-registry-win32-arm64@1.3.0':
     optional: true
 
-  '@jinsiyu/dshcs-vscode-windows-registry-win32-x64@1.2.0':
+  '@jinsiyu/dshcs-vscode-windows-registry-win32-x64@1.3.0':
     optional: true
 
   '@microsoft/1ds-core-js@3.2.13(tslib@2.8.1)':
