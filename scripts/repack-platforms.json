@@ -31,6 +31,10 @@
     "    strnlen(szBuffer, dwBufferSize) 夹住长度;1.2.0 直接 `result = szBuffer`,缓冲区不按 NUL",
     "    结尾时会读进垃圾。dist/index.d.ts 只有 `export declare type` → `export type` 的写法差异,",
     "    **API 面没有变化**,所以这次跟着 4.141.0 一起带上没有兼容性风险。",
+    "  · code-server 4.143.1 那轮(2026-10-25)**没有新钉版本**:树清单里 windows-registry 仍是 ^1.3.0、",
+    "    proxy-agent 仍是 ^0.45.0,其余模块的依赖范围也没变。shrinkwrap 里 14 个 hasInstallScript 的包扣掉",
+    "    整树排除的 koffi 是 13 个,加上纯 JS 的 proxy-agent 正好就是下面这 14 个模块 ⇒ 没有新增原生模块。",
+    "    (koffi 仍被 @github/copilot-sdk 引用但整树排除;proxy-agent 没有构建信号,靠「声明即分类」进重打包集。)",
     "不再需要的模块用下面的 dropped(不是从 modules 里悄悄删掉 —— 删掉只会让「跨平台保留」把它从旧表复活)。"
   ],
   "targets": [
@@ -55,7 +59,8 @@
     "linux-arm64"
   ],
   "dropped": [
-    "koffi"
+    "koffi",
+    "@microsoft/mxc-sdk"
   ],
   "_droppedNote": [
     "dropped = 明确**不再依赖**的上游模块。生成器两处都认它:analyze() 不把它加进重打包集,",
@@ -69,6 +74,13 @@
     "    的 EXCLUDE 里排除 ⇒ 运行时那个包根本解析不到,koffi 没有任何可达调用方;",
     "  · 我们的重打包包本来也没有原生产物(cnoke 编译被 allowScripts:false 与 --ignore-scripts 禁掉),",
     "    即 require('koffi') 即便解析成功也会在加载绑定时失败 ⇒ 留着只是养一个用不了的依赖图节点。",
+    "",
+    "@microsoft/mxc-sdk(2026-10-25 丢弃,code-server 4.143.1 那轮):",
+    "  · 4.141.0 的树清单里它还是直接依赖(0.9.0);4.143.1 的 dependencies 与 npm-shrinkwrap.json",
+    "    里都已经没有它,整棵树 grep 'mxc-sdk' 零命中 ⇒ 上游删掉了这条依赖,不是我们的判断;",
+    "  · 不丢的后果:它是 platform:false 的**已发布**模块(表里 0.8.0),「跨平台保留」分支会把别名",
+    "    条目从旧表复活 ⇒ 插件 dependencies 一直挂着一个 68MB、没有任何调用方的包;",
+    "  · 我们发过的 @jinsiyu/dshcs-microsoft-mxc-sdk@0.8.0 仍留在 npm 上(可回滚),只是不再被依赖。",
     "恢复办法:把别名从 dropped 删掉、重新登记进 modules,重跑 vendor-repacks.mjs 并发布子包。"
   ],
   "modules": {
@@ -82,7 +94,6 @@
     "@vscode/sqlite3": { "platform": true },
     "kerberos": { "platform": true },
 
-    "@microsoft/mxc-sdk": { "platform": false },
     "@parcel/watcher": { "platform": false },
     "@vscode/fs-copyfile": { "platform": false },
     "@vscode/proxy-agent": { "platform": false, "version": "0.45.0" },

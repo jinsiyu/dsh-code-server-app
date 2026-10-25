@@ -536,8 +536,8 @@ data call changes; the caller stays as it is).
   committed hand-written source: there is no build step anywhere on that chain).
 
 > Verified locally (BM: Windows 11 ARM64): the whole tree/dependency chain hangs directly off the plugin's
-> dependency table — the tree package `@jinsiyu/dshcs-vscode-server` (currently 4.141.0, a ~44 MB tarball),
-> the pure-JS inner dependencies plus the 7 platform-independent repacks in `dependencies`, and the 8
+> dependency table — the tree package `@jinsiyu/dshcs-vscode-server` (currently 4.143.1, a ~46 MB tarball),
+> the pure-JS inner dependencies plus the 6 platform-independent repacks in `dependencies`, and the 8
 > platform-specific repacks (win32-arm64 / win32-x64) in `optionalDependencies` with their own os/cpu gates;
 > the original names are restored by junctions created at runtime (`lib/native.js`)
 > → healthz 200 → stopped → fully recycled.
@@ -584,7 +584,7 @@ pnpm run promote -- <version>
 | Goal | Command |
 |---|---|
 | **Build from the latest upstream release** | `pnpm run vendor:latest` (= `--force`): pulls `code-server@latest`'s tree into `vendor/vscode`; afterwards you **must** re-run `repack:build` and republish every sub-package |
-| **Pin a version** | `pnpm run vendor:vscode -- --version 4.141.0` |
+| **Pin a version** | `pnpm run vendor:vscode -- --version 4.143.1` |
 | **Snapshot from an existing tree** | `pnpm run vendor:vscode -- --from <code-server dir>` (seconds) |
 | **Rebuild every sub-package** | `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack` (without `--from` it npm-installs and compiles the source tree itself — slow) |
 | **Rebuild only the tree + dependency table** | `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64 --pack` (reuses the natives already in `repack/build`; also rewrites `lib/vendored.json` and the plugin dependency table) |
@@ -612,7 +612,7 @@ pnpm run watch:upstream                    # same, but first goes through pnpm's
 node scripts/watch-upstream.mjs --json     # machine readable (what a DSH in-session reminder parses); human output goes to stderr
 node scripts/watch-upstream.mjs --no-notify # report only, no notification (regressions / unattended)
 node scripts/watch-upstream.mjs --fixture f.json # use a local JSON file as the registry response (offline)
-node scripts/watch-upstream.mjs --local 4.141.0  # override the local baseline for a dry run (does not read vendor/)
+node scripts/watch-upstream.mjs --local 4.143.1  # override the local baseline for a dry run (does not read vendor/)
 node scripts/test-upstream-watch.mjs       # regression suite (offline, never notifies)
 ```
 
@@ -933,11 +933,11 @@ The main package is only **~110KB** (the plugin's own code plus the launcher); e
   `@jinsiyu/dshcs-vscode-server@<code-server version>` declared in the plugin's `dependencies`; it runs from
   `<profile>\node_modules\@jinsiyu\dshcs-vscode-server\vscode` (the old full tree at
   `@jinsiyu/dshcs-code-server/code-server` and the 0.1.37 platform sub-packages are **no longer recognised**);
-- the **pure-JS part** of VS Code's inner dependencies (35 packages: xterm / katex / typescript / ws / tar …) is
+- the **pure-JS part** of VS Code's inner dependencies (37 packages: xterm / katex / typescript / ws / tar / @hpke/core / libsodium-wrappers …) is
   declared in the plugin's `dependencies` and installed by pnpm into the profile's `node_modules` (hoisted);
 - the **binary part** comes entirely from `@jinsiyu/dshcs-*` sub-packages, declared **directly on the plugin's own
-  dependency table** (since 0.3.45): the 7 platform-independent repacks (`node-pty` / `ssh2` /
-  `cpu-features` / `@parcel/watcher` / `@vscode/fs-copyfile` / `@vscode/proxy-agent` / `@microsoft/mxc-sdk`) go into
+  dependency table** (since 0.3.45): the 6 platform-independent repacks (`node-pty` / `ssh2` /
+  `cpu-features` / `@parcel/watcher` / `@vscode/fs-copyfile` / `@vscode/proxy-agent`) go into
   `dependencies` under their real names; the 8 platform-specific ones (`@vscode/sqlite3` / `spdlog` / `kerberos` /
   `deviceid` / `native-watchdog` / `windows-registry` / `windows-process-tree` / `windows-ca-certs`) go into
   `optionalDependencies` once per target (real names + their own os/cpu gates), so one command picks the right arch;
@@ -1118,7 +1118,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 ### Upgrading the VS Code tree (upstream = a code-server release)
 
 - **The version is decided at pack time**: `pnpm run vendor:latest` (= `--force`) pulls the tree of the npm **latest**
-  release; or use `pnpm run vendor:vscode -- --version 4.141.0` / `DSHCS_CODE_SERVER_VERSION`.
+  release; or use `pnpm run vendor:vscode -- --version 4.143.1` / `DSHCS_CODE_SERVER_VERSION`.
   With an existing `vendor/vscode`, a plain `pnpm pack` never upgrades (it is a no-op).
   **Source-tree precedence (fixed in 0.2.13)**: an explicit `--from` uses that tree, while an explicit
   `--force`/`--version` now **always goes to the registry** — before the fix a local source tree won
@@ -1133,7 +1133,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 - **A version bump means rebuilding and republishing the sub-packages** (all with the same script):
   1. `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack` → the new tree package
      (`@jinsiyu/dshcs-vscode-server@<new version>`) and the natives rebuilt against the new inner dependencies (the
-     script also rewrites the plugin's pure-JS `dependencies`, writes the 15 repacks under their real names into
+     script also rewrites the plugin's pure-JS `dependencies`, writes the 14 repacks under their real names into
      `dependencies` / `optionalDependencies`, and rewrites `lib/vendored.json`);
   2. `pnpm run publish:repacks` → publish; then bump the plugin version → `pnpm pack`
      → publish the plugin.
@@ -1144,10 +1144,13 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
   `lib/vendored.json` and the plugin dependency table; `test-vendored-table.mjs` guards against its return.
   Example: only `@github/copilot-sdk` (already excluded by `EXCLUDE`) depends on `koffi`, no code in the tree
   imports it, and our repack never contained a native binding (`cnoke` build disabled by `allowScripts: false`).
+  Second example: `@microsoft/mxc-sdk` was still a direct dependency of the 4.141.0 tree, but the 4.143.1 upstream
+  manifest and `npm-shrinkwrap.json` no longer contain it and a whole-tree grep finds nothing ⇒ moving it to `dropped`
+  removes a 68 MB package with no caller from both the plugin dependency table and `lib/vendored.json`.
 - `productPath` (`<quality>-<commit>`, part of the client WebSocket path) is **computed from `lib/vscode/product.json`**,
   so upgrading the tree needs no code change — but the routes are registered at activation, so restart `dsh web` afterwards.
 - **No runtime auto-upgrade anymore**: nothing fetches latest at startup; the version is fully determined by the bundled artifact.
-- Bundled locally right now: the tree of `code-server@4.141.0` (VS Code 1.141.0, `productPath=stable-8b41915d…`).
+- Bundled locally right now: the tree of `code-server@4.143.1` (VS Code 1.143.1, `productPath=stable-22ddf60d…`).
 
 ### Tree and install-location resolution
 

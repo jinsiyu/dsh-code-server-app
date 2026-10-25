@@ -15,8 +15,8 @@
 #   若某个标签在你的仓库不可用,job 会一直排队 —— 取消它,然后用对应的 build_*=false 只跑其它的。
 #
 # 产物归属与顺序(五条腿,集合不相交):
-#   · `independent`(**先跑**,windows-latest):VS Code 树包 + 8 个平台无关重打包包(node-pty / koffi /
-#     ssh2 / cpu-features / @parcel/watcher / @vscode/fs-copyfile / @vscode/proxy-agent / @microsoft/mxc-sdk)。
+#   · `independent`(**先跑**,windows-latest):VS Code 树包 + 6 个平台无关重打包包(node-pty / ssh2 /
+#     cpu-features / @parcel/watcher / @vscode/fs-copyfile / @vscode/proxy-agent)。
 #     它们在四个目标上用的是**同一份产物** ⇒ 只发一次、不带目标后缀;四条平台腿都 `needs: independent`
 #     ⇒ 基础层出问题时后面不会发出"半套"子包,发布顺序也是"基础层先落地"。
 #   · `win32-x64` / `win32-arm64` / `linux-x64` / `linux-arm64`(**四条平台专属腿**):各自只发自己那一份
@@ -114,8 +114,8 @@ permissions:
 
 jobs:
   # ── 平台无关层(先跑;下面四条平台腿都 `needs` 它)──────────────────────────────────────
-  # 这 8 个包(node-pty / koffi / ssh2 / cpu-features / @parcel/watcher / @vscode/fs-copyfile /
-  # @vscode/proxy-agent / @microsoft/mxc-sdk)在四个目标上用的是**同一份产物**,所以单独打包、单独发布、
+  # 这 6 个包(node-pty / ssh2 / cpu-features / @parcel/watcher / @vscode/fs-copyfile /
+  # @vscode/proxy-agent)在四个目标上用的是**同一份产物**,所以单独打包、单独发布、
   # 不带目标后缀;平台专属腿一律带 `--skip-independent`(不重打,artifact 里也不放它们),只发自己那一份
   # ⇒ 两个集合不相交,谁都不会重复发同一个包名。
   # 为什么必须**先**跑:① 基础层出问题时后面四条腿直接不启动(needs 拦住),不会发出"半套"子包;
@@ -178,12 +178,12 @@ jobs:
             exit $code
           }
 
-      - name: 结论(产物清单:树包 + 8 个平台无关包,公开可读)
+      - name: 结论(产物清单:树包 + 平台无关包,公开可读)
         shell: pwsh
         run: |
           $tgz = Join-Path $env:RUNNER_TEMP 'repacks\repack\tgz'
           $files = if (Test-Path $tgz) { Get-ChildItem $tgz -Filter *.tgz | Sort-Object Name } else { @() }
-          Write-Host "::notice::平台无关层产出 $($files.Count) 个 tgz(树包 1 + 平台无关 8)"
+          Write-Host "::notice::平台无关层产出 $($files.Count) 个 tgz(树包 1 + 平台无关 $($files.Count - 1))"
           foreach ($f in $files) { Write-Host "::notice::  $($f.Name) $([math]::Round($f.Length/1KB,1))KB" }
           $extra = @($files | Where-Object { $_.Name -match '-(win32|linux)-(x64|arm64)-' })
           if ($extra.Count -gt 0) {
@@ -233,7 +233,7 @@ jobs:
             echo "| 项 | 值 |"
             echo "|---|---|"
             echo "| runner | \`windows-latest\` |"
-            echo "| 内容 | VS Code 树包 + 8 个平台无关重打包包 |"
+            echo "| 内容 | VS Code 树包 + 6 个平台无关重打包包 |"
             echo "| 发布 | \`${{ inputs.publish }}\`(--only-independent) |"
             echo "| 触发 | \`${{ github.event_name }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -471,7 +471,7 @@ jobs:
   # ── Linux 腿(linux-x64 / linux-arm64)──────────────────────────────────────────────
   # 与 win32 腿同构,区别只有三处:
   #   · 宿主换成同架构 Ubuntu runner(原生包现编,避免跨架构工具链);
-  #   · 只发自己的平台专属包(`--only linux-x64` / `--only linux-arm64`)—— 平台无关的 8 个包
+  #   · 只发自己的平台专属包(`--only linux-x64` / `--only linux-arm64`)—— 平台无关的 6 个包
   #     由 win32-x64 腿发布,四个目标内容一致,不能四边抢同一个版本号;
   #   · 多一步「生成的依赖表与仓库里的是否一致」:平台政策(scripts/repack-platforms.json)
   #     的设计目标就是**宿主无关**,Linux 上跑出来的 lib/vendored.json / package.json

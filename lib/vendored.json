@@ -10,11 +10,6 @@
   ],
   "modules": [
     {
-      "alias": "@microsoft/mxc-sdk",
-      "package": "@jinsiyu/dshcs-microsoft-mxc-sdk",
-      "version": "0.8.0"
-    },
-    {
       "alias": "@parcel/watcher",
       "package": "@jinsiyu/dshcs-parcel-watcher",
       "version": "2.5.6"
