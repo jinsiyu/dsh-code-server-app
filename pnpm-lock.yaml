@@ -18,8 +18,8 @@ importers:
         specifier: 0.0.10
         version: 0.0.10
       '@jinsiyu/dshcs-node-pty':
-        specifier: 1.2.0-beta.15
-        version: 1.2.0-beta.15
+        specifier: 1.2.0-beta.18
+        version: 1.2.0-beta.18
       '@jinsiyu/dshcs-parcel-watcher':
         specifier: 2.5.6
         version: 2.5.6
@@ -33,8 +33,8 @@ importers:
         specifier: 0.45.0
         version: 0.45.0
       '@jinsiyu/dshcs-vscode-server':
-        specifier: 4.143.1
-        version: 4.143.1
+        specifier: 4.144.0
+        version: 4.144.0
       '@microsoft/1ds-core-js':
         specifier: 3.2.13
         version: 3.2.13(tslib@2.8.1)
@@ -108,8 +108,8 @@ importers:
         specifier: 3.1.4
         version: 3.1.4
       katex:
-        specifier: 0.16.22
-        version: 0.16.22
+        specifier: 0.16.47
+        version: 0.16.47
       libsodium-wrappers:
         specifier: 0.8.4
         version: 0.8.4
@@ -292,8 +292,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@jinsiyu/dshcs-node-pty@1.2.0-beta.15':
-    resolution: {integrity: sha512-Ltv+60C1GesVvcSByowKZ9w57Sp83RS2ZeYdsWsuC9hKHzUqWWHf2CdwBuXL8itKCbklPQlbrKKVc0XfafpnXQ==}
+  '@jinsiyu/dshcs-node-pty@1.2.0-beta.18':
+    resolution: {integrity: sha512-pG9mc344SrO5PnqGIUlEfX7lyqYVQnKermR3iIZgG69YnytFeOFy+hh9vS3E0FFM16b0T5DL2cMy6e+h01jEQA==}
 
   '@jinsiyu/dshcs-parcel-watcher@2.5.6':
     resolution: {integrity: sha512-BJyewgCAwxAQ6EsEPRLO0iIe3TuVGcDynQyGr7mUllg/dYDv1LJb6dACc7y8vnlbSsEX7f7FJ4G1t1HajjRSjQ==}
@@ -351,8 +351,8 @@ packages:
     resolution: {integrity: sha512-vxPYce3riS5eCnED8JRm5O1bQfLMLxJn4Pbj+Jz916GaheOMCVKrhrfA1y4EQ6eYv/jkBo3jI40t8K4naL+knA==}
     engines: {node: '>=22.15.0'}
 
-  '@jinsiyu/dshcs-vscode-server@4.143.1':
-    resolution: {integrity: sha512-ZkCwBCiA5q9tHSusqYdhKTRBto8EvyoBV/Qwrw/5erKwOvSUeOSk7YDmvOjK++9k6MKv81+jU0j/lg5t33fwqw==}
+  '@jinsiyu/dshcs-vscode-server@4.144.0':
+    resolution: {integrity: sha512-TZqRuzWqYzBhlAGThM8niSeJpzM5SfYTybtPf6rlE24/lxh4fpEbcih0H0WN89hwaeP7LKadkZfnSz1s5RVqkA==}
 
   '@jinsiyu/dshcs-vscode-spdlog-linux-arm64@0.15.8':
     resolution: {integrity: sha512-UE5kMgw5l7tDYHVPjg6RuQ13wnhT4Md5PdJPYYNMaH8sjNoGUEAThybg+KwHILGK6KpQRfZ/Fu5kqcG11/EC0g==}
@@ -686,8 +686,8 @@ packages:
   jsonfile@6.2.1:
     resolution: {integrity: sha512-zwOTdL3rFQ/lRdBnntKVOX6k5cKJwEc1HdilT71BWEu7J41gXIB2MRp+vxduPSwZJPWBxEzv4yH1wYLJGUHX4Q==}
 
-  katex@0.16.22:
-    resolution: {integrity: sha512-XCHRdUw4lf3SKBaJe4EvgqIuWwkPSo9XoeO8GjQW94Bp7TWv9hNhzZjZ+OH9yf1UmLygb7DIT5GSFQiyt16zYg==}
+  katex@0.16.47:
+    resolution: {integrity: sha512-Eeo8Ys1doU1z+x8AZsPpQu+p/QcZBI5PeOo7QGQdy2x2m0MU/hYagBbGOmXwr5KVbEfVuWv9LpnQWeehogurjg==}
     hasBin: true
 
   libsodium-wrappers@0.8.4:
@@ -886,7 +886,7 @@ snapshots:
       node-addon-api: 6.1.0
     optional: true
 
-  '@jinsiyu/dshcs-node-pty@1.2.0-beta.15':
+  '@jinsiyu/dshcs-node-pty@1.2.0-beta.18':
     dependencies:
       node-addon-api: 7.1.1
 
@@ -973,7 +973,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@jinsiyu/dshcs-vscode-server@4.143.1': {}
+  '@jinsiyu/dshcs-vscode-server@4.144.0': {}
 
   '@jinsiyu/dshcs-vscode-spdlog-linux-arm64@0.15.8':
     dependencies:
@@ -1249,7 +1249,7 @@ snapshots:
     optionalDependencies:
       graceful-fs: 4.2.11
 
-  katex@0.16.22:
+  katex@0.16.47:
     dependencies:
       commander: 8.3.0
 

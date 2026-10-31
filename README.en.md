@@ -536,7 +536,7 @@ data call changes; the caller stays as it is).
   committed hand-written source: there is no build step anywhere on that chain).
 
 > Verified locally (BM: Windows 11 ARM64): the whole tree/dependency chain hangs directly off the plugin's
-> dependency table — the tree package `@jinsiyu/dshcs-vscode-server` (currently 4.143.1, a ~46 MB tarball),
+> dependency table — the tree package `@jinsiyu/dshcs-vscode-server` (currently 4.144.0, a ~47 MB tarball),
 > the pure-JS inner dependencies plus the 6 platform-independent repacks in `dependencies`, and the 8
 > platform-specific repacks (win32-arm64 / win32-x64) in `optionalDependencies` with their own os/cpu gates;
 > the original names are restored by junctions created at runtime (`lib/native.js`)
@@ -549,7 +549,7 @@ data call changes; the caller stays as it is).
 cd C:\Users\User\Desktop\dsh-code-server-app
 pnpm install             # one dev dependency left (@deepseek-ai/schemastery); allowBuilds is explicit → no postinstall runs
 pnpm run vendor:check    # optional: show the bundled tree version vs the latest code-server release
-pnpm run vendor:vscode                            # ① produce vendor/vscode (the trimmed VS Code tree, ~197MB)
+pnpm run vendor:vscode                            # ① produce vendor/vscode (the trimmed VS Code tree, ~171MB)
 pnpm run repack:build -- --target win32-arm64,win32-x64 --pack   # ② one script builds every sub-package
 pnpm run publish:repacks                         # ③ publish every @jinsiyu/* sub-package (default dist-tag: next)
 pnpm pack                                        # ④ → dsh-code-server-app-<version>.tgz
@@ -584,7 +584,7 @@ pnpm run promote -- <version>
 | Goal | Command |
 |---|---|
 | **Build from the latest upstream release** | `pnpm run vendor:latest` (= `--force`): pulls `code-server@latest`'s tree into `vendor/vscode`; afterwards you **must** re-run `repack:build` and republish every sub-package |
-| **Pin a version** | `pnpm run vendor:vscode -- --version 4.143.1` |
+| **Pin a version** | `pnpm run vendor:vscode -- --version 4.144.0` |
 | **Snapshot from an existing tree** | `pnpm run vendor:vscode -- --from <code-server dir>` (seconds) |
 | **Rebuild every sub-package** | `pnpm run repack:build -- --target win32-arm64,win32-x64 --pack` (without `--from` it npm-installs and compiles the source tree itself — slow) |
 | **Rebuild only the tree + dependency table** | `node scripts/vendor-repacks.mjs --reuse --target win32-arm64,win32-x64 --pack` (reuses the natives already in `repack/build`; also rewrites `lib/vendored.json` and the plugin dependency table) |
@@ -612,7 +612,7 @@ pnpm run watch:upstream                    # same, but first goes through pnpm's
 node scripts/watch-upstream.mjs --json     # machine readable (what a DSH in-session reminder parses); human output goes to stderr
 node scripts/watch-upstream.mjs --no-notify # report only, no notification (regressions / unattended)
 node scripts/watch-upstream.mjs --fixture f.json # use a local JSON file as the registry response (offline)
-node scripts/watch-upstream.mjs --local 4.143.1  # override the local baseline for a dry run (does not read vendor/)
+node scripts/watch-upstream.mjs --local 4.144.0  # override the local baseline for a dry run (does not read vendor/)
 node scripts/test-upstream-watch.mjs       # regression suite (offline, never notifies)
 ```
 
@@ -945,7 +945,7 @@ The main package is only **~110KB** (the plugin's own code plus the launcher); e
 - consequently the dependency graph contains **no package with pre/install/postinstall or a `binding.gyp`** →
   no profile `allowBuilds`, no build script ever runs, and **the user machine needs no C++ toolchain**;
 - **upgrading the plugin no longer re-downloads the tree**: the tree package is cached by version
-  (~60MB, ~197MB unpacked).
+  (~47MB, ~171MB unpacked).
 
 ### Install mechanism (why it is built this way)
 
@@ -989,7 +989,7 @@ The main package is only **~110KB** (the plugin's own code plus the launcher); e
      tree ships neither, and code that builds dependency paths explicitly (e.g. the bundled TypeScript extension looking
      for `<ext>/../node_modules/typescript/lib/tsserver.js`) otherwise reports
      "VS Code's tsserver was deleted by another application…" (measured with 1.136.1).
-> **Size note**: the plugin tarball is **~110KB**; `@jinsiyu/dshcs-vscode-server` is **~60MB** (~197MB unpacked);
+> **Size note**: the plugin tarball is **~110KB**; `@jinsiyu/dshcs-vscode-server` is **~47MB** (~171MB unpacked);
 > the 16 native packages add ~250MB. A full install downloads roughly 310MB. Neither `vendor/` nor `repack/` is committed to git (see `.gitignore`).
 
 > **Upgrading from ≤ 0.1.43**: the tree package used to be `@jinsiyu/dshcs-code-server` (the full code-server tree with
@@ -1118,7 +1118,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 ### Upgrading the VS Code tree (upstream = a code-server release)
 
 - **The version is decided at pack time**: `pnpm run vendor:latest` (= `--force`) pulls the tree of the npm **latest**
-  release; or use `pnpm run vendor:vscode -- --version 4.143.1` / `DSHCS_CODE_SERVER_VERSION`.
+  release; or use `pnpm run vendor:vscode -- --version 4.144.0` / `DSHCS_CODE_SERVER_VERSION`.
   With an existing `vendor/vscode`, a plain `pnpm pack` never upgrades (it is a no-op).
   **Source-tree precedence (fixed in 0.2.13)**: an explicit `--from` uses that tree, while an explicit
   `--force`/`--version` now **always goes to the registry** — before the fix a local source tree won
@@ -1150,7 +1150,7 @@ dsh plugin --profile web add C:\Users\User\Desktop\dsh-code-server-app
 - `productPath` (`<quality>-<commit>`, part of the client WebSocket path) is **computed from `lib/vscode/product.json`**,
   so upgrading the tree needs no code change — but the routes are registered at activation, so restart `dsh web` afterwards.
 - **No runtime auto-upgrade anymore**: nothing fetches latest at startup; the version is fully determined by the bundled artifact.
-- Bundled locally right now: the tree of `code-server@4.143.1` (VS Code 1.143.1, `productPath=stable-22ddf60d…`).
+- Bundled locally right now: the tree of `code-server@4.144.0` (VS Code 1.144.0, `productPath=stable-ee31cdbe…`).
 
 ### Tree and install-location resolution
 
