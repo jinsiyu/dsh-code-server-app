@@ -35,6 +35,14 @@
     "    proxy-agent 仍是 ^0.45.0,其余模块的依赖范围也没变。shrinkwrap 里 14 个 hasInstallScript 的包扣掉",
     "    整树排除的 koffi 是 13 个,加上纯 JS 的 proxy-agent 正好就是下面这 14 个模块 ⇒ 没有新增原生模块。",
     "    (koffi 仍被 @github/copilot-sdk 引用但整树排除;proxy-agent 没有构建信号,靠「声明即分类」进重打包集。)",
+    "  · node-pty → 1.2.0-beta.18(code-server 4.144.0 那轮:树清单从 ^1.2.0-beta.15 抬到 ^1.2.0-beta.18,",
+    "    shrinkwrap 的锁定版本同步变成 beta.18)。它是 platform:false 的全平台模块,只有 1 个子包,不按平台分包;",
+    "    新版本必须先发布 @jinsiyu/dshcs-node-pty@1.2.0-beta.18 再写进插件表,顺序反了 pnpm install 直接解析失败。",
+    "    上游这是 beta 号(无正式 API 承诺),本轮只做版本号跟进,不假设行为差异。",
+    "  · code-server 4.144.0 那轮(2026-10-31)除 node-pty 外**没有别的版本变动**:14 个 hasInstallScript 的包",
+    "    还是同样 14 个(增减均为 0),其余模块的依赖范围一个没改;shrinkwrap 里 packages 条目 182 → 182,",
+    "    新增/移除都是 0,只有 13 处版本号变化 —— 其中 @github/copilot-sdk 整树排除、ip-address / shell-quote",
+    "    是纯 JS 传递依赖,进入插件表的只有 katex(0.16.22 → 0.16.47)与本次重打包的 node-pty。",
     "不再需要的模块用下面的 dropped(不是从 modules 里悄悄删掉 —— 删掉只会让「跨平台保留」把它从旧表复活)。"
   ],
   "targets": [
@@ -98,7 +106,7 @@
     "@vscode/fs-copyfile": { "platform": false },
     "@vscode/proxy-agent": { "platform": false, "version": "0.45.0" },
     "cpu-features": { "platform": false },
-    "node-pty": { "platform": false },
+    "node-pty": { "platform": false, "version": "1.2.0-beta.18" },
     "ssh2": { "platform": false }
   }
 }
