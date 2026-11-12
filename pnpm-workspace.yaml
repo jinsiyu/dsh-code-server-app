@@ -31,7 +31,7 @@ minimumReleaseAgeExclude:
   - '@jinsiyu/dshcs-vscode-spdlog-linux-x64@0.15.8'
   - '@jinsiyu/dshcs-vscode-sqlite3-linux-arm64@5.1.12-vscode'
   - '@jinsiyu/dshcs-vscode-sqlite3-linux-x64@5.1.12-vscode'
-  - '@jinsiyu/dshcs-vscode-server@4.139.1 || 4.140.0 || 4.141.0 || 4.143.1 || 4.144.0'
+  - '@jinsiyu/dshcs-vscode-server@4.139.1 || 4.140.0 || 4.141.0 || 4.143.1 || 4.144.0 || 4.145.2'
   - '@jinsiyu/dshcs-vscode-proxy-agent@0.45.0'
   # code-server 4.144.0 那轮(2026-10-31):重打包模块里 node-pty 跟上游抬到 beta.18,
   # 新版本同样是我们首发,冷却期内解析不到 ⇒ 照约定进排除表。
@@ -44,3 +44,5 @@ minimumReleaseAgeExclude:
   # 这轮子包版本一个都没动(重打包模块的依赖范围全部不变),所以只多了第 34 行那个 4.143.1。
   # code-server 4.144.0 那轮(2026-10-31):树包 4.144.0 首发;另有一个重打包子包换号
   # (@jinsiyu/dshcs-node-pty → 1.2.0-beta.18,见上面第 39 行),其余子包版本全部未动。
+  # code-server 4.145.2 那轮(2026-11-12):树包 4.145.2 首发;上游只动了 VS Code 版本与
+  # @github/copilot-sdk(整树排除),14 个重打包子包版本一个都没换 ⇒ 只多了上面那行里的 4.145.2。

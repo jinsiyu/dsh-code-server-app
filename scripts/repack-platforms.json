@@ -43,7 +43,14 @@
     "    还是同样 14 个(增减均为 0),其余模块的依赖范围一个没改;shrinkwrap 里 packages 条目 182 → 182,",
     "    新增/移除都是 0,只有 13 处版本号变化 —— 其中 @github/copilot-sdk 整树排除、ip-address / shell-quote",
     "    是纯 JS 传递依赖,进入插件表的只有 katex(0.16.22 → 0.16.47)与本次重打包的 node-pty。",
-    "不再需要的模块用下面的 dropped(不是从 modules 里悄悄删掉 —— 删掉只会让「跨平台保留」把它从旧表复活)。"
+    "  · code-server 4.145.2 那轮(2026-11-12)**没有新钉版本**:树清单仍是 51 个直接依赖,唯一换号的是 @github/copilot-sdk",
+    "    (整树排除,不跟);shrinkwrap packages 182 → 182,新增/移除都是 0,9 处版本号变化全部是 copilot-sdk 那一串;",
+    "    hasInstallScript 仍是同样 14 个(增减均为 0)⇒ 14 个重打包模块一个都不用重发/重钉。extensions 清单与锁表",
+    "    (1 个依赖 / 52 个包)也完全没动。新旧树之间只有 VS Code 1.144.0 → 1.145.2 与 product.json 的 commit/date",
+    "    变化,所以本轮只有树包换号(@jinsiyu/dshcs-vscode-server@4.145.2),子包版本零变化。本机 MSVC 工具集没有",
+    "    v145(BuildTools 只装了 v143)⇒ win32 原生包在此机器上一律 rebuild 失败(MSB8020),原生层只能由 CI",
+    "    repacks.yml 的腿构建;本轮原生层零变化,故不需要本机构建。",
+    "  不再需要的模块用下面的 dropped(不是从 modules 里悄悄删掉 —— 删掉只会让「跨平台保留」把它从旧表复活)。"
   ],
   "targets": [
     "win32-x64",
